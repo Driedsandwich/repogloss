@@ -69,13 +69,13 @@ This extension translates key technical terms on GitHub into natural-sounding Ja
 
 ### B) 開発者モード手動導入
 1. リポジトリを **Clone** または **Download ZIP** → 解凍  
-2. `chrome://extensions/` → **デベロッパーモード ON🛈**  
+2. `chrome://extensions/` → **デベロッパーモード ON**  
 3. 「**パッケージ化されていない拡張機能を読み込む**」→ 解凍フォルダを選択  
 4. GitHub を再読み込みで 🛈 マークが表示
 
 ---
 
-## 🖥️ 動作確認環境 | Confirmed Environment🛈🛈
+## 🖥️ 動作確認環境 | Confirmed Environment
 - Windows 11 + Chrome 137.0.7151.120 (64-bit)  
 - GitHub 公式 Web / PWA (Chrome アプリ) で確認済み  
 > ※ macOS / Linux / Edge など他環境でも動作する可能性があります。動作報告をお待ちしています！
@@ -92,7 +92,7 @@ This extension translates key technical terms on GitHub into natural-sounding Ja
   └─ dict.json           # 日本語訳辞書 (~100 entries)
 📄 manifest.json         # MV3 定義
 📄 styles.css            # 🛈 アイコン & トグルボタン
-📄 README🛈🛈🛈.md
+📄 README.md
 ```
 
 ---
@@ -109,20 +109,20 @@ This extension translates key technical terms on GitHub into natural-sounding Ja
 ---
 
 ## 🌱 用語追加・誤訳報告 | Contribute Translations
-> **Issue / Pull🛈🛈🛈🛈 Request 大歓迎！**  
+> **Issue / Pull Request 大歓迎！**  
 > 「この英単語も訳したい」「説明が違うかも？」と思ったらお気軽にご提案ください。
 
 ---
 
 ## 💬 Feedback / 不具合・フィードバック
-* GitHub *Issues🛈🛈🛈* / *Discussions* / *Pull🛈🛈🛈 Request*  
+* GitHub *Issues* / *Discussions* / *Pull Request*  
 * （公開後）Chrome Web Store レビュー  
 バグ・要望・動作報告など何でも OK です！
 
 ---
 
-## 🪪 License🛈🛈 | MIT
-本リポジトリ全体は [MIT](LICENSE🛈) ライセンスです。商用・改変・再配布すべて自由。
+## 🪪 License | MIT
+本リポジトリ全体は [MIT](LICENSE) ライセンスです。商用・改変・再配布すべて自由。
 
 ---
 

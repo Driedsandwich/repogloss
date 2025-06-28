@@ -1,0 +1,45 @@
+/* GitHub 意訳支援 – styles.css (v1.2) */
+
+/* ① 情報アイコン – 当たり判定 & レイアウト安定化 */
+.iiyaku-icon {
+  position: relative;
+  display: inline-block;
+  font-size: 13px;
+  line-height: 1;
+  cursor: help;
+  margin-left: 4px;
+  vertical-align: middle;      /* 行揃え */
+
+  /* 視覚最小化：背景は hover 時のみ */
+}
+
+.iiyaku-icon::before {         /* 透明な当たり判定 */
+  content: '';
+  position: absolute;
+  top: -4px;    bottom: -4px;
+  left: -6px;   right: -6px;
+  border-radius: 6px;
+}
+
+.iiyaku-icon:hover::before {
+  background: rgba(0,0,0,.08); /* hover時のみ表示 */
+}
+
+
+/* ② ツールチップ（変更なし） */
+.iiyaku-tooltip {
+  position: absolute;
+  max-width: 220px;
+  font-size: 12px;
+  line-height: 1.3;
+  background: #fff;
+  color: #1f2328;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(140,149,159,0.15);
+  padding: 6px 8px;
+  z-index: 10000;
+  white-space: pre-wrap;
+  opacity: 0;
+  transition: opacity 0.1s ease-in-out;
+}

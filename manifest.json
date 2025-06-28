@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "GitHub 意訳支援",
+  "version": "1.1",
+  "description": "GitHubの専門用語を日本語でわかりやすく意訳するChrome拡張",
+  "content_scripts": [
+    {
+      "matches": [
+        "*://github.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "styles.css"
+      ]
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["dict.json"],
+      "matches": ["*://github.com/*"]
+    }
+  ],
+  "icons": {
+    "1024": "icons/icon1024.png"
+  },
+  "action": {
+    "default_title": "GitHub 意訳支援"
+  }
+}

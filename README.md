@@ -1,7 +1,6 @@
 
 # 🧠 GitHub 意訳支援 – GitHub‑enja‑Tooltip
 
-![Chrome Extension](https://img.shields.io/badge/Chrome_Extension-Ready-brightgreen)
 ![Version](https://img.shields.io/badge/version-1.5-blue)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 
@@ -39,7 +38,7 @@ This extension shows natural Japanese explanations for key GitHub terms.
 |------|------|
 | 🛈 アイコン付与 | ページ内の英語用語を自動検出し、日本語訳をマーク付き表示 |
 | ワンクリック切替 | 右下トグルでリアルタイム ON/OFF（状態はローカル保存） |
-| **約 220 語** 収録辞書 | `locales/dict.json` に ~220 語（アルファベット順で管理） |
+| **151 語** 収録辞書 | `locales/dict.json` に 151 語（2026-08-01 実測） |
 | 最小権限 & MV3 | `github.com/*` のみで動作、追加 API 権限なし |
 
 ---
@@ -65,8 +64,8 @@ This extension shows natural Japanese explanations for key GitHub terms.
 ---
 
 ## 📦 インストール方法 | Installation
-### A) Chrome Web Store（近日公開）
-ストア審査中です。公開後にリンクを追記します。
+### A) Chrome Web Store
+**未提出です。** 現時点の導入方法は下記 B) の手動読み込みのみです。
 
 ### B) 開発者モード手動導入
 1. 本リポジトリを **Clone** または **Download ZIP** → 解凍  
@@ -87,7 +86,7 @@ This extension shows natural Japanese explanations for key GitHub terms.
 ```text
 📁 src/           content.js           # メインスクリプト
 📁 icons/         icon128.png          # 拡張アイコン
-📁 locales/       dict.json            # 日本語訳辞書 (~220)
+📁 locales/       dict.json            # 日本語訳辞書 (151語)
 📄 manifest.json  MV3 定義
 📄 styles.css     🛈 アイコン & トグル
 📄 README.md

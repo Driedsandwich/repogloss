@@ -3,29 +3,23 @@
   "name": "GitHub 意訳支援",
   "version": "1.1",
   "description": "GitHubの専門用語を日本語でわかりやすく意訳するChrome拡張",
+  "action": {
+    "default_title": "GitHub 意訳支援"
+  },
+  "icons": {
+    "128": "icons/icon128.png"
+  },
   "content_scripts": [
     {
-      "matches": [
-        "*://github.com/*"
-      ],
-      "js": [
-        "content.js"
-      ],
-      "css": [
-        "styles.css"
-      ]
+      "matches": ["*://github.com/*"],
+      "js": ["src/content.js"],
+      "css": ["styles.css"]
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["dict.json"],
+      "resources": ["locales/dict.json"],
       "matches": ["*://github.com/*"]
     }
-  ],
-  "icons": {
-    "1024": "icons/icon1024.png"
-  },
-  "action": {
-    "default_title": "GitHub 意訳支援"
-  }
+  ]
 }

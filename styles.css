@@ -1,45 +1,72 @@
-/* GitHub 意訳支援 – styles.css (v1.2) */
 
-/* ① 情報アイコン – 当たり判定 & レイアウト安定化 */
-.iiyaku-icon {
-  position: relative;
+/* GitHub 意訳支援 – styles.css (v1.4) */
+
+/* ① 情報アイコン（🛈マーク） */
+.iiyaku-info-icon {
   display: inline-block;
-  font-size: 13px;
-  line-height: 1;
-  cursor: help;
   margin-left: 4px;
-  vertical-align: middle;      /* 行揃え */
-
-  /* 視覚最小化：背景は hover 時のみ */
+  font-size: 12px;
+  font-weight: bold;
+  color: #3b82f6; /* blue-500 */
+  cursor: pointer;
+  user-select: none;
 }
 
-.iiyaku-icon::before {         /* 透明な当たり判定 */
-  content: '';
-  position: absolute;
-  top: -4px;    bottom: -4px;
-  left: -6px;   right: -6px;
-  border-radius: 6px;
-}
-
-.iiyaku-icon:hover::before {
-  background: rgba(0,0,0,.08); /* hover時のみ表示 */
-}
-
-
-/* ② ツールチップ（変更なし） */
+/* ② ツールチップ */
 .iiyaku-tooltip {
   position: absolute;
-  max-width: 220px;
-  font-size: 12px;
-  line-height: 1.3;
-  background: #fff;
-  color: #1f2328;
-  border: 1px solid #d0d7de;
+  background-color: #f9fafb; /* gray-50 */
+  border: 1px solid #d1d5db; /* gray-300 */
+  padding: 6px 10px;
   border-radius: 6px;
-  box-shadow: 0 4px 12px rgba(140,149,159,0.15);
-  padding: 6px 8px;
+  font-size: 13px;
+  color: #111827; /* gray-900 */
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
   z-index: 10000;
-  white-space: pre-wrap;
-  opacity: 0;
-  transition: opacity 0.1s ease-in-out;
+  max-width: 300px;
+  white-space: normal;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+/* ③ トグルボタン – ON/OFF */
+.iiyaku-toggle {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  font-size: 13px;
+  background: #f3f4f6; /* gray-100 */
+  color: #1f2937; /* gray-800 */
+  border: 1px solid #d1d5db; /* gray-300 */
+  border-radius: 6px;
+  padding: 4px 8px;
+  cursor: pointer;
+  z-index: 10001;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+.iiyaku-toggle:hover {
+  background-color: #e5e7eb;
+}
+
+/* 🌙 ダークモード対応 */
+@media (prefers-color-scheme: dark) {
+  .iiyaku-toggle {
+    background: #1f2937; /* gray-800 */
+    color: #f3f4f6;       /* light gray */
+    border: 1px solid #4b5563; /* gray-600 */
+  }
+
+  .iiyaku-toggle:hover {
+    background-color: #374151; /* gray-700 */
+  }
+}
+
+/* 📱 PWA（standalone）モード時は少し内側に寄せる */
+@media (display-mode: standalone) {
+  .iiyaku-toggle {
+    bottom: 80px; /* タスクバーやアプリバーと被らないように */
+    right: 24px;
+  }
 }

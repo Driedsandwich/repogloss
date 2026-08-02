@@ -2,7 +2,7 @@
 
 GitHub のページで、Git / GitHub 固有の英単語の右に小さな ⓘ を付ける Chrome 拡張です。ⓘ にカーソルを乗せると日本語の説明が出ます。英語表示はそのまま残ります。
 
-![Version](https://img.shields.io/badge/version-1.7.0-blue)
+![Version](https://img.shields.io/badge/version-1.7.1-blue)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 ![Manifest](https://img.shields.io/badge/manifest-v3-green)
 
@@ -93,6 +93,7 @@ This extension is not affiliated with, endorsed by, or sponsored by GitHub, Inc.
 
 | Version | 内容 |
 |---|---|
+| 1.7.1 | 「同じ語は最初の1回だけ」の実装の不具合を2件修正。①画面を読み直さずに移動したとき、前の画面で印を付けた語が飛ばされていた ②GitHub が画面の一部を描き直して印ごと消えると、その語に二度と印が付かなかった |
 | 1.7.0 | 同じ語はページで最初の1回だけ印を付けるようにした。git の解説ページのように用語が繰り返される文書で印が数百個になり、本文が読めなくなっていたため（実測 843 → 43 個）。印に使っていた文字が macOS のフォントに無く Mac では表示されていなかった問題を修正（文字に依存しない描画へ変更）。ツールチップを標準の `title` から自前描画へ変え、待ちなく出るようにした |
 | 1.6.0 | 辞書を概念語 61 語へ絞り、説明文を全面的に書き直し。用語判定の不具合を修正（1 要素につき 1 個しか印が付かない／キーの優先順／単複の揺れ／コード領域の除外）。設定の保存先を `chrome.storage.local` へ変更。`RepoGloss` へ改名 |
 | 1.5.0 | 辞書 151 語。ON/OFF ボタン、ダークモード対応 |

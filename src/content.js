@@ -72,7 +72,11 @@
   ].join(',');
 
   const handled = new WeakSet();   // 処理済みのテキストノード（分割で生じた断片を含む）
-  const glossed = new Set();       // このページで既に印を付けた辞書キー
+  // このページで印を付けた辞書キー -> 実際に挿入した印の要素。
+  // Set ではなく要素を持つのは、GitHub がサイドバー等を描き直すと印ごと
+  // 消えることがあり、「付けた」記録だけが残ると二度と付かなくなるため。
+  // 参照先が DOM から外れていたら、付け直しを許す。
+  const glossed = new Map();
 
   function isTarget(node) {
     const v = node.nodeValue;
@@ -169,7 +173,9 @@
       const key = lookupKey(m[0]);
       // 同じ語はページで最初の1回だけ。説明は一度読めば足りるうえ、
       // git の解説ページのような文書では印が数百個になり本文が読めなくなる。
-      if (key && !glossed.has(key) && !pending.has(key)) {
+      // ただし前に付けた印が DOM から消えていたら、付け直す。
+      const prev = key ? glossed.get(key) : null;
+      if (key && (!prev || !prev.isConnected) && !pending.has(key)) {
         pending.add(key);
         hits.push({ end: m.index + m[0].length, key });
       }
@@ -182,10 +188,10 @@
     for (let i = hits.length - 1; i >= 0; i--) {
       const tail = node.splitText(hits[i].end);
       handled.add(tail);                                    // 断片を再処理しない
-      parent.insertBefore(makeIcon(DICT[hits[i].key]), tail);
+      const icon = makeIcon(DICT[hits[i].key]);
+      parent.insertBefore(icon, tail);
+      glossed.set(hits[i].key, icon);   // 実際に挿入できたものだけ記録する
     }
-    // 実際に挿入できたものだけを「印を付けた」として記録する
-    for (const h of hits) glossed.add(h.key);
     handled.add(node);
     return hits.length;
   }
@@ -217,8 +223,16 @@
     // 前の画面で出た語が新しい画面では一度も説明されないままになる。
     if (location.href !== lastUrl) {
       lastUrl = location.href;
-      glossed.clear();
       hideTip();
+      // 画面全体を走査し直す。URL の書き換えより先に内容が差し込まれた分は、
+      // その時点で生きていた印のせいで飛ばされている可能性があるため。
+      //
+      // ここで glossed を空にしてはいけない。GitHub はヘッダーやサイドバーを
+      // 画面遷移をまたいで保持するので、そこに付いた印が残ったまま数え直すと、
+      // 新しい本文に同じ語がもう一度付いて重複する。判定は「いま画面に印が
+      // 生きているか」（isConnected）だけで足りる。消えた語は自然に付け直され、
+      // 残っている語は二重に付かない。
+      scan(document.body);
     }
     for (const mu of muts) {
       for (const n of mu.addedNodes) scan(n);

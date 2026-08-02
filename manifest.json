@@ -3,6 +3,7 @@
   "name": "GitHub 意訳支援",
   "version": "1.5.0",
   "description": "GitHubの専門用語を日本語でわかりやすく意訳するChrome拡張",
+  "permissions": ["storage"],
   "action": {
     "default_title": "GitHub 意訳支援"
   },

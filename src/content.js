@@ -1,5 +1,5 @@
 // RepoGloss – content.js
-// GitHub 上の英語をそのまま残し、辞書に載っている概念語へ 🛈 を添えて日本語の説明を出す。
+// GitHub 上の英語をそのまま残し、辞書に載っている概念語へ ⓘ を添えて日本語の説明を出す。
 (async () => {
   /* ---------- 0. ON / OFF 状態 ---------- */
   // 設定は chrome.storage.local に置く。localStorage は「いま開いているサイト側」の
@@ -89,11 +89,16 @@
   }
 
   /* ---------- 4. アイコン注入 ---------- */
+  // 印は文字コードの記号を使わない。U+1F6C8（🛈）は Windows の Segoe UI Symbol には
+  // あるが macOS の標準フォントには無く、豆腐（□）になる。要素は空にして
+  // styles.css の ::after で丸と "i" を描く。この方式なら
+  // (1) フォントに左右されない (2) 本文をコピーしても印が混ざらない。
   function makeIcon(ja) {
     const icon = document.createElement('sup');
     icon.className = 'iiyaku-icon';
-    icon.textContent = '🛈';
-    icon.title = ja;   // ネイティブツールチップ
+    icon.title = ja;                    // ネイティブツールチップ
+    icon.setAttribute('role', 'img');   // 中身が空なので読み上げ用の名前を別に与える
+    icon.setAttribute('aria-label', ja);
     return icon;
   }
 

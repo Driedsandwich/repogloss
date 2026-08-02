@@ -49,7 +49,11 @@
    transition を付けないのは、フェードインでも「遅い」と感じられるため。 */
 .iiyaku-tooltip {
   position: absolute;
-  z-index: 2147483000;
+  /* z-index は最大値を使う。他の拡張（英和辞典のポップアップなど）が
+     2147483647 を使っており、それ未満だと重なったときに隠れる。
+     同値の場合は後から DOM に入ったほうが上に来るので、表示のたびに
+     append し直しているこちらが前に出る。 */
+  z-index: 2147483647;
   max-width: 320px;
   padding: 8px 11px;
   border-radius: 6px;

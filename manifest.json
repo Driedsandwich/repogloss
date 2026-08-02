@@ -1,11 +1,11 @@
 {
   "manifest_version": 3,
-  "name": "GitHub 意訳支援",
+  "name": "RepoGloss — GitHubの英語用語に日本語の解説",
   "version": "1.6.0",
-  "description": "GitHubの専門用語を日本語でわかりやすく意訳するChrome拡張",
+  "description": "GitHubの英語UIはそのままに、Git／GitHub固有の用語へ🛈で日本語の解説をそえます。初学者向け。GitHub, Inc.とは無関係の非公式ツールです。",
   "permissions": ["storage"],
   "action": {
-    "default_title": "GitHub 意訳支援"
+    "default_title": "RepoGloss"
   },
   "icons": {
     "128": "icons/icon128.png"

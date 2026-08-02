@@ -1,4 +1,4 @@
-// GitHub 意訳支援 – content.js
+// RepoGloss – content.js
 // GitHub 上の英語をそのまま残し、辞書に載っている概念語へ 🛈 を添えて日本語の説明を出す。
 (async () => {
   /* ---------- 0. ON / OFF 状態 ---------- */

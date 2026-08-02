@@ -47,13 +47,14 @@
   const REG_G = new RegExp(`\\b(?:${PATTERN})(?:e?s)?\\b`, 'gi');  // 走査用（lastIndex を持つ）
   const REG_T = new RegExp(`\\b(?:${PATTERN})(?:e?s)?\\b`, 'i');   // 足切り用（状態を持たない）
 
-  // 複数形で一致した語は、そのままでは辞書に無い。単数形へ戻して引き直す。
-  function lookup(word) {
+  // 複数形で一致した語は、そのままでは辞書に無い。単数形へ戻して引き直し、
+  // 辞書のキーを返す。"Pull requests" と "pull request" は同じキーになる。
+  function lookupKey(word) {
     const n = norm(word);
-    if (DICT[n]) return DICT[n];
-    if (n.endsWith('ies') && DICT[n.slice(0, -3) + 'y']) return DICT[n.slice(0, -3) + 'y'];  // repositories -> repository
-    if (n.endsWith('es') && DICT[n.slice(0, -2)]) return DICT[n.slice(0, -2)];   // branches -> branch
-    if (n.endsWith('s')  && DICT[n.slice(0, -1)]) return DICT[n.slice(0, -1)];   // commits  -> commit
+    if (DICT[n]) return n;
+    if (n.endsWith('ies') && DICT[n.slice(0, -3) + 'y']) return n.slice(0, -3) + 'y';  // repositories -> repository
+    if (n.endsWith('es') && DICT[n.slice(0, -2)]) return n.slice(0, -2);   // branches -> branch
+    if (n.endsWith('s')  && DICT[n.slice(0, -1)]) return n.slice(0, -1);   // commits  -> commit
     return null;
   }
 
@@ -71,6 +72,7 @@
   ].join(',');
 
   const handled = new WeakSet();   // 処理済みのテキストノード（分割で生じた断片を含む）
+  const glossed = new Set();       // このページで既に印を付けた辞書キー
 
   function isTarget(node) {
     const v = node.nodeValue;
@@ -138,9 +140,12 @@
   }
 
   function bindTip() {
+    // 印以外の場所へカーソルが移ったら消す。mouseout だけに頼ると、
+    // 表示中に印が DOM から消えた場合（GitHub の再描画など）に
+    // mouseout が来ず、ツールチップが residual として残る。
     document.addEventListener('mouseover', e => {
       const icon = e.target.closest && e.target.closest('.iiyaku-icon');
-      if (icon) showTip(icon);
+      if (icon) showTip(icon); else hideTip();
     }, true);
     document.addEventListener('mouseout', e => {
       const icon = e.target.closest && e.target.closest('.iiyaku-icon');
@@ -157,11 +162,17 @@
     if (handled.has(node)) return 0;
     const text = node.nodeValue;
     const hits = [];
+    const pending = new Set();   // このノード内での重複も弾く
     REG_G.lastIndex = 0;
     let m;
     while ((m = REG_G.exec(text)) !== null) {
-      const ja = lookup(m[0]);
-      if (ja) hits.push({ end: m.index + m[0].length, ja });
+      const key = lookupKey(m[0]);
+      // 同じ語はページで最初の1回だけ。説明は一度読めば足りるうえ、
+      // git の解説ページのような文書では印が数百個になり本文が読めなくなる。
+      if (key && !glossed.has(key) && !pending.has(key)) {
+        pending.add(key);
+        hits.push({ end: m.index + m[0].length, key });
+      }
       if (m.index === REG_G.lastIndex) REG_G.lastIndex++;   // 空一致での無限ループ防止
     }
     if (hits.length === 0) return 0;
@@ -171,8 +182,10 @@
     for (let i = hits.length - 1; i >= 0; i--) {
       const tail = node.splitText(hits[i].end);
       handled.add(tail);                                    // 断片を再処理しない
-      parent.insertBefore(makeIcon(hits[i].ja), tail);
+      parent.insertBefore(makeIcon(DICT[hits[i].key]), tail);
     }
+    // 実際に挿入できたものだけを「印を付けた」として記録する
+    for (const h of hits) glossed.add(h.key);
     handled.add(node);
     return hits.length;
   }
@@ -197,7 +210,16 @@
   /* ---------- 6. DOM 監視 ---------- */
   // GitHub は画面遷移でページ全体を読み直さないことがあるため、
   // 後から差し込まれた部分も見張る。自分が挿入した断片は handled で弾く。
+  let lastUrl = location.href;
   const observer = new MutationObserver(muts => {
+    // GitHub はページを読み直さずに画面を差し替えることがある。
+    // 別のページに移ったら「印を付けた語」を数え直す。そうしないと、
+    // 前の画面で出た語が新しい画面では一度も説明されないままになる。
+    if (location.href !== lastUrl) {
+      lastUrl = location.href;
+      glossed.clear();
+      hideTip();
+    }
     for (const mu of muts) {
       for (const n of mu.addedNodes) scan(n);
     }

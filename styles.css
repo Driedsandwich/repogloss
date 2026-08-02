@@ -1,32 +1,72 @@
 
 /* RepoGloss – styles.css */
 
-/* ① 情報アイコン（🛈マーク） */
+/* ① 情報アイコン
+   文字コードの記号は使わない。U+1F6C8（🛈）は Windows の Segoe UI Symbol には
+   収録されているが macOS の標準フォントには無く、豆腐（□）として表示される。
+   どのフォントにも必ずある ASCII の "i" を、CSS で描いた丸の中に置く。
+   ::after で描くので、本文をコピーしても印が混ざらない。 */
 .iiyaku-icon {
-  display: inline-block;
-  margin-left: 4px;
-  font-size: 12px;
-  font-weight: bold;
-  color: #3b82f6; /* blue-500 */
-  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 1.15em;
+  height: 1.15em;
+  margin-left: 0.25em;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  color: #2563eb;               /* blue-600 */
+  font-size: 0.78em;
+  font-weight: 700;
+  font-style: normal;
+  line-height: 1;
+  vertical-align: middle;
+  text-decoration: none;
+  cursor: help;
   user-select: none;
+  opacity: 0.8;
+  transition: opacity 0.15s ease, background-color 0.15s ease;
 }
 
-/* ② ツールチップ */
+.iiyaku-icon::after {
+  content: "i";
+  font-family: Georgia, "Times New Roman", "Hiragino Mincho ProN", serif;
+}
+
+.iiyaku-icon:hover {
+  opacity: 1;
+  background-color: currentColor;
+}
+
+.iiyaku-icon:hover::after {
+  color: #ffffff;
+}
+
+/* ② ツールチップ
+   ブラウザ標準の title 属性は表示までに1秒前後の待ちがあり、こちらから
+   短くできない。自前で描いて、カーソルが乗った瞬間に出す。
+   transition を付けないのは、フェードインでも「遅い」と感じられるため。 */
 .iiyaku-tooltip {
   position: absolute;
-  background-color: #f9fafb; /* gray-50 */
-  border: 1px solid #d1d5db; /* gray-300 */
-  padding: 6px 10px;
+  /* z-index は最大値を使う。他の拡張（英和辞典のポップアップなど）が
+     2147483647 を使っており、それ未満だと重なったときに隠れる。
+     同値の場合は後から DOM に入ったほうが上に来るので、表示のたびに
+     append し直しているこちらが前に出る。 */
+  z-index: 2147483647;
+  max-width: 320px;
+  padding: 8px 11px;
   border-radius: 6px;
+  background: #1f2328;
+  color: #ffffff;
   font-size: 13px;
-  color: #111827; /* gray-900 */
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
-  z-index: 10000;
-  max-width: 300px;
+  font-weight: 400;
+  line-height: 1.65;
+  text-align: left;
   white-space: normal;
-  line-height: 1.4;
   word-break: break-word;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  pointer-events: none;   /* ツールチップ自身がカーソルを奪わないようにする */
 }
 
 /* ③ トグルボタン – ON/OFF */
@@ -50,11 +90,19 @@
   background-color: #e5e7eb;
 }
 
-/* 🌙 ダークモード対応 */
+/* ダークモード対応 */
 @media (prefers-color-scheme: dark) {
+  .iiyaku-icon {
+    color: #60a5fa; /* blue-400 */
+  }
+
+  .iiyaku-icon:hover::after {
+    color: #0d1117;
+  }
+
   .iiyaku-toggle {
     background: #1f2937; /* gray-800 */
-    color: #f3f4f6;       /* light gray */
+    color: #f3f4f6;
     border: 1px solid #4b5563; /* gray-600 */
   }
 
@@ -63,7 +111,7 @@
   }
 }
 
-/* 📱 PWA（standalone）モード時は少し内側に寄せる */
+/* PWA（standalone）モード時は少し内側に寄せる */
 @media (display-mode: standalone) {
   .iiyaku-toggle {
     bottom: 80px; /* タスクバーやアプリバーと被らないように */

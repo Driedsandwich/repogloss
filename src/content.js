@@ -32,7 +32,10 @@
   // 長いキーから順に並べる。正規表現の | は左から先に当たるので、
   // 'pull' が 'pull request' より前にあると「Pull requests」に
   // pull（取り込む操作）の説明が付いてしまう。
-  const PATTERN = KEYS
+  // repository -> repositories のように y で終わる語は s を足すだけでは
+  // 複数形にならないので、綴りの変わる形も候補に並べておく。
+  const VARIANTS = KEYS.flatMap(k => (k.endsWith('y') ? [k, k.slice(0, -1) + 'ies'] : [k]));
+  const PATTERN = VARIANTS
     .slice()
     .sort((a, b) => b.length - a.length)
     .map(k => esc(k).replace(/ /g, '\\s+'))
@@ -48,6 +51,7 @@
   function lookup(word) {
     const n = norm(word);
     if (DICT[n]) return DICT[n];
+    if (n.endsWith('ies') && DICT[n.slice(0, -3) + 'y']) return DICT[n.slice(0, -3) + 'y'];  // repositories -> repository
     if (n.endsWith('es') && DICT[n.slice(0, -2)]) return DICT[n.slice(0, -2)];   // branches -> branch
     if (n.endsWith('s')  && DICT[n.slice(0, -1)]) return DICT[n.slice(0, -1)];   // commits  -> commit
     return null;

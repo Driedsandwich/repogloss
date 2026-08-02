@@ -66,7 +66,7 @@
     '.react-code-lines', '.react-code-line-contents', '.react-blob-print-hide',
     '.cm-editor', '.CodeMirror', '.highlight', '.snippet-clipboard-content',
     '[data-testid="code-cell"]', '[data-testid="blob-viewer-file-content"]',
-    '.iiyaku-icon', '.iiyaku-toggle',
+    '.iiyaku-icon', '.iiyaku-toggle', '.iiyaku-tooltip',
     '[aria-hidden="true"]', '.sr-only', '.visually-hidden'
   ].join(',');
 
@@ -91,15 +91,64 @@
   /* ---------- 4. アイコン注入 ---------- */
   // 印は文字コードの記号を使わない。U+1F6C8（🛈）は Windows の Segoe UI Symbol には
   // あるが macOS の標準フォントには無く、豆腐（□）になる。要素は空にして
-  // styles.css の ::after で丸と "i" を描く。この方式なら
-  // (1) フォントに左右されない (2) 本文をコピーしても印が混ざらない。
+  // styles.css の ::after で丸と "i" を描くので、フォントに左右されない。
+  // なお ::after の生成内容は DOM のテキストではないため、本文をコピーしても
+  // 印は混ざらないはずだが、これは仕様からの推測で実測していない。
   function makeIcon(ja) {
     const icon = document.createElement('sup');
     icon.className = 'iiyaku-icon';
-    icon.title = ja;                    // ネイティブツールチップ
+    // title 属性は使わない。ブラウザ標準のツールチップは表示までに
+    // 1秒前後の待ちがあり、こちらからは短くできないため。
+    // 説明文は data 属性に持たせ、下の自前ツールチップで即座に出す。
+    icon.dataset.iiyaku = ja;
     icon.setAttribute('role', 'img');   // 中身が空なので読み上げ用の名前を別に与える
     icon.setAttribute('aria-label', ja);
     return icon;
+  }
+
+  /* ---------- 4b. ツールチップ（即時表示） ---------- */
+  // アイコン1つずつに listener を付けず、document に1つだけ置いて委譲する。
+  let tip = null;
+
+  function hideTip() {
+    if (tip) { tip.remove(); tip = null; }
+  }
+
+  function showTip(icon) {
+    hideTip();
+    const text = icon.dataset.iiyaku;
+    if (!text) return;
+    tip = document.createElement('div');
+    tip.className = 'iiyaku-tooltip';
+    tip.textContent = text;
+    document.body.appendChild(tip);
+
+    // 画面外へはみ出さないよう、右端・下端で寄せる／上に出す
+    const r = icon.getBoundingClientRect();
+    const t = tip.getBoundingClientRect();
+    const vw = document.documentElement.clientWidth;
+    const vh = document.documentElement.clientHeight;
+    let left = r.left + window.scrollX;
+    let top  = r.bottom + window.scrollY + 6;
+    const maxLeft = window.scrollX + vw - t.width - 8;
+    if (left > maxLeft) left = Math.max(window.scrollX + 8, maxLeft);
+    if (r.bottom + t.height + 12 > vh) top = r.top + window.scrollY - t.height - 6;
+    tip.style.left = left + 'px';
+    tip.style.top  = top + 'px';
+  }
+
+  function bindTip() {
+    document.addEventListener('mouseover', e => {
+      const icon = e.target.closest && e.target.closest('.iiyaku-icon');
+      if (icon) showTip(icon);
+    }, true);
+    document.addEventListener('mouseout', e => {
+      const icon = e.target.closest && e.target.closest('.iiyaku-icon');
+      if (icon) hideTip();
+    }, true);
+    // スクロールや画面遷移で置き去りにならないようにする
+    window.addEventListener('scroll', hideTip, true);
+    window.addEventListener('resize', hideTip);
   }
 
   // 1つのテキストノードに含まれる一致すべてへ注記する。
@@ -177,6 +226,7 @@
   if (enabled) {
     scan(document.body);
     observer.observe(document.body, { childList: true, subtree: true });
+    bindTip();
   }
   createToggle();
 })();

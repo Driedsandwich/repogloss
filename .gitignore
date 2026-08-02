@@ -1,0 +1,13 @@
+# macOS
+.DS_Store
+._*
+
+# Windows
+Thumbs.db
+
+# エディタ
+.vscode/
+.idea/
+
+# 配布物（ストア提出用の ZIP はリポジトリの外で作る）
+*.zip

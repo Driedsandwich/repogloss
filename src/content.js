@@ -5,6 +5,7 @@
   // 設定は chrome.storage.local に置く。localStorage は「いま開いているサイト側」の
   // 保管庫なので、拡張の設定を入れると github.com のデータを汚すことになる。
   const STORE_KEY = 'iiyakuEnabled';
+  const OFF_CLASS = 'iiyaku-off';   // <html> に付けると印だけが CSS で隠れる
   let enabled = true;
   try {
     const got = await chrome.storage.local.get(STORE_KEY);
@@ -239,30 +240,77 @@
     }
   });
 
-  /* ---------- 7. トグルボタン ---------- */
+  /* ---------- 7. ON / OFF の切り替え ---------- */
+  let observing = false;
+
+  function startRuntime() {
+    if (observing) return;
+    scan(document.body);
+    observer.observe(document.body, { childList: true, subtree: true });
+    observing = true;
+  }
+
+  function stopRuntime() {
+    if (!observing) return;
+    observer.disconnect();
+    observing = false;
+    hideTip();
+  }
+
+  // OFF でも印を DOM から消さず、CSS で隠すだけにする。消してしまうと、
+  // 分割済みのテキストノードが handled に残ったまま元へ戻らず、
+  // ON に直しても付き直さない語が出るため。
+  function applyEnabled(next) {
+    enabled = next;
+    document.documentElement.classList.toggle(OFF_CLASS, !enabled);
+    if (enabled) startRuntime(); else stopRuntime();
+    updateToggle();
+  }
+
+  /* ---------- 8. トグルボタン ---------- */
+  let toggleBtn = null;
+
+  function updateToggle() {
+    if (!toggleBtn) return;
+    // 「意訳」とは書かない。この拡張は英語を置き換えず、説明を添えるだけのため。
+    toggleBtn.textContent = enabled ? '解説 ON' : '解説 OFF';
+    toggleBtn.setAttribute('aria-pressed', String(enabled));
+    toggleBtn.title = enabled ? 'クリックすると解説の印を隠します' : 'クリックすると解説の印を表示します';
+  }
+
   function createToggle() {
     const btn = document.createElement('button');
     btn.className = 'iiyaku-toggle';
     btn.type = 'button';
-    btn.textContent = enabled ? '意訳 ON' : '意訳 OFF';
-    btn.title = 'クリックするとページを再読み込みして ON / OFF を切り替えます';
+    toggleBtn = btn;
+    updateToggle();
     btn.addEventListener('click', async () => {
-      enabled = !enabled;
+      const prev = enabled;
+      applyEnabled(!prev);   // 先に表示を変える。ページの再読み込みはしない
       try {
         await chrome.storage.local.set({ [STORE_KEY]: enabled });
       } catch (e) {
-        console.error('[iiyaku] 設定の保存に失敗:', e);
+        // 保存できなかったのに表示だけ変わっている状態を残さない
+        console.error('[iiyaku] 設定の保存に失敗。表示を元に戻します:', e);
+        applyEnabled(prev);
       }
-      location.reload();   // 状態を確実に反映
     });
     document.body.appendChild(btn);
   }
 
-  /* ---------- 8. 実行 ---------- */
-  if (enabled) {
-    scan(document.body);
-    observer.observe(document.body, { childList: true, subtree: true });
-    bindTip();
+  // 別のタブで切り替えたときも、開いている GitHub のタブへ反映する。
+  try {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== 'local' || !changes[STORE_KEY]) return;
+      const next = changes[STORE_KEY].newValue !== false;
+      if (next !== enabled) applyEnabled(next);
+    });
+  } catch (e) {
+    console.error('[iiyaku] 設定の変更を受け取れません:', e);
   }
+
+  /* ---------- 9. 実行 ---------- */
+  bindTip();        // 監視の ON / OFF に関わらず、入口は一度だけ張る
   createToggle();
+  applyEnabled(enabled);
 })();

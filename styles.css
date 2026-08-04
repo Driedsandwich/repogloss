@@ -1,5 +1,10 @@
 
-/* RepoGloss – styles.css */
+/* RepoGloss – styles.css
+
+   色は GitHub 側の変数（Primer）を先に見て、無ければ OS の配色、
+   それも無ければ固定値へ落とす。GitHub はライト／ダーク／高コントラスト等を
+   OS と独立に選べるため、OS の配色だけを見ると片方だけ暗い、という食い違いが起きる。
+   変数名が将来変わっても、後ろの固定値が残るので壊れない。 */
 
 /* ① 情報アイコン
    文字コードの記号は使わない。U+1F6C8（🛈）は Windows の Segoe UI Symbol には
@@ -16,7 +21,7 @@
   margin-left: 0.25em;
   border: 1px solid currentColor;
   border-radius: 50%;
-  color: #2563eb;               /* blue-600 */
+  color: var(--fgColor-accent, var(--color-accent-fg, #2563eb));
   font-size: 0.78em;
   font-weight: 700;
   font-style: normal;
@@ -42,7 +47,7 @@
 
 .iiyaku-icon:hover::after,
 .iiyaku-icon:focus-visible::after {
-  color: #ffffff;
+  color: var(--bgColor-default, var(--color-canvas-default, #ffffff));
 }
 
 /* キーボードで止まったことが分かるようにする。マウス操作では出さない。 */
@@ -71,8 +76,8 @@
   max-width: 320px;
   padding: 8px 11px;
   border-radius: 6px;
-  background: #1f2328;
-  color: #ffffff;
+  background: var(--bgColor-emphasis, var(--color-neutral-emphasis-plus, #1f2328));
+  color: var(--fgColor-onEmphasis, var(--color-fg-on-emphasis, #ffffff));
   font-size: 13px;
   font-weight: 400;
   line-height: 1.65;
@@ -91,9 +96,9 @@
   bottom: 20px;
   right: 20px;
   font-size: 13px;
-  background: #f3f4f6; /* gray-100 */
-  color: #1f2937; /* gray-800 */
-  border: 1px solid #d1d5db; /* gray-300 */
+  background: var(--bgColor-muted, var(--color-canvas-subtle, #f3f4f6));
+  color: var(--fgColor-default, var(--color-fg-default, #1f2937));
+  border: 1px solid var(--borderColor-default, var(--color-border-default, #d1d5db));
   border-radius: 6px;
   padding: 4px 8px;
   cursor: pointer;
@@ -103,28 +108,41 @@
 }
 
 .iiyaku-toggle:hover {
-  background-color: #e5e7eb;
+  background: var(--bgColor-neutral-muted, var(--color-neutral-muted, #e5e7eb));
 }
 
-/* ダークモード対応 */
+.iiyaku-toggle:focus-visible {
+  outline: 2px solid var(--fgColor-accent, var(--color-accent-fg, #2563eb));
+  outline-offset: 2px;
+}
+
+/* GitHub の変数が取れない場合の受け皿。OS がダークのときだけ効く。 */
 @media (prefers-color-scheme: dark) {
   .iiyaku-icon {
-    color: #60a5fa; /* blue-400 */
+    color: var(--fgColor-accent, var(--color-accent-fg, #60a5fa));
   }
 
   .iiyaku-icon:hover::after,
   .iiyaku-icon:focus-visible::after {
-    color: #0d1117;
+    color: var(--bgColor-default, var(--color-canvas-default, #0d1117));
   }
 
   .iiyaku-toggle {
-    background: #1f2937; /* gray-800 */
-    color: #f3f4f6;
-    border: 1px solid #4b5563; /* gray-600 */
+    background: var(--bgColor-muted, var(--color-canvas-subtle, #1f2937));
+    color: var(--fgColor-default, var(--color-fg-default, #f3f4f6));
+    border: 1px solid var(--borderColor-default, var(--color-border-default, #4b5563));
   }
 
   .iiyaku-toggle:hover {
-    background-color: #374151; /* gray-700 */
+    background: var(--bgColor-neutral-muted, var(--color-neutral-muted, #374151));
+  }
+}
+
+/* 動きを減らす設定にしている人には、装飾のための変化を出さない。 */
+@media (prefers-reduced-motion: reduce) {
+  .iiyaku-icon,
+  .iiyaku-toggle {
+    transition: none;
   }
 }
 

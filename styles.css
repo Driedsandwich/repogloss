@@ -34,13 +34,21 @@
   font-family: Georgia, "Times New Roman", "Hiragino Mincho ProN", serif;
 }
 
-.iiyaku-icon:hover {
+.iiyaku-icon:hover,
+.iiyaku-icon:focus-visible {
   opacity: 1;
   background-color: currentColor;
 }
 
-.iiyaku-icon:hover::after {
+.iiyaku-icon:hover::after,
+.iiyaku-icon:focus-visible::after {
   color: #ffffff;
+}
+
+/* キーボードで止まったことが分かるようにする。マウス操作では出さない。 */
+.iiyaku-icon:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
 }
 
 /* OFF のとき。印を DOM から消さずに隠すだけにしている（消すと ON へ戻したときに
@@ -72,7 +80,9 @@
   white-space: normal;
   word-break: break-word;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
-  pointer-events: none;   /* ツールチップ自身がカーソルを奪わないようにする */
+  /* 説明が長いときに、カーソルを吹き出しへ移して読めるようにする。
+     移した瞬間に消えると、拡大表示している人が最後まで読めない。 */
+  pointer-events: auto;
 }
 
 /* ③ トグルボタン – ON/OFF */
@@ -102,7 +112,8 @@
     color: #60a5fa; /* blue-400 */
   }
 
-  .iiyaku-icon:hover::after {
+  .iiyaku-icon:hover::after,
+  .iiyaku-icon:focus-visible::after {
     color: #0d1117;
   }
 

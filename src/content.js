@@ -72,6 +72,15 @@
     '[aria-hidden="true"]', '.sr-only', '.visually-hidden'
   ].join(',');
 
+  // 既に操作できる要素。この中へ入った印は、それ自体を操作対象にしない。
+  // リンクの中にもう一つ操作要素を作ることになるうえ、印に付けた説明文が
+  // GitHub 本来のリンク名（「Pull requests」）の後ろへ丸ごと足されてしまう。
+  const INTERACTIVE = [
+    'a[href]', 'button', 'summary', 'input', 'select', 'textarea', 'label',
+    '[role="button"]', '[role="link"]', '[role="menuitem"]', '[role="tab"]',
+    '[role="checkbox"]', '[contenteditable="true"]', '[tabindex]:not([tabindex="-1"])'
+  ].join(',');
+
   const handled = new WeakSet();   // 処理済みのテキストノード（分割で生じた断片を含む）
   // このページで印を付けた辞書キー -> 実際に挿入した印の要素。
   // Set ではなく要素を持つのは、GitHub がサイドバー等を描き直すと印ごと
@@ -108,27 +117,91 @@
     // 1秒前後の待ちがあり、こちらからは短くできないため。
     // 説明文は data 属性に持たせ、下の自前ツールチップで即座に出す。
     icon.dataset.iiyaku = ja;
-    icon.setAttribute('role', 'img');   // 中身が空なので読み上げ用の名前を別に与える
-    icon.setAttribute('aria-label', ja);
     return icon;
   }
 
-  /* ---------- 4b. ツールチップ（即時表示） ---------- */
+  // 読み上げとキーボードの扱いは、印が入った場所によって変える。
+  // ・ふつうの文章の中: 印自体に名前を与え、Tab で止まれるようにする
+  // ・リンクやボタンの中: 装飾として扱い、説明は親要素へフォーカスしたときに出す
+  function applyIconSemantics(icon) {
+    const host = icon.parentElement && icon.parentElement.closest(INTERACTIVE);
+    if (host) {
+      icon.setAttribute('aria-hidden', 'true');
+      icon.removeAttribute('role');
+      icon.removeAttribute('aria-label');
+      icon.removeAttribute('tabindex');
+    } else {
+      icon.setAttribute('role', 'img');
+      icon.setAttribute('aria-label', icon.dataset.iiyaku);
+      icon.tabIndex = 0;
+    }
+  }
+
+  /* ---------- 4b. ツールチップ ---------- */
   // アイコン1つずつに listener を付けず、document に1つだけ置いて委譲する。
+  const TIP_ID = 'iiyaku-tooltip';
   let tip = null;
+  let tipIcon = null;        // いま説明を出している印
+  let tipHost = null;        // aria-describedby を付けた相手
+  let tipHostPrevDesc = null;  // 相手が元々持っていた aria-describedby
+
+  const asElement = t => (t && t.nodeType === Node.ELEMENT_NODE ? t : null);
+
+  // host の中にある「この host を入口とする印」を返す。
+  // 大きな要素が tabindex を持つ場合に、無関係な子孫の印を拾わないようにする。
+  function iconInHost(host) {
+    for (const ic of host.querySelectorAll('.iiyaku-icon')) {
+      if (ic.parentElement && ic.parentElement.closest(INTERACTIVE) === host) return ic;
+    }
+    return null;
+  }
+
+  function iconFrom(target) {
+    const el = asElement(target);
+    if (!el) return null;
+    const direct = el.closest('.iiyaku-icon');
+    if (direct) return direct;
+    const host = el.closest(INTERACTIVE);
+    return host ? iconInHost(host) : null;
+  }
+
+  const inTooltip = target => {
+    const el = asElement(target);
+    return !!(el && el.closest('.iiyaku-tooltip'));
+  };
 
   function hideTip() {
+    if (tipHost) {
+      // 相手が元から持っていた説明を消さない
+      if (tipHostPrevDesc === null) tipHost.removeAttribute('aria-describedby');
+      else tipHost.setAttribute('aria-describedby', tipHostPrevDesc);
+      tipHost = null;
+      tipHostPrevDesc = null;
+    }
     if (tip) { tip.remove(); tip = null; }
+    tipIcon = null;
   }
 
   function showTip(icon) {
+    if (!enabled || !icon) return;
+    if (tipIcon === icon && tip) return;   // 同じ印なら描き直さない
     hideTip();
     const text = icon.dataset.iiyaku;
     if (!text) return;
+
     tip = document.createElement('div');
     tip.className = 'iiyaku-tooltip';
+    tip.id = TIP_ID;
+    tip.setAttribute('role', 'tooltip');
     tip.textContent = text;
     document.body.appendChild(tip);
+    tipIcon = icon;
+
+    // 読み上げ用の関連付け。リンクの中の印は、リンク自体を入口にする。
+    const host = icon.parentElement && icon.parentElement.closest(INTERACTIVE);
+    tipHost = host || icon;
+    tipHostPrevDesc = tipHost.getAttribute('aria-describedby');
+    tipHost.setAttribute('aria-describedby', tipHostPrevDesc ? `${tipHostPrevDesc} ${TIP_ID}` : TIP_ID);
 
     // 画面外へはみ出さないよう、右端・下端で寄せる／上に出す
     const r = icon.getBoundingClientRect();
@@ -136,12 +209,16 @@
     const vw = document.documentElement.clientWidth;
     const vh = document.documentElement.clientHeight;
     let left = r.left + window.scrollX;
-    let top  = r.bottom + window.scrollY + 6;
+    let top = r.bottom + window.scrollY + 6;
     const maxLeft = window.scrollX + vw - t.width - 8;
     if (left > maxLeft) left = Math.max(window.scrollX + 8, maxLeft);
     if (r.bottom + t.height + 12 > vh) top = r.top + window.scrollY - t.height - 6;
     tip.style.left = left + 'px';
-    tip.style.top  = top + 'px';
+    tip.style.top = top + 'px';
+  }
+
+  function toggleTip(icon) {
+    if (tipIcon === icon && tip) hideTip(); else showTip(icon);
   }
 
   function bindTip() {
@@ -149,14 +226,49 @@
     // 表示中に印が DOM から消えた場合（GitHub の再描画など）に
     // mouseout が来ず、ツールチップが residual として残る。
     document.addEventListener('mouseover', e => {
-      const icon = e.target.closest && e.target.closest('.iiyaku-icon');
+      if (inTooltip(e.target)) return;   // 吹き出しの上に来ただけなら消さない
+      const icon = iconFrom(e.target);
       if (icon) showTip(icon); else hideTip();
     }, true);
     document.addEventListener('mouseout', e => {
-      const icon = e.target.closest && e.target.closest('.iiyaku-icon');
-      if (icon) hideTip();
+      // 吹き出しへカーソルを移す途中で消さない（長い説明を読めるようにする）
+      if (inTooltip(e.relatedTarget) || iconFrom(e.relatedTarget)) return;
+      if (iconFrom(e.target)) hideTip();
     }, true);
-    // スクロールや画面遷移で置き去りにならないようにする
+
+    // キーボード。Tab で入口に止まったら出し、離れたら消す。
+    document.addEventListener('focusin', e => {
+      const icon = iconFrom(e.target);
+      if (icon) showTip(icon); else hideTip();
+    }, true);
+    document.addEventListener('focusout', e => {
+      if (iconFrom(e.target)) hideTip();
+    }, true);
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') { if (tip) hideTip(); return; }
+      const el = asElement(e.target);
+      if (!el || !el.classList.contains('iiyaku-icon')) return;
+      if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+        e.preventDefault();   // Space でページが送られないようにする
+        toggleTip(el);
+      }
+    }, true);
+
+    // 触って操作する端末と、留めて読みたい場合。
+    document.addEventListener('click', e => {
+      const el = asElement(e.target);
+      const icon = el && el.closest('.iiyaku-icon');
+      if (icon) {
+        // リンクの中の印を押しても、そのリンクへ移動しないようにする
+        e.preventDefault();
+        e.stopPropagation();
+        toggleTip(icon);
+        return;
+      }
+      if (!inTooltip(e.target)) hideTip();
+    }, true);
+
+    // スクロールや画面の変化で置き去りにならないようにする
     window.addEventListener('scroll', hideTip, true);
     window.addEventListener('resize', hideTip);
   }
@@ -191,6 +303,7 @@
       handled.add(tail);                                    // 断片を再処理しない
       const icon = makeIcon(DICT[hits[i].key]);
       parent.insertBefore(icon, tail);
+      applyIconSemantics(icon);                             // 入った場所を見てから決める
       glossed.set(hits[i].key, icon);   // 実際に挿入できたものだけ記録する
     }
     handled.add(node);

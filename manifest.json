@@ -12,7 +12,7 @@
   },
   "content_scripts": [
     {
-      "matches": ["*://github.com/*"],
+      "matches": ["https://github.com/*"],
       "js": ["src/content.js"],
       "css": ["styles.css"]
     }
@@ -20,7 +20,7 @@
   "web_accessible_resources": [
     {
       "resources": ["locales/dict.json"],
-      "matches": ["*://github.com/*"]
+      "matches": ["https://github.com/*"]
     }
   ]
 }

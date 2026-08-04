@@ -1,5 +1,6 @@
 // RepoGloss – content.js
 // GitHub 上の英語をそのまま残し、辞書に載っている概念語へ ⓘ を添えて日本語の説明を出す。
+// 語の判定そのものは src/matcher.js にある（Node からも同じコードを呼んで検証するため）。
 (async () => {
   /* ---------- 0. ON / OFF 状態 ---------- */
   // 設定は chrome.storage.local に置く。localStorage は「いま開いているサイト側」の
@@ -23,43 +24,13 @@
     console.error('[iiyaku] dict.json 読み込み失敗:', e);
     return;
   }
-  const KEYS = Object.keys(DICT);
-  if (KEYS.length === 0) return;
-
-  /* ---------- 2. 正規表現 ---------- */
-  const esc  = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const norm = s => s.trim().toLowerCase().replace(/\s+/g, ' ');
-
-  // 長いキーから順に並べる。正規表現の | は左から先に当たるので、
-  // 'pull' が 'pull request' より前にあると「Pull requests」に
-  // pull（取り込む操作）の説明が付いてしまう。
-  // repository -> repositories のように y で終わる語は s を足すだけでは
-  // 複数形にならないので、綴りの変わる形も候補に並べておく。
-  const VARIANTS = KEYS.flatMap(k => (k.endsWith('y') ? [k, k.slice(0, -1) + 'ies'] : [k]));
-  const PATTERN = VARIANTS
-    .slice()
-    .sort((a, b) => b.length - a.length)
-    .map(k => esc(k).replace(/ /g, '\\s+'))
-    .join('|');
-  // 末尾の (?:e?s)? は単複の揺れを吸収する。GitHub の画面では
-  // "Pull requests" のように複数形で出る語が多く、これが無いと
-  // 単数形キー 'pull request' の後ろの \b が s に阻まれ、
-  // 代わりに 'pull'（取り込む操作）だけに当たってしまう。
-  const REG_G = new RegExp(`\\b(?:${PATTERN})(?:e?s)?\\b`, 'gi');  // 走査用（lastIndex を持つ）
-  const REG_T = new RegExp(`\\b(?:${PATTERN})(?:e?s)?\\b`, 'i');   // 足切り用（状態を持たない）
-
-  // 複数形で一致した語は、そのままでは辞書に無い。単数形へ戻して引き直し、
-  // 辞書のキーを返す。"Pull requests" と "pull request" は同じキーになる。
-  function lookupKey(word) {
-    const n = norm(word);
-    if (DICT[n]) return n;
-    if (n.endsWith('ies') && DICT[n.slice(0, -3) + 'y']) return n.slice(0, -3) + 'y';  // repositories -> repository
-    if (n.endsWith('es') && DICT[n.slice(0, -2)]) return n.slice(0, -2);   // branches -> branch
-    if (n.endsWith('s')  && DICT[n.slice(0, -1)]) return n.slice(0, -1);   // commits  -> commit
-    return null;
+  const matcher = globalThis.RepoGlossMatcher && globalThis.RepoGlossMatcher.createMatcher(DICT);
+  if (!matcher) {
+    console.error('[iiyaku] matcher.js が読み込まれていないか、辞書が空です');
+    return;
   }
 
-  /* ---------- 3. 走査対象の判定 ---------- */
+  /* ---------- 2. 走査対象の判定 ---------- */
   // コードそのものには注記しない。GitHub のコード表示は、旧来の
   // <pre>/<code>/.blob-code と React 版のコードビューアが併存している。
   const SKIP = [
@@ -97,25 +68,22 @@
     if (el.closest(SKIP)) return false;
     // 辞書に当たらないノードで getComputedStyle を呼ばないよう、正規表現を先に通す。
     // 逆順にすると全テキストノードでレイアウト計算が走り、ページが重くなる。
-    if (!REG_T.test(v)) return false;
+    if (!matcher.test(v)) return false;
     const cs = getComputedStyle(el);
     if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return false;
     if (el.offsetWidth === 0 && el.offsetHeight === 0) return false;
     return true;
   }
 
-  /* ---------- 4. アイコン注入 ---------- */
+  /* ---------- 3. アイコン注入 ---------- */
   // 印は文字コードの記号を使わない。U+1F6C8（🛈）は Windows の Segoe UI Symbol には
   // あるが macOS の標準フォントには無く、豆腐（□）になる。要素は空にして
   // styles.css の ::after で丸と "i" を描くので、フォントに左右されない。
-  // なお ::after の生成内容は DOM のテキストではないため、本文をコピーしても
-  // 印は混ざらないはずだが、これは仕様からの推測で実測していない。
   function makeIcon(ja) {
     const icon = document.createElement('sup');
     icon.className = 'iiyaku-icon';
     // title 属性は使わない。ブラウザ標準のツールチップは表示までに
     // 1秒前後の待ちがあり、こちらからは短くできないため。
-    // 説明文は data 属性に持たせ、下の自前ツールチップで即座に出す。
     icon.dataset.iiyaku = ja;
     return icon;
   }
@@ -137,7 +105,7 @@
     }
   }
 
-  /* ---------- 4b. ツールチップ ---------- */
+  /* ---------- 4. ツールチップ ---------- */
   // アイコン1つずつに listener を付けず、document に1つだけ置いて委譲する。
   const TIP_ID = 'iiyaku-tooltip';
   let tip = null;
@@ -273,27 +241,18 @@
     window.addEventListener('resize', hideTip);
   }
 
+  /* ---------- 5. 注記 ---------- */
   // 1つのテキストノードに含まれる一致すべてへ注記する。
   // 後ろの一致から順に分割すれば、まだ処理していない前方の位置がずれない。
   function annotate(node) {
     if (handled.has(node)) return 0;
-    const text = node.nodeValue;
-    const hits = [];
-    const pending = new Set();   // このノード内での重複も弾く
-    REG_G.lastIndex = 0;
-    let m;
-    while ((m = REG_G.exec(text)) !== null) {
-      const key = lookupKey(m[0]);
-      // 同じ語はページで最初の1回だけ。説明は一度読めば足りるうえ、
-      // git の解説ページのような文書では印が数百個になり本文が読めなくなる。
-      // ただし前に付けた印が DOM から消えていたら、付け直す。
-      const prev = key ? glossed.get(key) : null;
-      if (key && (!prev || !prev.isConnected) && !pending.has(key)) {
-        pending.add(key);
-        hits.push({ end: m.index + m[0].length, key });
-      }
-      if (m.index === REG_G.lastIndex) REG_G.lastIndex++;   // 空一致での無限ループ防止
-    }
+    // 同じ語はページで最初の1回だけ。説明は一度読めば足りるうえ、
+    // git の解説ページのような文書では印が数百個になり本文が読めなくなる。
+    // ただし前に付けた印が DOM から消えていたら、付け直す。
+    const hits = matcher.findHits(node.nodeValue, key => {
+      const prev = glossed.get(key);
+      return !!(prev && prev.isConnected);
+    });
     if (hits.length === 0) return 0;
     const parent = node.parentNode;
     if (!parent) return 0;
@@ -310,7 +269,6 @@
     return hits.length;
   }
 
-  /* ---------- 5. 走査 ---------- */
   function scan(root) {
     if (!root || !root.nodeType) return 0;
     if (root.nodeType === Node.TEXT_NODE) {

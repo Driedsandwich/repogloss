@@ -1,0 +1,40 @@
+name: CI
+
+# 検証だけを行う。公開・配布・ストアへの送信は一切しない。
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: 構文検査
+        run: |
+          node --check src/matcher.js
+          node --check src/content.js
+      - name: 用語判定のテスト
+        run: node --test "tests/**/*.test.js"
+      - name: 構成と文書の整合
+        run: node scripts/verify.mjs
+
+  e2e:
+    # 拡張として実際に読み込んで動かす。Chrome と openssl が要る。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Chrome の場所を確認
+        run: which google-chrome || which google-chrome-stable || which chromium-browser
+      - name: 拡張として読み込んでのテスト
+        run: node --test tests/e2e/extension.e2e.mjs

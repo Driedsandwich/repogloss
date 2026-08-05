@@ -7,7 +7,9 @@
   // 保管庫なので、拡張の設定を入れると github.com のデータを汚すことになる。
   const STORE_KEY = 'iiyakuEnabled';
   const OFF_CLASS = 'iiyaku-off';   // <html> に付けると印だけが CSS で隠れる
-  const TIP_ID = 'iiyaku-tooltip';
+  // 同じ ID がページ側や他の拡張と衝突しないよう、読み込みごとに変える。
+  const UID = 'iiyaku-' + Math.random().toString(36).slice(2, 10);
+  const TIP_ID = UID + '-tip';
 
   let enabled = true;
   try {
@@ -154,7 +156,7 @@
   function triggerKey(trigger) {
     let id = trigger.getAttribute('data-iiyaku-trigger');
     if (!id) {
-      id = 'iiyaku-t' + (++triggerSeq);
+      id = UID + '-t' + (++triggerSeq);
       trigger.setAttribute('data-iiyaku-trigger', id);
     }
     return id;
@@ -203,10 +205,24 @@
   let tip = null;
   let tipAnchor = null;      // 位置の基準にした要素
   let tipDescribed = null;   // aria-describedby を足した相手
-  let tipDescribedPrev = null;  // 相手が元々持っていた aria-describedby
   let tipIcons = [];         // いま出している説明のもと
 
   const asElement = t => (t && t.nodeType === Node.ELEMENT_NODE ? t : null);
+
+  // aria-describedby は空白区切りの集合として足し引きする。
+  // 丸ごと保存して戻すと、表示中にページ側が足した ID を消してしまう。
+  function addDescribedBy(el, token) {
+    const cur = (el.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean);
+    if (!cur.includes(token)) cur.push(token);
+    el.setAttribute('aria-describedby', cur.join(' '));
+  }
+
+  function removeDescribedBy(el, token) {
+    const cur = (el.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean);
+    const next = cur.filter(t => t !== token);
+    if (next.length) el.setAttribute('aria-describedby', next.join(' '));
+    else el.removeAttribute('aria-describedby');
+  }
 
   function iconsForTriggerId(id) {
     return [...document.querySelectorAll(`.iiyaku-icon[data-iiyaku-for="${id}"]`)]
@@ -229,12 +245,7 @@
   }
 
   function hideTip() {
-    if (tipDescribed) {
-      if (tipDescribedPrev === null) tipDescribed.removeAttribute('aria-describedby');
-      else tipDescribed.setAttribute('aria-describedby', tipDescribedPrev);
-      tipDescribed = null;
-      tipDescribedPrev = null;
-    }
+    if (tipDescribed) { removeDescribedBy(tipDescribed, TIP_ID); tipDescribed = null; }
     for (const ic of tipIcons) {
       if (ic.getAttribute('role') === 'button') ic.setAttribute('aria-expanded', 'false');
     }
@@ -272,16 +283,19 @@
   }
 
   function placeTip(anchor) {
-    // 画面外へはみ出さないよう、右端・下端で寄せる／上に出す
+    // viewport 座標で置く（position: fixed）。狭い画面や拡大表示でも
+    // 画面の外へ出ないよう、上下左右を余白の内側へ収める。
     const r = anchor.getBoundingClientRect();
     const t = tip.getBoundingClientRect();
     const vw = document.documentElement.clientWidth;
     const vh = document.documentElement.clientHeight;
-    let left = r.left + window.scrollX;
-    let top = r.bottom + window.scrollY + 6;
-    const maxLeft = window.scrollX + vw - t.width - 8;
-    if (left > maxLeft) left = Math.max(window.scrollX + 8, maxLeft);
-    if (r.bottom + t.height + 12 > vh) top = r.top + window.scrollY - t.height - 6;
+    const M = 8;
+    let left = r.left;
+    if (left + t.width > vw - M) left = vw - t.width - M;
+    if (left < M) left = M;
+    let top = r.bottom + 6;
+    if (top + t.height > vh - M) top = r.top - t.height - 6;
+    if (top < M) top = M;
     tip.style.left = left + 'px';
     tip.style.top = top + 'px';
   }
@@ -302,8 +316,7 @@
     tipAnchor = anchor;
     tipIcons = icons;
     tipDescribed = describe || anchor;
-    tipDescribedPrev = tipDescribed.getAttribute('aria-describedby');
-    tipDescribed.setAttribute('aria-describedby', tipDescribedPrev ? `${tipDescribedPrev} ${TIP_ID}` : TIP_ID);
+    addDescribedBy(tipDescribed, TIP_ID);
     for (const ic of icons) {
       if (ic.getAttribute('role') === 'button') ic.setAttribute('aria-expanded', 'true');
     }

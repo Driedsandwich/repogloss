@@ -225,6 +225,61 @@ test('拡張として読み込んだ状態で動く', async t => {
     );
   });
 
+  /* ---------- aria-describedby の共存 ---------- */
+
+  await t.test('もともとの aria-describedby と、表示中に足された ID を壊さない', async () => {
+    const r = await tab.evaluate(`(() => {
+      const host = document.getElementById('aria-host');
+      host.focus();
+      const during = host.getAttribute('aria-describedby');
+      // 表示中に、ページ側が別の ID を足したことにする
+      host.setAttribute('aria-describedby', during + ' dynamic-help');
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      return { during, after: host.getAttribute('aria-describedby') };
+    })()`);
+    assert.ok(r.during.split(/\s+/).includes('existing-help'), `元の ID が消えている: ${r.during}`);
+    assert.ok(r.during.split(/\s+/).length === 2, `表示中の token が2つでない: ${r.during}`);
+    assert.deepEqual(r.after.split(/\s+/).sort(), ['dynamic-help', 'existing-help']);
+  });
+
+  await t.test('ツールチップの ID がページ側の要素と衝突しない', async () => {
+    const r = await tab.evaluate(`(() => {
+      document.querySelector('#prose .iiyaku-icon').focus();
+      const tip = document.querySelector('.iiyaku-tooltip');
+      const dupes = document.querySelectorAll('[id="' + tip.id + '"]').length;
+      const legacy = document.getElementById('iiyaku-tooltip');
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      return { id: tip.id, dupes, legacyIsOurs: legacy ? legacy.classList.contains('iiyaku-tooltip') : null };
+    })()`);
+    assert.equal(r.dupes, 1, 'ツールチップと同じ ID の要素が複数ある');
+    assert.notEqual(r.id, 'iiyaku-tooltip', 'ID が固定のまま');
+    assert.equal(r.legacyIsOurs, false, 'ページ側の同名要素を自分のものと取り違えている');
+  });
+
+  /* ---------- 狭い画面での表示 ---------- */
+
+  await t.test('320px 幅でも吹き出しが画面の外へ出ない', async () => {
+    await cdp.send('Emulation.setDeviceMetricsOverride',
+      { width: 320, height: 640, deviceScaleFactor: 1, mobile: false }, tab.sessionId);
+    await sleep(200);
+    const r = await tab.evaluate(`(() => {
+      const i = document.querySelector('#edge .iiyaku-icon') || document.querySelector('#prose .iiyaku-icon');
+      i.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      const tip = document.querySelector('.iiyaku-tooltip');
+      if (!tip) return null;
+      const b = tip.getBoundingClientRect();
+      return { left: Math.round(b.left), right: Math.round(b.right), top: Math.round(b.top),
+               bottom: Math.round(b.bottom), vw: document.documentElement.clientWidth,
+               vh: document.documentElement.clientHeight };
+    })()`);
+    assert.ok(r, '吹き出しが出ない');
+    assert.ok(r.left >= 0 && r.right <= r.vw, `横にはみ出している: ${JSON.stringify(r)}`);
+    assert.ok(r.top >= 0 && r.bottom <= r.vh, `縦にはみ出している: ${JSON.stringify(r)}`);
+    await tab.evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); true`);
+    await cdp.send('Emulation.clearDeviceMetricsOverride', {}, tab.sessionId);
+    await sleep(200);
+  });
+
   /* ---------- これまでの動作を壊していないこと ---------- */
 
   await t.test('コード表示部分には印が付かない', async () => {

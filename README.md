@@ -2,7 +2,7 @@
 
 GitHub のページで、Git / GitHub 固有の英単語の右に小さな ⓘ を付ける Chrome 拡張です。ⓘ にカーソルを乗せると日本語の説明が出ます。英語表示はそのまま残ります。
 
-![Version](https://img.shields.io/badge/version-1.7.1-blue)
+![Version](https://img.shields.io/badge/version-1.8.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 ![Manifest](https://img.shields.io/badge/manifest-v3-green)
 
@@ -41,7 +41,7 @@ GitHub のページで、Git / GitHub 固有の英単語の右に小さな ⓘ �
 
 ## インストール
 
-**[Chrome ウェブストアで公開しています](https://chromewebstore.google.com/detail/ihkkhkleamggokepaelapoiabgmpljnn)**（2026-08-03 公開・v1.7.1）。
+**[Chrome ウェブストアで公開しています](https://chromewebstore.google.com/detail/ihkkhkleamggokepaelapoiabgmpljnn)**。ストアに出ているのは v1.7.1（2026-08-03 公開）で、この版 v1.8.0 はまだ提出していません。
 
 <details>
 <summary>ソースから手動で読み込む場合</summary>
@@ -122,6 +122,7 @@ This extension is not affiliated with, endorsed by, or sponsored by GitHub, Inc.
 
 | Version | 内容 |
 |---|---|
+| 1.8.0 | **ON / OFF でページを読み直さないようにした。** これまでは切り替えのたびにページ全体を読み込み直しており、書きかけの Issue コメントやスクロール位置が失われていた。**説明をキーボードでも開けるようにした。** Tab で印に止まると説明が出て、Escape で閉じる。リンクやボタンの中にある印は、そのリンク自体に止まったときに出す（読み上げソフトで GitHub 本来のリンク名の後ろへ解説文が足されていた問題も直る）。**権限の説明を実態に合わせた。** Chrome API の権限（`storage`）と、コンテンツスクリプトを差し込むサイトの範囲（`https://github.com/*`）を分けて書き、対象を HTTPS に限定した |
 | 1.7.1 | 「同じ語は最初の1回だけ」の実装の不具合を3件修正。①画面を読み直さずに移動したとき、前の画面で印を付けた語が飛ばされていた ②GitHub が画面の一部を描き直して印ごと消えると、その語に二度と印が付かなかった ③画面遷移の経路によって、同じ語に印が重複して付くことがあった |
 | 1.7.0 | 同じ語はページで最初の1回だけ印を付けるようにした。git の解説ページのように用語が繰り返される文書で印が数百個になり、本文が読めなくなっていたため（実測 843 → 43 個）。印に使っていた文字が macOS のフォントに無く Mac では表示されていなかった問題を修正（文字に依存しない描画へ変更）。ツールチップを標準の `title` から自前描画へ変え、待ちなく出るようにした |
 | 1.6.0 | 辞書を概念語 61 語へ絞り、説明文を全面的に書き直し。用語判定の不具合を修正（1 要素につき 1 個しか印が付かない／キーの優先順／単複の揺れ／コード領域の除外）。設定の保存先を `chrome.storage.local` へ変更。`RepoGloss` へ改名 |

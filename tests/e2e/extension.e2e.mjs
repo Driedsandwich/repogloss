@@ -345,6 +345,33 @@ test('拡張として読み込んだ状態で動く', async t => {
     await sleep(200);
   });
 
+  await t.test('環境が変わっても字形と形が崩れない（Windows 想定）', async () => {
+    const r = await tab.evaluate(`(() => {
+      const i = document.querySelector('.iiyaku-icon[role="button"]');
+      const tb = document.querySelector('.iiyaku-toggle');
+      if (!i) return { error: '単独の印が無い' };
+      if (!tb) return { error: '切替ボタンが無い' };
+      i.focus();
+      const tip = document.querySelector('.iiyaku-tooltip');
+      if (!tip) return { error: '説明が出ない' };
+      const ib = i.getBoundingClientRect();
+      const f = el => getComputedStyle(el).fontFamily;
+      const JA = /Yu Gothic UI|Hiragino Sans|Noto Sans CJK|Meiryo/;
+      return {
+        // 日本語の字形を持つフォントを、こちらで指定できているか
+        tipHasJa: JA.test(f(tip)),
+        toggleHasJa: JA.test(f(tb)),
+        // 印は丸なので、縦横が崩れると欠ける
+        square: Math.abs(ib.width - ib.height) < 1.5,
+        drawn: ib.width > 6 && ib.height > 6,
+        // 吹き出しが潰れていない
+        tipBox: tip.getBoundingClientRect().height > 10
+      };
+    })()`);
+    await tab.evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); true`);
+    assert.deepEqual(r, { tipHasJa: true, toggleHasJa: true, square: true, drawn: true, tipBox: true });
+  });
+
   await t.test('コード表示部分には印が付かない', async () => {
     assert.equal(await tab.evaluate(`document.querySelectorAll('#code .iiyaku-icon').length`), 0);
   });

@@ -36,7 +36,9 @@
 
 .iiyaku-icon::after {
   content: "i";
-  font-family: Georgia, "Times New Roman", "Hiragino Mincho ProN", serif;
+  /* Windows は Times New Roman / Georgia、macOS は Georgia / Hiragino Mincho、
+     Linux は Liberation Serif。どれかは必ずあるので、印の "i" は豆腐にならない。 */
+  font-family: Georgia, "Times New Roman", "Liberation Serif", "Hiragino Mincho ProN", serif;
 }
 
 .iiyaku-icon:hover,
@@ -87,12 +89,21 @@
   border-radius: 6px;
   background: var(--bgColor-emphasis, var(--color-neutral-emphasis-plus, #1f2328));
   color: var(--fgColor-onEmphasis, var(--color-fg-on-emphasis, #ffffff));
+  /* 説明文は日本語なので、字形を持つフォントを OS ごとに明示する。
+     指定しないと GitHub の指定（Windows では Segoe UI）が効き、日本語の
+     字形が無いために OS 既定のフォントへ落ちる。どれに落ちるかは環境任せで、
+     行の高さや字面が揃わない。Windows は Yu Gothic UI / Meiryo、
+     macOS は Hiragino Sans、Linux は Noto Sans CJK JP を先に見る。 */
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Yu Gothic UI",
+               "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans CJK JP",
+               Meiryo, sans-serif;
   font-size: 13px;
   font-weight: 400;
-  line-height: 1.65;
+  line-height: 1.7;
   text-align: left;
   white-space: normal;
-  word-break: break-word;
+  /* 日本語は語の途中で折り返してよい。英単語は overflow-wrap 側で処理する */
+  word-break: normal;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
   /* 説明が長いときに、カーソルを吹き出しへ移して読めるようにする。
      移した瞬間に消えると、拡大表示している人が最後まで読めない。 */
@@ -118,6 +129,9 @@
   position: fixed;
   bottom: 20px;
   right: 20px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Yu Gothic UI",
+               "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans CJK JP",
+               Meiryo, sans-serif;
   font-size: 13px;
   background: var(--bgColor-muted, var(--color-canvas-subtle, #f3f4f6));
   color: var(--fgColor-default, var(--color-fg-default, #1f2937));

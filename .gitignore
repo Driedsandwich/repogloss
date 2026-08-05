@@ -11,3 +11,6 @@ Thumbs.db
 
 # 配布物（ストア提出用の ZIP はリポジトリの外で作る）
 *.zip
+
+# 配布物を並べる場所（scripts/package-stage.mjs が作る）
+dist/

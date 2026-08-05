@@ -4,6 +4,8 @@
   "description": "検証用の設定のみ。拡張本体は依存パッケージを持たない",
   "scripts": {
     "test": "node --check src/matcher.js && node --check src/content.js && node --test \"tests/**/*.test.js\" && node scripts/verify.mjs",
-    "test:e2e": "node --test tests/e2e/extension.e2e.mjs"
+    "test:e2e": "node --test tests/e2e/extension.e2e.mjs",
+    "package:stage": "node scripts/package-stage.mjs",
+    "package:verify": "node scripts/package-stage.mjs --verify"
   }
 }

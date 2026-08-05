@@ -6,7 +6,7 @@
 // 最後に表示する。dist/ は Git の管理外（.gitignore）。
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, cpSync, readdirSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { PACKAGE_FILES } from './package-files.mjs';
 
@@ -24,7 +24,8 @@ function walk(dir, base = dir) {
   for (const name of readdirSync(dir)) {
     const p = join(dir, name);
     if (statSync(p).isDirectory()) out.push(...walk(p, base));
-    else out.push(relative(base, p));
+    // 区切りは / に揃える。Windows は \ を返すので、配布一覧と突き合わない。
+    else out.push(relative(base, p).split(sep).join('/'));
   }
   return out;
 }

@@ -131,15 +131,33 @@
     return !!el && el.tabIndex >= 0 && canHoldFocus(el, known);
   }
 
-  // ファイルツリーやタブのような複合ウィジェットは、項目のうち1つだけが Tab で
-  // 止まり、残りは tabindex="-1" のまま矢印キーで移動する（roving tabindex）。
-  const ROVING_ROLES = ['treeitem', 'option', 'tab', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'radio'];
+  // 矢印キーで移動する複合ウィジェット（roving tabindex）。
+  // 「role があって tabindex が付いている」だけでは、到達できる証明にならない。
+  // 実際に辿り着くには、対応する容器の中にいて、その中に Tab で入れる同種の
+  // 項目が最低1つ必要。単独で置かれた treeitem には誰も到達できない。
+  const COMPOSITE_OF = {
+    treeitem: ['tree'],
+    option: ['listbox'],
+    tab: ['tablist'],
+    menuitem: ['menu', 'menubar'],
+    menuitemcheckbox: ['menu', 'menubar'],
+    menuitemradio: ['menu', 'menubar'],
+    radio: ['radiogroup']
+  };
 
-  function rovingItem(el) {
+  function rovingEntry(el, known = false) {
     const role = el.getAttribute('role');
-    if (!role || !ROVING_ROLES.includes(role)) return false;
-    const ti = el.getAttribute('tabindex');
-    return ti !== null && Number.isInteger(Number(ti));
+    const wanted = COMPOSITE_OF[role];
+    if (!wanted) return null;
+    if (el.tabIndex !== -1) return null;   // 0 以上なら上の tabbable が拾う
+    if (!canHoldFocus(el, known)) return null;
+    const composite = el.closest(wanted.map(r => `[role="${r}"]`).join(','));
+    if (!composite) return null;
+    // 同じ容器の中に、Tab で入れる同種の項目があるか
+    for (const peer of composite.querySelectorAll(`[role="${role}"]`)) {
+      if (peer !== el && peer.tabIndex === 0 && canHoldFocus(peer)) return el;
+    }
+    return null;
   }
 
   // known = true は「host が描画されている先祖である」ことが分かっている場合。
@@ -153,7 +171,7 @@
       return c && tabbable(c) ? c : null;
     }
     if (tabbable(host, known)) return host;
-    return rovingItem(host) ? host : null;
+    return rovingEntry(host, known);
   }
 
   // 印を入れようとしている場所から、扱いを決める。

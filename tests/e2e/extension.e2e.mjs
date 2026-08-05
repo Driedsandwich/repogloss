@@ -122,16 +122,11 @@ test('拡張として読み込んだ状態で動く', async t => {
     );
   });
 
-  await t.test('矢印キーで移動する部品（treeitem 等）も入口として扱う', async () => {
-    // ファイルツリーは1項目だけが Tab で止まり、残りは tabindex="-1" で矢印移動する。
-    // これを到達不能と決めつけると、GitHub のファイル一覧の語が注記されなくなる。
-    const r = await tab.evaluate(`(() => {
-      const i = document.querySelector('#tree-item .iiyaku-icon');
-      return i ? { hidden: i.getAttribute('aria-hidden'),
-                   trig: document.getElementById('tree-item').getAttribute('data-iiyaku-trigger') === i.dataset.iiyakuFor } : null;
-    })()`);
-    assert.ok(r, 'treeitem の中に印が無い');
-    assert.deepEqual(r, { hidden: 'true', trig: true });
+  await t.test('矢印キーの入口が無い項目は、入口として扱わない', async () => {
+    // role と tabindex があるだけでは到達できる証明にならない。この検証ページの
+    // tree には Tab で入れる項目（tabindex=0）が無いので、注記を見送る。
+    assert.equal(
+      await tab.evaluate(`document.getElementById('tree-item').querySelectorAll('.iiyaku-icon').length`), 0);
   });
 
   await t.test('装飾扱いの印には、必ず到達できる入口がある（全件）', async () => {

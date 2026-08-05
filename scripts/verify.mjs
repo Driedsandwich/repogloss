@@ -133,6 +133,7 @@ check('辞書: 説明が極端に短い項目がない（20字以上）', tooSho
 /* ---------- 文書と実物の数字を合わせる ---------- */
 const readme = read('README.md');
 const design = read('DESIGN.md');
+const store = read('STORE_LISTING.md');
 const count = keys.length;
 check(`README の語数が辞書と一致する（辞書=${count}）`, readme.includes(`**${count} 語**`) || readme.includes(`${count} 語`), 'README に語数の記載が見つからない');
 check(`DESIGN の語数が辞書と一致する（辞書=${count}）`, design.includes(`${count} 語`) || design.includes(`全 ${count} キー`));
@@ -142,6 +143,17 @@ const wrongCounts = [...readmeNow.matchAll(/(\d+)\s*語/g)].map(mm => Number(mm[
 check('README の説明部分に、辞書と違う語数が残っていない', wrongCounts.length === 0, `見つかった数字: ${wrongCounts.join(', ')}`);
 check(`README のバッジが manifest の version と一致する（${manifest.version}）`, readme.includes(`version-${manifest.version}-`));
 check(`README の変更履歴に ${manifest.version} の行がある`, readme.includes(`| ${manifest.version} |`));
+check(`STORE_LISTING が今回の提出版 ${manifest.version} を指している`, store.includes(manifest.version),
+  'ストア掲載メモに現在のバージョンが出てこない');
+
+/* ---------- 権限の説明が文書間でそろっているか ---------- */
+// 「storage のみ」と書くと、github.com のページ本文を読むことが伝わらない。
+for (const [name, body] of [['README.md', readme], ['PRIVACY.md', read('PRIVACY.md')], ['STORE_LISTING.md', store]]) {
+  check(`${name} に古い対象サイトの書き方（*://）が残っていない`, !body.includes('*://github.com/*'));
+  check(`${name} が API 権限とサイトアクセスを分けて書いている`,
+    body.includes('サイトアクセス') && body.includes('https://github.com/*'));
+}
+
 /* ---------- CSS と JS のクラス名 ---------- */
 const css = read('styles.css');
 for (const cls of ['iiyaku-icon', 'iiyaku-toggle', 'iiyaku-tooltip', 'iiyaku-off']) {

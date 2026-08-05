@@ -33,14 +33,43 @@ test('拡張として読み込んだ状態で動く', async t => {
     await tab.evaluate(`document.querySelectorAll('.iiyaku-icon').length`));
   assert.ok(icons > 0, '印が1つも付いていない');
 
+  /* ---------- 編集できる領域を変えない ---------- */
+
+  await t.test('編集できる領域には印を入れない（属性の書き方4通り）', async () => {
+    assert.deepEqual(
+      await tab.evaluate(`['ce-true','ce-empty','ce-plain','ce-parent','ce-child','draft']
+        .map(id => document.getElementById(id).querySelectorAll?.('.iiyaku-icon').length ?? 0)`),
+      [0, 0, 0, 0, 0, 0]
+    );
+  });
+
+  await t.test('編集できる領域の中身が1文字も変わっていない', async () => {
+    assert.deepEqual(
+      await tab.evaluate(`[
+        document.getElementById('ce-true').innerHTML,
+        document.getElementById('ce-empty').textContent,
+        document.getElementById('ce-plain').childNodes.length,
+        document.getElementById('ce-parent').innerHTML,
+        document.getElementById('draft').value
+      ]`),
+      ['a fork of the project', 'the upstream repo', 1, '<span id="ce-child">your token here</span>', '書きかけ clone']
+    );
+  });
+
+  await t.test('編集領域にあった語は、後のふつうの文章で説明される', async () => {
+    // 編集領域で「使った」ことにされず、次の出現へ回っていること
+    assert.equal(
+      await tab.evaluate(`document.querySelectorAll('#prose-after .iiyaku-icon').length`), 4);
+  });
+
   await t.test('コード表示部分には印が付かない', async () => {
     assert.equal(await tab.evaluate(`document.querySelectorAll('#code .iiyaku-icon').length`), 0);
   });
 
   await t.test('リンクの中の印は装飾扱いで、リンク名を汚さない', async () => {
-    assert.equal(await tab.evaluate(`document.querySelector('#nav-pr').textContent.trim()`), 'Pull requests');
+    assert.equal(await tab.evaluate(`document.querySelector('#nav-issues').textContent.trim()`), 'Issues');
     assert.deepEqual(
-      await tab.evaluate(`(() => { const i = document.querySelector('#nav-pr .iiyaku-icon');
+      await tab.evaluate(`(() => { const i = document.querySelector('#nav-issues .iiyaku-icon');
         return i ? [i.getAttribute('aria-hidden'), i.hasAttribute('aria-label'), i.hasAttribute('tabindex')] : 'なし'; })()`),
       ['true', false, false]
     );

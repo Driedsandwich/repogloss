@@ -33,8 +33,14 @@
   /* ---------- 2. 走査対象の判定 ---------- */
   // コードそのものには注記しない。GitHub のコード表示は、旧来の
   // <pre>/<code>/.blob-code と React 版のコードビューアが併存している。
+  // 編集中の領域には絶対に触れない。表示を助ける拡張が、利用者が書いている
+  // DOM を書き換えると、選択範囲・取り消し履歴・貼り付け・送信内容が壊れうる。
+  // contenteditable は "true" だけでなく、属性のみ・plaintext-only・
+  // 祖先からの継承もあるため、closest() で上へたどって判定する。
+  const EDITABLE = '[contenteditable]:not([contenteditable="false"])';
   const SKIP = [
-    'pre', 'code', 'textarea', 'script', 'style', 'svg',
+    'pre', 'code', 'textarea', 'input', 'select', 'script', 'style', 'svg',
+    EDITABLE,
     '.blob-code', '.js-file-line',
     '.react-code-lines', '.react-code-line-contents', '.react-blob-print-hide',
     '.cm-editor', '.CodeMirror', '.highlight', '.snippet-clipboard-content',

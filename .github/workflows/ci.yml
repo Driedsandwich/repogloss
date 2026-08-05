@@ -38,3 +38,38 @@ jobs:
         run: which google-chrome || which google-chrome-stable || which chromium-browser
       - name: 拡張として読み込んでのテスト
         run: node --test tests/e2e/extension.e2e.mjs
+
+  # 配布物が OS をまたいで同じになるかを測る。改行が揺れると合算ハッシュが変わる。
+  package-hash:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - name: 判定と構成の検査
+        run: npm test
+      - name: 配布物を並べて合算ハッシュを出す
+        run: npm run package:stage
+
+  # Windows の実機に近い環境で、拡張として読み込めるかを試す。
+  # CDP のパイプ方式が Windows で通るかは未知のため、落ちても CI 全体は止めない
+  # （結果は記録し、通らなければ別途対応する）。
+  e2e-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - name: Chrome の場所
+        run: |
+          if (Test-Path "C:\Program Files\Google\Chrome\Application\chrome.exe") { echo "found" } else { echo "not found" }
+        shell: pwsh
+      - name: 拡張として読み込んでのテスト（試行）
+        continue-on-error: true
+        run: npm run test:e2e

@@ -17,10 +17,17 @@
   // pull（取り込む操作）の説明が付いてしまう。
   // repository -> repositories のように y で終わる語は s を足すだけでは
   // 複数形にならないので、綴りの変わる形も候補に並べておく。
+  // 綴りの決まりに沿った複数形だけを作る。以前は語末に (?:e?s)? を足していたが、
+  // それだと branchs や repositorys のような誤った綴りまで拾っていた。
+  function pluralsOf(key) {
+    if (/[^aeiou]y$/.test(key)) return [key, key.slice(0, -1) + 'ies'];  // repository -> repositories
+    if (/(s|x|z|ch|sh)$/.test(key)) return [key, key + 'es'];            // branch -> branches
+    return [key, key + 's'];                                             // commit -> commits
+  }
+
   function buildPattern(keys) {
-    const variants = keys.flatMap(k => (k.endsWith('y') ? [k, k.slice(0, -1) + 'ies'] : [k]));
-    return variants
-      .slice()
+    return keys
+      .flatMap(pluralsOf)
       .sort((a, b) => b.length - a.length)
       .map(k => esc(k).replace(/ /g, '\\s+'))
       .join('|');
@@ -30,12 +37,11 @@
     const keys = Object.keys(dict);
     if (keys.length === 0) return null;
     const pattern = buildPattern(keys);
-    // 末尾の (?:e?s)? は単複の揺れを吸収する。GitHub の画面では
-    // "Pull requests" のように複数形で出る語が多く、これが無いと
-    // 単数形キー 'pull request' の後ろの \b が s に阻まれ、
-    // 代わりに 'pull'（取り込む操作）だけに当たってしまう。
-    const scanRe = new RegExp(`\\b(?:${pattern})(?:e?s)?\\b`, 'gi');
-    const testRe = new RegExp(`\\b(?:${pattern})(?:e?s)?\\b`, 'i');
+    // 複数形は buildPattern が綴りの決まりに沿って作るので、ここでは足さない。
+    // GitHub の画面は "Pull requests" のように複数形で出る語が多いので、
+    // 複数形そのものを候補に入れておかないと最も目立つタブで当たらない。
+    const scanRe = new RegExp(`\\b(?:${pattern})\\b`, 'gi');
+    const testRe = new RegExp(`\\b(?:${pattern})\\b`, 'i');
 
     // 複数形で一致した語は、そのままでは辞書に無い。単数形へ戻して引き直し、
     // 辞書のキーを返す。"Pull requests" と "pull request" は同じキーになる。
@@ -76,5 +82,5 @@
     };
   }
 
-  return { esc, norm, buildPattern, createMatcher };
+  return { esc, norm, pluralsOf, buildPattern, createMatcher };
 });

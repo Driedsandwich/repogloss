@@ -113,3 +113,20 @@ test('説明文は空でなく、キー自身をそのまま返すだけの項�
     assert.notEqual(DICT[k].trim().toLowerCase(), k);
   }
 });
+
+test('綴りの誤った複数形は拾わない', () => {
+  // 以前は語末へ一律に (?:e?s)? を足していたため、これらも候補になっていた
+  for (const wrong of ['branchs', 'repositorys', 'pushs', 'mergs']) {
+    assert.equal(firstKey(wrong), null, `${wrong} を拾っている`);
+  }
+});
+
+test('正しい複数形は今までどおり当たる', () => {
+  const pairs = [['branches', 'branch'], ['repositories', 'repository'], ['commits', 'commit'],
+                 ['pull requests', 'pull request'], ['force pushes', 'force push'],
+                 ['squash merges', 'squash merge'], ['ssh keys', 'ssh key'],
+                 ['workflow runs', 'workflow run'], ['reviews', 'review'], ['tokens', 'token']];
+  for (const [plural, key] of pairs) {
+    assert.equal(firstKey(plural), key, `${plural} が ${key} にならない`);
+  }
+});

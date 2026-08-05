@@ -2,14 +2,18 @@
 //   node scripts/verify.mjs
 // 目的は「文書に書いた数字・権限・ファイル構成が、実物とずれていないこと」の確認。
 // 落ちたときは、直すべき場所が分かる形で出す。
+//
+// 権限まわりは「増えていないこと」ではなく「この形と完全に同じこと」を見る。
+// 増分だけを見ると、2つ目の content_scripts を足すような広げ方に気づけない。
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { dirname, join, extname } from 'node:path';
 import { PACKAGE_FILES } from './package-files.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const read = p => readFileSync(join(ROOT, p), 'utf8');
 const readJson = p => JSON.parse(read(p));
+const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 let checks = 0;
 const failures = [];
@@ -20,36 +24,46 @@ function check(label, condition, detail = '') {
   return false;
 }
 
-/* ---------- manifest ---------- */
+/* ---------- manifest：形を丸ごと固定する ---------- */
 const manifest = readJson('manifest.json');
-check('manifest: Manifest V3', manifest.manifest_version === 3, `manifest_version=${manifest.manifest_version}`);
-check('manifest: version が x.y.z', /^\d+\.\d+\.\d+$/.test(manifest.version), `version=${manifest.version}`);
 
-// 権限は増やさない。増やすときはここを意図的に書き換える（審査と説明文の同時更新が要る）。
+// 増やすときは、ここと文書と審査の申告を同時に直す、と決めておく
+const ALLOWED_TOP_KEYS = [
+  'manifest_version', 'name', 'version', 'description',
+  'permissions', 'action', 'icons', 'content_scripts', 'web_accessible_resources'
+];
 const ALLOWED_PERMISSIONS = ['storage'];
 const ALLOWED_MATCHES = ['https://github.com/*'];
-check(
-  'manifest: permissions は storage だけ',
-  JSON.stringify(manifest.permissions) === JSON.stringify(ALLOWED_PERMISSIONS),
-  `permissions=${JSON.stringify(manifest.permissions)}`
-);
+const ALLOWED_JS = ['src/matcher.js', 'src/content.js'];
+const ALLOWED_CSS = ['styles.css'];
+const ALLOWED_WAR_RESOURCES = ['locales/dict.json'];
+
+check('manifest: Manifest V3', manifest.manifest_version === 3, `manifest_version=${manifest.manifest_version}`);
+check('manifest: version が x.y.z', /^\d+\.\d+\.\d+$/.test(manifest.version), `version=${manifest.version}`);
+const extraKeys = Object.keys(manifest).filter(k => !ALLOWED_TOP_KEYS.includes(k));
+check('manifest: 想定外の項目が無い', extraKeys.length === 0, `増えた項目: ${extraKeys.join(', ')}`);
+check('manifest: permissions は storage だけ', eq(manifest.permissions, ALLOWED_PERMISSIONS), `permissions=${JSON.stringify(manifest.permissions)}`);
 check('manifest: host_permissions を持たない', !manifest.host_permissions);
 check('manifest: optional_permissions を持たない', !manifest.optional_permissions);
+check('manifest: optional_host_permissions を持たない', !manifest.optional_host_permissions);
 check('manifest: background（常駐処理）を持たない', !manifest.background);
+check('manifest: externally_connectable を持たない', !manifest.externally_connectable);
+check('manifest: content_security_policy を持たない', !manifest.content_security_policy);
 
+check('manifest: content_scripts はちょうど1つ', (manifest.content_scripts ?? []).length === 1,
+  `件数=${(manifest.content_scripts ?? []).length}`);
 const cs = manifest.content_scripts?.[0] ?? {};
-check(
-  'manifest: content_scripts の対象は https の github.com だけ',
-  JSON.stringify(cs.matches) === JSON.stringify(ALLOWED_MATCHES),
-  `matches=${JSON.stringify(cs.matches)}`
-);
-for (const war of manifest.web_accessible_resources ?? []) {
-  check(
-    'manifest: web_accessible_resources の対象も https の github.com だけ',
-    JSON.stringify(war.matches) === JSON.stringify(ALLOWED_MATCHES),
-    `matches=${JSON.stringify(war.matches)}`
-  );
-}
+check('manifest: content_scripts の対象は https の github.com だけ', eq(cs.matches, ALLOWED_MATCHES), `matches=${JSON.stringify(cs.matches)}`);
+check('manifest: 読み込む JS が想定どおり（matcher.js が先）', eq(cs.js, ALLOWED_JS), `js=${JSON.stringify(cs.js)}`);
+check('manifest: 読み込む CSS が想定どおり', eq(cs.css, ALLOWED_CSS), `css=${JSON.stringify(cs.css)}`);
+check('manifest: content_scripts に想定外の設定が無い',
+  Object.keys(cs).every(k => ['matches', 'js', 'css'].includes(k)),
+  `項目=${Object.keys(cs).join(', ')}`);
+
+const war = manifest.web_accessible_resources ?? [];
+check('manifest: web_accessible_resources はちょうど1つ', war.length === 1, `件数=${war.length}`);
+check('manifest: 公開する同梱ファイルは辞書だけ', eq(war[0]?.resources, ALLOWED_WAR_RESOURCES), `resources=${JSON.stringify(war[0]?.resources)}`);
+check('manifest: 公開先も https の github.com だけ', eq(war[0]?.matches, ALLOWED_MATCHES), `matches=${JSON.stringify(war[0]?.matches)}`);
 
 /* ---------- 参照ファイルの実在 ---------- */
 const referenced = [
@@ -57,21 +71,51 @@ const referenced = [
   ...(cs.css ?? []),
   ...Object.values(manifest.icons ?? {}),
   ...Object.values(manifest.action?.default_icon ?? {}),
-  ...(manifest.web_accessible_resources ?? []).flatMap(w => w.resources ?? [])
+  ...war.flatMap(w => w.resources ?? [])
 ];
 for (const f of referenced) {
   check(`manifest が参照する ${f} が実在する`, existsSync(join(ROOT, f)));
+  check(`manifest が参照する ${f} が配布物の一覧に入っている`, PACKAGE_FILES.includes(f));
 }
-check('manifest: matcher.js が content.js より先に読み込まれる',
-  (cs.js ?? []).indexOf('src/matcher.js') === 0,
-  `js=${JSON.stringify(cs.js)}`);
 
 /* ---------- 配布物の一覧 ---------- */
 for (const f of PACKAGE_FILES) check(`配布対象の ${f} が実在する`, existsSync(join(ROOT, f)));
-// manifest が参照するものが、配布物の一覧から漏れていないか（漏れると壊れた ZIP を出す）
-for (const f of referenced) {
-  check(`manifest が参照する ${f} が配布物の一覧に入っている`, PACKAGE_FILES.includes(f));
+
+/* ---------- 配布する JS 全部に、危ない書き方と外部通信が無いか ---------- */
+// content.js だけを見ていると、2つ目の JS を足したときに素通りする。
+const DANGEROUS = [
+  [/\beval\s*\(/, 'eval'],
+  [/new\s+Function\s*\(/, 'new Function'],
+  [/\.innerHTML\b/, 'innerHTML'],
+  [/\.outerHTML\b/, 'outerHTML'],
+  [/insertAdjacentHTML/, 'insertAdjacentHTML'],
+  [/\bXMLHttpRequest\b/, 'XMLHttpRequest'],
+  [/\bWebSocket\b/, 'WebSocket'],
+  [/\bEventSource\b/, 'EventSource'],
+  [/sendBeacon/, 'sendBeacon'],
+  [/\bimportScripts\s*\(/, 'importScripts']
+];
+const stripComments = s => s.replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+for (const f of PACKAGE_FILES.filter(p => extname(p) === '.js')) {
+  const body = stripComments(read(f));
+  for (const [re, name] of DANGEROUS) {
+    check(`${f} が ${name} を使っていない`, !re.test(body));
+  }
+  // 拡張の外へ出る URL が無いこと。github.com は説明用の記述にだけ出る。
+  const urls = [...body.matchAll(/https?:\/\/[^\s'"`)]+/g)].map(m => m[0]);
+  check(`${f} に外部の URL が埋め込まれていない`, urls.length === 0, urls.join(', '));
+  // fetch は同梱辞書の読み込み1か所だけ
+  const fetches = [...body.matchAll(/\bfetch\s*\(([^)]*)/g)].map(m => m[1].trim());
+  const badFetch = fetches.filter(a => a !== 'DICT_URL');
+  check(`${f} の fetch は同梱辞書の読み込みだけ`, badFetch.length === 0, badFetch.join(' / '));
 }
+
+/* ---------- 編集領域を触らない仕掛けが入っているか ---------- */
+// 実際の保証は E2E（tests/e2e）で行う。ここは「消えていないこと」の見張り。
+const content = read('src/content.js');
+check('content.js が編集可能な領域を走査対象から外している',
+  /contenteditable\]:not\(\[contenteditable="false"\]\)/.test(content));
+check('content.js が入力欄も走査対象から外している', /'textarea', 'input', 'select'/.test(content));
 
 /* ---------- 辞書 ---------- */
 const dict = readJson('locales/dict.json');
@@ -89,6 +133,7 @@ check('辞書: 説明が極端に短い項目がない（20字以上）', tooSho
 /* ---------- 文書と実物の数字を合わせる ---------- */
 const readme = read('README.md');
 const design = read('DESIGN.md');
+const store = read('STORE_LISTING.md');
 const count = keys.length;
 check(`README の語数が辞書と一致する（辞書=${count}）`, readme.includes(`**${count} 語**`) || readme.includes(`${count} 語`), 'README に語数の記載が見つからない');
 check(`DESIGN の語数が辞書と一致する（辞書=${count}）`, design.includes(`${count} 語`) || design.includes(`全 ${count} キー`));
@@ -98,18 +143,26 @@ const wrongCounts = [...readmeNow.matchAll(/(\d+)\s*語/g)].map(mm => Number(mm[
 check('README の説明部分に、辞書と違う語数が残っていない', wrongCounts.length === 0, `見つかった数字: ${wrongCounts.join(', ')}`);
 check(`README のバッジが manifest の version と一致する（${manifest.version}）`, readme.includes(`version-${manifest.version}-`));
 check(`README の変更履歴に ${manifest.version} の行がある`, readme.includes(`| ${manifest.version} |`));
+check(`STORE_LISTING が今回の提出版 ${manifest.version} を指している`, store.includes(manifest.version),
+  'ストア掲載メモに現在のバージョンが出てこない');
+
+/* ---------- 権限の説明が文書間でそろっているか ---------- */
+// 「storage のみ」と書くと、github.com のページ本文を読むことが伝わらない。
+for (const [name, body] of [['README.md', readme], ['PRIVACY.md', read('PRIVACY.md')], ['STORE_LISTING.md', store]]) {
+  check(`${name} に古い対象サイトの書き方（*://）が残っていない`, !body.includes('*://github.com/*'));
+  check(`${name} が API 権限とサイトアクセスを分けて書いている`,
+    body.includes('サイトアクセス') && body.includes('https://github.com/*'));
+}
 
 /* ---------- CSS と JS のクラス名 ---------- */
 const css = read('styles.css');
-const content = read('src/content.js');
 for (const cls of ['iiyaku-icon', 'iiyaku-toggle', 'iiyaku-tooltip', 'iiyaku-off']) {
   check(`CSS に .${cls} の定義がある`, css.includes(`.${cls}`));
   check(`content.js が ${cls} を使っている`, content.includes(cls));
 }
 check('content.js が保存キー iiyakuEnabled を変えていない', content.includes("'iiyakuEnabled'"));
-check('content.js に外部への通信がない', !/https?:\/\/(?!github\.com)/.test(content.replace(/^\s*\/\/.*$/gm, '')), '拡張の外へ出る URL が含まれている');
-check('content.js が eval / new Function / innerHTML を使っていない',
-  !/\beval\s*\(|new\s+Function\s*\(|innerHTML|insertAdjacentHTML|outerHTML/.test(content));
+check('ツールチップが狭い画面でも収まる指定を持つ',
+  /max-width:\s*min\(/.test(css) && /box-sizing:\s*border-box/.test(css.split('.iiyaku-tooltip {')[1] ?? ''));
 
 /* ---------- 結果 ---------- */
 const label = `${checks} 件を検査`;

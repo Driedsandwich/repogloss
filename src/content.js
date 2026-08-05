@@ -7,6 +7,8 @@
   // 保管庫なので、拡張の設定を入れると github.com のデータを汚すことになる。
   const STORE_KEY = 'iiyakuEnabled';
   const OFF_CLASS = 'iiyaku-off';   // <html> に付けると印だけが CSS で隠れる
+  const TIP_ID = 'iiyaku-tooltip';
+
   let enabled = true;
   try {
     const got = await chrome.storage.local.get(STORE_KEY);
@@ -33,7 +35,8 @@
   /* ---------- 2. 走査対象の判定 ---------- */
   // コードそのものには注記しない。GitHub のコード表示は、旧来の
   // <pre>/<code>/.blob-code と React 版のコードビューアが併存している。
-  // 編集中の領域には絶対に触れない。表示を助ける拡張が、利用者が書いている
+  //
+  // 編集中の領域にも絶対に触れない。表示を助ける拡張が、利用者が書いている
   // DOM を書き換えると、選択範囲・取り消し履歴・貼り付け・送信内容が壊れうる。
   // contenteditable は "true" だけでなく、属性のみ・plaintext-only・
   // 祖先からの継承もあるため、closest() で上へたどって判定する。
@@ -49,14 +52,23 @@
     '[aria-hidden="true"]', '.sr-only', '.visually-hidden'
   ].join(',');
 
-  // 既に操作できる要素。この中へ入った印は、それ自体を操作対象にしない。
-  // リンクの中にもう一つ操作要素を作ることになるうえ、印に付けた説明文が
-  // GitHub 本来のリンク名（「Pull requests」）の後ろへ丸ごと足されてしまう。
-  const INTERACTIVE = [
-    'a[href]', 'button', 'summary', 'input', 'select', 'textarea', 'label',
-    '[role="button"]', '[role="link"]', '[role="menuitem"]', '[role="tab"]',
-    '[role="checkbox"]', '[contenteditable="true"]', '[tabindex]:not([tabindex="-1"])'
+  // 「印の入口になりうる」要素＝**中身から名前が決まる操作要素**に限る。
+  // ここへ印の名前を足すと、その要素の読み上げ名の後ろへ解説文が丸ごと付く。
+  // 中に別の操作要素を入れるのも避けたい。だから装飾扱いにして親を入口にする。
+  //
+  // 「フォーカスできる要素」全部をここに入れてはいけない。GitHub は本文を
+  // tabindex="0" の大きなスクロール領域で包んでおり、それを入口にすると
+  // 本文中の印がすべてその容器1つにぶら下がる（実測で11個が1か所に集まった）。
+  // 容器は中身から名前が決まらないので、その中の印はふつうの文章として扱う。
+  const HOST_CANDIDATE = [
+    'a[href]', 'button', 'summary', 'label',
+    '[role="button"]', '[role="link"]', '[role="menuitem"]', '[role="menuitemcheckbox"]',
+    '[role="menuitemradio"]', '[role="tab"]', '[role="option"]', '[role="checkbox"]',
+    '[role="radio"]', '[role="switch"]', '[role="treeitem"]'
   ].join(',');
+
+  // 既定でフォーカスを取れる要素（tabindex の指定が無いとき）
+  const NATIVELY_FOCUSABLE = 'a[href], button, input, select, textarea, summary, ' + EDITABLE;
 
   const handled = new WeakSet();   // 処理済みのテキストノード（分割で生じた断片を含む）
   // このページで印を付けた辞書キー -> 実際に挿入した印の要素。
@@ -64,6 +76,7 @@
   // 消えることがあり、「付けた」記録だけが残ると二度と付かなくなるため。
   // 参照先が DOM から外れていたら、付け直しを許す。
   const glossed = new Map();
+  let triggerSeq = 0;
 
   function isTarget(node) {
     const v = node.nodeValue;
@@ -81,104 +94,186 @@
     return true;
   }
 
-  /* ---------- 3. アイコン注入 ---------- */
+  /* ---------- 3. 入口（trigger）の解決 ---------- */
+  // 「見た目や role が操作要素らしいか」ではなく、「実際に Tab で止まれるか」で決める。
+  // label は自分では止まれず、role だけの要素も止まれず、disabled は順路から外れる。
+  // ここを取り違えると、印を装飾扱いにしたのに代わりの入口が無い、という
+  // キーボードから到達できない説明ができてしまう。
+  function tabbable(el) {
+    if (!el || el.disabled) return false;
+    if (el.closest('[inert]')) return false;
+    const ti = el.getAttribute('tabindex');
+    if (ti !== null) {
+      const n = Number(ti);
+      return Number.isInteger(n) && n >= 0;   // -1 も -2 も不正値も順路に無い
+    }
+    return el.matches(NATIVELY_FOCUSABLE);
+  }
+
+  // ファイルツリーやタブのような複合ウィジェットは、項目のうち1つだけが Tab で
+  // 止まり、残りは tabindex="-1" のまま矢印キーで移動する（roving tabindex）。
+  // これらは Tab の順路に無くてもキーボードで到達でき、移動時に focus も動く。
+  // 「Tab で止まれない＝到達できない」と決めつけると、GitHub のファイル一覧に
+  // 出る語が丸ごと注記されなくなる（実測で readme が落ちた）。
+  const ROVING_ROLES = ['treeitem', 'option', 'tab', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'radio'];
+
+  function rovingItem(el) {
+    const role = el.getAttribute('role');
+    if (!role || !ROVING_ROLES.includes(role)) return false;
+    const ti = el.getAttribute('tabindex');
+    return ti !== null && Number.isInteger(Number(ti));   // 属性があれば focus は当てられる
+  }
+
+  function resolveTrigger(host) {
+    if (!host) return null;
+    if (host.tagName === 'LABEL') {
+      // label 自体は止まれない。関連付いた control が入口になる。
+      const c = host.control || host.querySelector('input, select, textarea, button');
+      return c && tabbable(c) ? c : null;
+    }
+    if (tabbable(host)) return host;
+    if (rovingItem(host)) return host;
+    return null;
+  }
+
+  // 印を入れようとしている場所から、扱いを決める。
+  //   standalone … ふつうの文章の中。印そのものを入口にする
+  //   hosted     … 操作要素の中。その要素を入口にし、印は装飾にする
+  //   skip       … 操作要素の中だが入口が無い。ここには注記しない
+  function resolvePlacement(parentEl) {
+    let el = parentEl.closest(HOST_CANDIDATE);
+    if (!el) return { kind: 'standalone' };
+    while (el) {
+      const trigger = resolveTrigger(el);
+      if (trigger) return { kind: 'hosted', trigger };
+      el = el.parentElement && el.parentElement.closest(HOST_CANDIDATE);
+    }
+    return { kind: 'skip' };
+  }
+
+  function triggerKey(trigger) {
+    let id = trigger.getAttribute('data-iiyaku-trigger');
+    if (!id) {
+      id = 'iiyaku-t' + (++triggerSeq);
+      trigger.setAttribute('data-iiyaku-trigger', id);
+    }
+    return id;
+  }
+
+  /* ---------- 4. アイコン注入 ---------- */
   // 印は文字コードの記号を使わない。U+1F6C8（🛈）は Windows の Segoe UI Symbol には
   // あるが macOS の標準フォントには無く、豆腐（□）になる。要素は空にして
   // styles.css の ::after で丸と "i" を描くので、フォントに左右されない。
-  function makeIcon(ja) {
+  function makeIcon(key, term, ja) {
     const icon = document.createElement('sup');
     icon.className = 'iiyaku-icon';
     // title 属性は使わない。ブラウザ標準のツールチップは表示までに
     // 1秒前後の待ちがあり、こちらからは短くできないため。
     icon.dataset.iiyaku = ja;
+    icon.dataset.iiyakuKey = key;
+    icon.dataset.iiyakuTerm = term;
     return icon;
   }
 
-  // 読み上げとキーボードの扱いは、印が入った場所によって変える。
-  // ・ふつうの文章の中: 印自体に名前を与え、Tab で止まれるようにする
-  // ・リンクやボタンの中: 装飾として扱い、説明は親要素へフォーカスしたときに出す
-  function applyIconSemantics(icon) {
-    const host = icon.parentElement && icon.parentElement.closest(INTERACTIVE);
-    if (host) {
+  function applyIconSemantics(icon, placement) {
+    if (placement.kind === 'hosted') {
+      // リンク名の後ろへ解説文が丸ごと足されるのを避けるため、装飾として扱う。
+      // 説明は、入口となる要素にフォーカス／カーソルが来たときに出す。
       icon.setAttribute('aria-hidden', 'true');
       icon.removeAttribute('role');
       icon.removeAttribute('aria-label');
       icon.removeAttribute('tabindex');
+      // 入口側と同じ属性名にしない。同じ名前だと querySelector が
+      // 印自身を入口として拾ってしまう（label の中では印のほうが先に来る）。
+      icon.dataset.iiyakuFor = triggerKey(placement.trigger);
     } else {
-      icon.setAttribute('role', 'img');
-      icon.setAttribute('aria-label', icon.dataset.iiyaku);
+      // 押して開閉するので、role は img ではなく button にする。
+      // 名前は「どの語の解説か」だけの短いものにし、説明文そのものは
+      // ツールチップ側（aria-describedby）に置く。名前と説明が同じ全文だと、
+      // 読み上げで同じ内容が二度読まれる。
+      icon.setAttribute('role', 'button');
+      icon.setAttribute('aria-label', `「${icon.dataset.iiyakuTerm}」の解説`);
+      icon.setAttribute('aria-expanded', 'false');
       icon.tabIndex = 0;
     }
   }
 
-  /* ---------- 4. ツールチップ ---------- */
+  /* ---------- 5. ツールチップ ---------- */
   // アイコン1つずつに listener を付けず、document に1つだけ置いて委譲する。
-  const TIP_ID = 'iiyaku-tooltip';
   let tip = null;
-  let tipIcon = null;        // いま説明を出している印
-  let tipHost = null;        // aria-describedby を付けた相手
-  let tipHostPrevDesc = null;  // 相手が元々持っていた aria-describedby
+  let tipAnchor = null;      // 位置の基準にした要素
+  let tipDescribed = null;   // aria-describedby を足した相手
+  let tipDescribedPrev = null;  // 相手が元々持っていた aria-describedby
+  let tipIcons = [];         // いま出している説明のもと
 
   const asElement = t => (t && t.nodeType === Node.ELEMENT_NODE ? t : null);
 
-  // host の中にある「この host を入口とする印」を返す。
-  // 大きな要素が tabindex を持つ場合に、無関係な子孫の印を拾わないようにする。
-  function iconInHost(host) {
-    for (const ic of host.querySelectorAll('.iiyaku-icon')) {
-      if (ic.parentElement && ic.parentElement.closest(INTERACTIVE) === host) return ic;
-    }
-    return null;
+  function iconsForTriggerId(id) {
+    return [...document.querySelectorAll(`.iiyaku-icon[data-iiyaku-for="${id}"]`)]
+      .filter(ic => ic.isConnected);
   }
 
-  function iconFrom(target) {
-    const el = asElement(target);
-    if (!el) return null;
-    const direct = el.closest('.iiyaku-icon');
+  function triggerOf(icon) {
+    const id = icon.dataset.iiyakuFor;
+    return id ? document.querySelector(`[data-iiyaku-trigger="${id}"]`) : null;
+  }
+
+  // label 自体はフォーカスを取らないが、カーソルは乗る。
+  // その場合は、関連付いた control を入口として扱う。
+  function triggerNear(el) {
+    const direct = el.closest('[data-iiyaku-trigger]');
     if (direct) return direct;
-    const host = el.closest(INTERACTIVE);
-    return host ? iconInHost(host) : null;
+    const label = el.closest('label');
+    const c = label && label.control;
+    return c && c.hasAttribute('data-iiyaku-trigger') ? c : null;
   }
-
-  const inTooltip = target => {
-    const el = asElement(target);
-    return !!(el && el.closest('.iiyaku-tooltip'));
-  };
 
   function hideTip() {
-    if (tipHost) {
-      // 相手が元から持っていた説明を消さない
-      if (tipHostPrevDesc === null) tipHost.removeAttribute('aria-describedby');
-      else tipHost.setAttribute('aria-describedby', tipHostPrevDesc);
-      tipHost = null;
-      tipHostPrevDesc = null;
+    if (tipDescribed) {
+      if (tipDescribedPrev === null) tipDescribed.removeAttribute('aria-describedby');
+      else tipDescribed.setAttribute('aria-describedby', tipDescribedPrev);
+      tipDescribed = null;
+      tipDescribedPrev = null;
+    }
+    for (const ic of tipIcons) {
+      if (ic.getAttribute('role') === 'button') ic.setAttribute('aria-expanded', 'false');
     }
     if (tip) { tip.remove(); tip = null; }
-    tipIcon = null;
+    tipAnchor = null;
+    tipIcons = [];
   }
 
-  function showTip(icon) {
-    if (!enabled || !icon) return;
-    if (tipIcon === icon && tip) return;   // 同じ印なら描き直さない
-    hideTip();
-    const text = icon.dataset.iiyaku;
-    if (!text) return;
+  // 同じ内容を出し直さないための鍵
+  const requestKey = icons => icons.map(i => i.dataset.iiyakuKey).join('|');
 
-    tip = document.createElement('div');
-    tip.className = 'iiyaku-tooltip';
-    tip.id = TIP_ID;
-    tip.setAttribute('role', 'tooltip');
-    tip.textContent = text;
-    document.body.appendChild(tip);
-    tipIcon = icon;
+  function buildTipBody(icons) {
+    const frag = document.createDocumentFragment();
+    const seen = new Set();
+    const list = icons.filter(ic => {
+      const k = ic.dataset.iiyakuKey;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+    for (const ic of list) {
+      const row = document.createElement('div');
+      row.className = 'iiyaku-tooltip-item';
+      if (list.length > 1) {
+        // 1つの操作要素に複数の用語がある場合、どの語の説明かを添える
+        const term = document.createElement('span');
+        term.className = 'iiyaku-tooltip-term';
+        term.textContent = ic.dataset.iiyakuTerm;
+        row.appendChild(term);
+      }
+      row.appendChild(document.createTextNode(ic.dataset.iiyaku));
+      frag.appendChild(row);
+    }
+    return frag;
+  }
 
-    // 読み上げ用の関連付け。リンクの中の印は、リンク自体を入口にする。
-    const host = icon.parentElement && icon.parentElement.closest(INTERACTIVE);
-    tipHost = host || icon;
-    tipHostPrevDesc = tipHost.getAttribute('aria-describedby');
-    tipHost.setAttribute('aria-describedby', tipHostPrevDesc ? `${tipHostPrevDesc} ${TIP_ID}` : TIP_ID);
-
+  function placeTip(anchor) {
     // 画面外へはみ出さないよう、右端・下端で寄せる／上に出す
-    const r = icon.getBoundingClientRect();
+    const r = anchor.getBoundingClientRect();
     const t = tip.getBoundingClientRect();
     const vw = document.documentElement.clientWidth;
     const vh = document.documentElement.clientHeight;
@@ -191,9 +286,54 @@
     tip.style.top = top + 'px';
   }
 
-  function toggleTip(icon) {
-    if (tipIcon === icon && tip) hideTip(); else showTip(icon);
+  // icons: 出す説明のもと（複数可）／anchor: 位置の基準／describe: 説明を結びつける相手
+  function showTip(icons, anchor, describe) {
+    if (!enabled || !icons || icons.length === 0) return;
+    if (tip && tipAnchor === anchor && requestKey(tipIcons) === requestKey(icons)) return;
+    hideTip();
+
+    tip = document.createElement('div');
+    tip.className = 'iiyaku-tooltip';
+    tip.id = TIP_ID;
+    tip.setAttribute('role', 'tooltip');
+    tip.appendChild(buildTipBody(icons));
+    document.body.appendChild(tip);
+
+    tipAnchor = anchor;
+    tipIcons = icons;
+    tipDescribed = describe || anchor;
+    tipDescribedPrev = tipDescribed.getAttribute('aria-describedby');
+    tipDescribed.setAttribute('aria-describedby', tipDescribedPrev ? `${tipDescribedPrev} ${TIP_ID}` : TIP_ID);
+    for (const ic of icons) {
+      if (ic.getAttribute('role') === 'button') ic.setAttribute('aria-expanded', 'true');
+    }
+    placeTip(anchor);
   }
+
+  // 触れた場所から「何を出すか」を決める。
+  //   印そのもの     … その1件だけ
+  //   入口の要素     … その入口に属する印すべて（1つのリンクに複数の用語があるとき）
+  function requestFrom(target) {
+    const el = asElement(target);
+    if (!el) return null;
+    const icon = el.closest('.iiyaku-icon');
+    if (icon) {
+      const trigger = triggerOf(icon);
+      return { icons: [icon], anchor: icon, describe: trigger || icon };
+    }
+    const trigger = triggerNear(el);
+    if (trigger) {
+      const icons = iconsForTriggerId(trigger.getAttribute('data-iiyaku-trigger'));
+      if (icons.length) return { icons, anchor: icons[0], describe: trigger };
+    }
+    return null;
+  }
+
+  const show = req => req && showTip(req.icons, req.anchor, req.describe);
+  const inTooltip = target => {
+    const el = asElement(target);
+    return !!(el && el.closest('.iiyaku-tooltip'));
+  };
 
   function bindTip() {
     // 印以外の場所へカーソルが移ったら消す。mouseout だけに頼ると、
@@ -201,22 +341,22 @@
     // mouseout が来ず、ツールチップが residual として残る。
     document.addEventListener('mouseover', e => {
       if (inTooltip(e.target)) return;   // 吹き出しの上に来ただけなら消さない
-      const icon = iconFrom(e.target);
-      if (icon) showTip(icon); else hideTip();
+      const req = requestFrom(e.target);
+      if (req) show(req); else hideTip();
     }, true);
     document.addEventListener('mouseout', e => {
       // 吹き出しへカーソルを移す途中で消さない（長い説明を読めるようにする）
-      if (inTooltip(e.relatedTarget) || iconFrom(e.relatedTarget)) return;
-      if (iconFrom(e.target)) hideTip();
+      if (inTooltip(e.relatedTarget) || requestFrom(e.relatedTarget)) return;
+      if (requestFrom(e.target)) hideTip();
     }, true);
 
     // キーボード。Tab で入口に止まったら出し、離れたら消す。
     document.addEventListener('focusin', e => {
-      const icon = iconFrom(e.target);
-      if (icon) showTip(icon); else hideTip();
+      const req = requestFrom(e.target);
+      if (req) show(req); else hideTip();
     }, true);
     document.addEventListener('focusout', e => {
-      if (iconFrom(e.target)) hideTip();
+      if (requestFrom(e.target)) hideTip();
     }, true);
     document.addEventListener('keydown', e => {
       if (e.key === 'Escape') { if (tip) hideTip(); return; }
@@ -224,7 +364,8 @@
       if (!el || !el.classList.contains('iiyaku-icon')) return;
       if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
         e.preventDefault();   // Space でページが送られないようにする
-        toggleTip(el);
+        if (tip && tipIcons.length === 1 && tipIcons[0] === el) hideTip();
+        else show(requestFrom(el));
       }
     }, true);
 
@@ -236,7 +377,8 @@
         // リンクの中の印を押しても、そのリンクへ移動しないようにする
         e.preventDefault();
         e.stopPropagation();
-        toggleTip(icon);
+        if (tip && tipIcons.length === 1 && tipIcons[0] === icon) hideTip();
+        else show(requestFrom(icon));
         return;
       }
       if (!inTooltip(e.target)) hideTip();
@@ -247,11 +389,14 @@
     window.addEventListener('resize', hideTip);
   }
 
-  /* ---------- 5. 注記 ---------- */
+  /* ---------- 6. 注記 ---------- */
   // 1つのテキストノードに含まれる一致すべてへ注記する。
   // 後ろの一致から順に分割すれば、まだ処理していない前方の位置がずれない。
   function annotate(node) {
     if (handled.has(node)) return 0;
+    const parent = node.parentNode;
+    if (!parent || parent.nodeType !== Node.ELEMENT_NODE) return 0;
+
     // 同じ語はページで最初の1回だけ。説明は一度読めば足りるうえ、
     // git の解説ページのような文書では印が数百個になり本文が読めなくなる。
     // ただし前に付けた印が DOM から消えていたら、付け直す。
@@ -259,22 +404,27 @@
       const prev = glossed.get(key);
       return !!(prev && prev.isConnected);
     });
-    if (hits.length === 0) return 0;
-    const parent = node.parentNode;
-    if (!parent) return 0;
+    if (hits.length === 0) { handled.add(node); return 0; }
+
+    // 入れる場所の扱いは、印を入れると決まってから調べる。
+    // closest() は祖先をたどるので、一致の有無に関わらず全候補で呼ぶと重い
+    // （実測で大きなページの初期走査が 15ms から 29ms へ倍増した）。
+    const placement = resolvePlacement(parent);
+    if (placement.kind === 'skip') { handled.add(node); return 0; }
 
     for (let i = hits.length - 1; i >= 0; i--) {
       const tail = node.splitText(hits[i].end);
       handled.add(tail);                                    // 断片を再処理しない
-      const icon = makeIcon(DICT[hits[i].key]);
+      const icon = makeIcon(hits[i].key, hits[i].match, DICT[hits[i].key]);
       parent.insertBefore(icon, tail);
-      applyIconSemantics(icon);                             // 入った場所を見てから決める
+      applyIconSemantics(icon, placement);                  // 入った場所を見てから決める
       glossed.set(hits[i].key, icon);   // 実際に挿入できたものだけ記録する
     }
     handled.add(node);
     return hits.length;
   }
 
+  /* ---------- 7. 走査 ---------- */
   function scan(root) {
     if (!root || !root.nodeType) return 0;
     if (root.nodeType === Node.TEXT_NODE) {
@@ -291,7 +441,7 @@
     return n;
   }
 
-  /* ---------- 6. DOM 監視 ---------- */
+  /* ---------- 8. DOM 監視 ---------- */
   // GitHub は画面遷移でページ全体を読み直さないことがあるため、
   // 後から差し込まれた部分も見張る。自分が挿入した断片は handled で弾く。
   let lastUrl = location.href;
@@ -317,7 +467,7 @@
     }
   });
 
-  /* ---------- 7. ON / OFF の切り替え ---------- */
+  /* ---------- 9. ON / OFF の切り替え ---------- */
   let observing = false;
 
   function startRuntime() {
@@ -344,7 +494,7 @@
     updateToggle();
   }
 
-  /* ---------- 8. トグルボタン ---------- */
+  /* ---------- 10. トグルボタン ---------- */
   let toggleBtn = null;
 
   function updateToggle() {
@@ -386,7 +536,7 @@
     console.error('[iiyaku] 設定の変更を受け取れません:', e);
   }
 
-  /* ---------- 9. 実行 ---------- */
+  /* ---------- 11. 実行 ---------- */
   bindTip();        // 監視の ON / OFF に関わらず、入口は一度だけ張る
   createToggle();
   applyEnabled(enabled);

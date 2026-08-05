@@ -5,7 +5,7 @@
  * ここでしか確かめられないのは、肩代わりの効かない部分:
  *   manifest が Chrome に受理されるか / 読み込み順（matcher.js が先か）/
  *   web_accessible_resources を通した辞書の読み込み / 本物の chrome.storage /
- *   タブをまたいだ設定の同期。
+ *   タブをまたいだ設定の同期 / 実際の DOM とフォーカスの挙動。
  * Chrome が無い環境では openssl か Chrome の不在で失敗する。CI では両方入っている。
  */
 import test from 'node:test';
@@ -58,13 +58,130 @@ test('拡張として読み込んだ状態で動く', async t => {
 
   await t.test('編集領域にあった語は、後のふつうの文章で説明される', async () => {
     // 編集領域で「使った」ことにされず、次の出現へ回っていること
-    assert.equal(
-      await tab.evaluate(`document.querySelectorAll('#prose-after .iiyaku-icon').length`), 4);
+    assert.deepEqual(
+      await tab.evaluate(`[...document.querySelectorAll('#prose-after .iiyaku-icon')]
+        .map(i => i.dataset.iiyakuKey).sort()`),
+      ['fork', 'token', 'upstream', 'webhook']
+    );
   });
 
-  await t.test('コード表示部分には印が付かない', async () => {
-    assert.equal(await tab.evaluate(`document.querySelectorAll('#code .iiyaku-icon').length`), 0);
+  /* ---------- 入口（キーボードで到達できる要素）の解決 ---------- */
+
+  await t.test('label は、関連付いた入力欄が入口になる', async () => {
+    const id = await tab.evaluate(`document.querySelector('#lab-for .iiyaku-icon')?.dataset.iiyakuFor ?? null`);
+    assert.ok(id, 'label 内に印が無い');
+    assert.equal(await tab.evaluate(`document.getElementById('inp-for').getAttribute('data-iiyaku-trigger')`), id);
   });
+
+  await t.test('label が入力欄を含む場合も、その入力欄が入口になる', async () => {
+    const id = await tab.evaluate(`document.querySelector('#lab-wrap .iiyaku-icon')?.dataset.iiyakuFor ?? null`);
+    assert.ok(id);
+    assert.equal(await tab.evaluate(`document.getElementById('inp-wrap').getAttribute('data-iiyaku-trigger')`), id);
+  });
+
+  await t.test('入口を作れない操作要素の中には印を付けない', async () => {
+    // label（対応する入力欄なし）／role だけでフォーカスできない／disabled
+    assert.deepEqual(
+      await tab.evaluate(`['lab-none','role-only','btn-disabled']
+        .map(id => document.getElementById(id).querySelectorAll('.iiyaku-icon').length)`),
+      [0, 0, 0]
+    );
+  });
+
+  await t.test('そこで付けなかった語は、後のふつうの文章で説明される', async () => {
+    assert.deepEqual(
+      await tab.evaluate(`[...document.querySelectorAll('#prose-fallback .iiyaku-icon')]
+        .map(i => i.dataset.iiyakuKey).sort()`),
+      ['blame', 'conflict', 'diff']
+    );
+  });
+
+  await t.test('フォーカスできるだけの容器は入口にしない（印自体を入口にする）', async () => {
+    // GitHub は本文を tabindex="0" の大きな領域で包んでいる。ここを入口にすると
+    // 本文中の印が全部その1か所へ集まり、文章の中の印から個別に読めなくなる。
+    const r = await tab.evaluate(`(() => {
+      const icons = [...document.querySelectorAll('#scroll-region .iiyaku-icon')];
+      return { n: icons.length,
+               roles: icons.map(i => i.getAttribute('role')),
+               grouped: icons.filter(i => i.dataset.iiyakuFor).length,
+               containerIsTrigger: document.getElementById('scroll-region').hasAttribute('data-iiyaku-trigger') };
+    })()`);
+    assert.equal(r.n, 2, '容器の中の語に印が付いていない');
+    assert.deepEqual(r.roles, ['button', 'button']);
+    assert.equal(r.grouped, 0, '容器へぶら下がってしまっている');
+    assert.equal(r.containerIsTrigger, false, '容器が入口にされている');
+  });
+
+  await t.test('フォーカスできない容器の中でも、印自体を入口にする', async () => {
+    // tabindex が負の容器は Tab で止まれないが、中の印は止まれる
+    assert.deepEqual(
+      await tab.evaluate(`['ti-minus1','ti-minus2'].map(id => {
+        const i = document.getElementById(id).querySelector('.iiyaku-icon');
+        return i ? i.getAttribute('role') : null; })`),
+      ['button', 'button']
+    );
+  });
+
+  await t.test('矢印キーで移動する部品（treeitem 等）も入口として扱う', async () => {
+    // ファイルツリーは1項目だけが Tab で止まり、残りは tabindex="-1" で矢印移動する。
+    // これを到達不能と決めつけると、GitHub のファイル一覧の語が注記されなくなる。
+    const r = await tab.evaluate(`(() => {
+      const i = document.querySelector('#tree-item .iiyaku-icon');
+      return i ? { hidden: i.getAttribute('aria-hidden'),
+                   trig: document.getElementById('tree-item').getAttribute('data-iiyaku-trigger') === i.dataset.iiyakuFor } : null;
+    })()`);
+    assert.ok(r, 'treeitem の中に印が無い');
+    assert.deepEqual(r, { hidden: 'true', trig: true });
+  });
+
+  await t.test('装飾扱いの印には、必ず到達できる入口がある（全件）', async () => {
+    const orphans = await tab.evaluate(`
+      [...document.querySelectorAll('.iiyaku-icon[aria-hidden="true"]')].filter(ic => {
+        const id = ic.dataset.iiyakuFor;
+        if (!id) return true;
+        const t = document.querySelector('[data-iiyaku-trigger="' + id + '"]');
+        if (!t) return true;
+        if (t.disabled) return true;
+        const roving = ['treeitem','option','tab','menuitem','menuitemcheckbox','menuitemradio','radio'];
+        const ti = t.getAttribute('tabindex');
+        if (ti !== null) {
+          if (Number.isInteger(Number(ti)) && Number(ti) >= 0) return false;
+          return !roving.includes(t.getAttribute('role'));   // 矢印キーで移動する項目は到達できる
+        }
+        return !t.matches('a[href], button, input, select, textarea, summary, [contenteditable]:not([contenteditable="false"])');
+      }).length`);
+    assert.equal(orphans, 0, '入口の無い装飾アイコンがある');
+  });
+
+  /* ---------- 1つの入口に複数の用語 ---------- */
+
+  await t.test('1つのリンクに複数の用語があると、まとめて読める', async () => {
+    const keys = await tab.evaluate(`[...document.querySelectorAll('#nav-multi .iiyaku-icon')]
+      .map(i => i.dataset.iiyakuKey).sort()`);
+    assert.deepEqual(keys, ['merge', 'pull request']);
+    const shown = await tab.evaluate(`(() => {
+      document.getElementById('nav-multi').focus();
+      const tip = document.querySelector('.iiyaku-tooltip');
+      return tip ? { rows: tip.querySelectorAll('.iiyaku-tooltip-item').length, text: tip.textContent } : null;
+    })()`);
+    assert.ok(shown, 'リンクにフォーカスしても説明が出ない');
+    assert.equal(shown.rows, 2, '2つの用語のうち片方しか出ていない');
+    assert.ok(shown.text.includes('取り込む') && shown.text.includes('提案'), `説明が両方入っていない: ${shown.text.slice(0, 80)}`);
+    await tab.evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); true`);
+  });
+
+  await t.test('印そのものに触れたときは、その1件だけ出す', async () => {
+    const rows = await tab.evaluate(`(() => {
+      const ic = document.querySelector('#nav-multi .iiyaku-icon');
+      ic.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      const tip = document.querySelector('.iiyaku-tooltip');
+      return tip ? tip.querySelectorAll('.iiyaku-tooltip-item').length : -1;
+    })()`);
+    assert.equal(rows, 1);
+    await tab.evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); true`);
+  });
+
+  /* ---------- 読み上げ用の意味づけ ---------- */
 
   await t.test('リンクの中の印は装飾扱いで、リンク名を汚さない', async () => {
     assert.equal(await tab.evaluate(`document.querySelector('#nav-issues').textContent.trim()`), 'Issues');
@@ -75,18 +192,43 @@ test('拡張として読み込んだ状態で動く', async t => {
     );
   });
 
-  await t.test('文章の中の印はキーボードで開けて Escape で閉じる', async () => {
+  await t.test('文章の中の印は、短い名前のボタンとして扱う', async () => {
     assert.deepEqual(
-      await tab.evaluate(`(() => { const i = document.querySelector('#prose .iiyaku-icon'); i.focus();
-        const tip = document.querySelector('.iiyaku-tooltip');
-        return [i.getAttribute('tabindex'), tip?.getAttribute('role'), i.getAttribute('aria-describedby')]; })()`),
-      ['0', 'tooltip', 'iiyaku-tooltip']
+      await tab.evaluate(`(() => { const i = document.querySelector('#prose .iiyaku-icon');
+        return [i.getAttribute('role'), i.getAttribute('tabindex'), i.getAttribute('aria-label'),
+                i.getAttribute('aria-label').length < 20]; })()`),
+      ['button', '0', '「branch」の解説', true]
     );
-    assert.equal(
-      await tab.evaluate(`(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-        return document.querySelector('.iiyaku-tooltip') === null; })()`),
-      true
+  });
+
+  await t.test('名前と説明が同じ全文にならない（二重読みを避ける）', async () => {
+    const r = await tab.evaluate(`(() => {
+      const i = document.querySelector('#prose .iiyaku-icon');
+      i.focus();
+      const tip = document.querySelector('.iiyaku-tooltip');
+      return { name: i.getAttribute('aria-label'), desc: tip ? tip.textContent : null,
+               expanded: i.getAttribute('aria-expanded') };
+    })()`);
+    assert.notEqual(r.name, r.desc);
+    assert.ok(r.desc.length > r.name.length * 2, '説明が名前より十分に長くない');
+    assert.equal(r.expanded, 'true');
+  });
+
+  await t.test('Escape で閉じ、開閉の状態も戻る', async () => {
+    assert.deepEqual(
+      await tab.evaluate(`(() => {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        const i = document.querySelector('#prose .iiyaku-icon');
+        return [document.querySelector('.iiyaku-tooltip') === null, i.getAttribute('aria-expanded'),
+                i.hasAttribute('aria-describedby')]; })()`),
+      [true, 'false', false]
     );
+  });
+
+  /* ---------- これまでの動作を壊していないこと ---------- */
+
+  await t.test('コード表示部分には印が付かない', async () => {
+    assert.equal(await tab.evaluate(`document.querySelectorAll('#code .iiyaku-icon').length`), 0);
   });
 
   await t.test('OFF にしてもページを読み直さず、書きかけの入力が残る', async () => {
@@ -102,10 +244,8 @@ test('拡張として読み込んだ状態で動く', async t => {
 
   await t.test('別のタブへ設定が伝わる（本物の chrome.storage）', async () => {
     const other = await openPage(cdp, PAGE);
-    // 先に開いたタブが OFF なので、後から開いたタブも OFF で始まる＝保存されている
     await waitFor('2枚目が OFF で開く', async () =>
       await other.evaluate(`document.documentElement.classList.contains('iiyaku-off')`));
-    // 2枚目で ON に戻すと、1枚目にも伝わる
     await other.evaluate(`document.querySelector('.iiyaku-toggle').click(); true`);
     await waitFor('1枚目へ伝わる', async () =>
       await tab.evaluate(`document.documentElement.classList.contains('iiyaku-off') === false`));
@@ -121,6 +261,14 @@ test('拡張として読み込んだ状態で動く', async t => {
     await tab.evaluate(`document.querySelector('.iiyaku-toggle').click(); true`);   // ON
     await waitFor('後から足した文章に印が付く', async () =>
       await tab.evaluate(`document.querySelectorAll('#later .iiyaku-icon').length === 1`));
+  });
+
+  await t.test('同じ語はページで1回だけ', async () => {
+    const dupes = await tab.evaluate(`(() => {
+      const keys = [...document.querySelectorAll('.iiyaku-icon')].map(i => i.dataset.iiyakuKey);
+      return keys.filter((k, i) => keys.indexOf(k) !== i);
+    })()`);
+    assert.deepEqual(dupes, []);
   });
 
   await tab.close();

@@ -90,6 +90,20 @@
   pointer-events: auto;
 }
 
+/* 1つのリンクに複数の用語があるとき、説明をまとめて出す。
+   どの語の説明かが分かるよう、2件以上のときだけ見出しを付ける。 */
+.iiyaku-tooltip-item + .iiyaku-tooltip-item {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.22);
+}
+
+.iiyaku-tooltip-term {
+  display: block;
+  font-weight: 700;
+  opacity: 0.85;
+}
+
 /* ③ トグルボタン – ON/OFF */
 .iiyaku-toggle {
   position: fixed;

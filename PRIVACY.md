@@ -1,6 +1,6 @@
 # プライバシーポリシー / Privacy Policy — RepoGloss
 
-最終更新: 2026-08-03
+最終更新: 2026-08-05
 
 ---
 
@@ -19,7 +19,7 @@
 - 一致した用語の横に ⓘ を表示し、日本語の説明をツールチップとして出す以外の用途には使いません。
 - 読み取った内容を保存しません。ページを閉じれば残りません。
 
-読み取りの範囲は `github.com` に限られます。他のサイトでは動作しません（`manifest.json` の `content_scripts.matches` が `*://github.com/*` のみのため）。
+読み取りの範囲は `github.com` に限られます。他のサイトでは動作しません（`manifest.json` の `content_scripts.matches` が `https://github.com/*` のみのため）。
 
 > **お願い**: 本拡張は「表示されている文章」を区別なく走査します。private リポジトリのページでも動作しますが、内容は端末の外へ出ません。それでも取り扱いに配慮が必要な画面では、右下のトグルで OFF にしてご利用ください。
 
@@ -33,13 +33,15 @@
 
 ### 4. 要求する権限とその理由
 
-| 権限 | 用途 |
-|---|---|
-| `storage` | ON / OFF の設定を保存するため。これ以外に使いません |
-| `content_scripts` (`*://github.com/*`) | GitHub のページ上で用語に ⓘ を表示するため |
-| `web_accessible_resources` (`locales/dict.json`) | ページ側から同梱辞書を読み込むため |
+Chrome の権限は、`permissions` に書く API の権限と、コンテンツスクリプトを差し込むサイトの範囲に分かれます。本拡張はどちらも最小限です。
 
-ホスト権限（`host_permissions`）、`tabs`、`activeTab`、`scripting` は要求していません。
+| 区分 | 内容 | 用途 |
+|---|---|---|
+| Chrome API 権限 | `storage` | ON / OFF の設定を端末内に保存するため。これ以外に使いません |
+| サイトアクセス | `content_scripts.matches` = `https://github.com/*` | GitHub のページ上で、表示中の文章を辞書と照合し、用語に ⓘ を表示するため |
+| 同梱ファイルの読み込み | `web_accessible_resources`（`locales/dict.json`） | コンテンツスクリプトが、拡張機能に同梱された辞書を読み込むため。辞書は機密情報ではなく、外部サーバーから取得もしません |
+
+ホスト権限（`host_permissions`）、`tabs`、`activeTab`、`scripting`、常駐処理（background）は要求していません。閲覧履歴も読み取りません。
 
 ### 5. 第三者への提供
 
@@ -51,7 +53,7 @@
 
 ### 7. 連絡先
 
-GitHub リポジトリの Issue でお願いします。
+GitHub リポジトリの Issue でお願いします。脆弱性の報告のみ [SECURITY.md](./SECURITY.md) の宛先へお願いします。
 
 ---
 
@@ -82,13 +84,15 @@ Reading is limited to `github.com`. The extension does not run on any other site
 
 ### 4. Permissions and why
 
-| Permission | Purpose |
-|---|---|
-| `storage` | To remember the on/off setting. Nothing else |
-| `content_scripts` (`*://github.com/*`) | To place ⓘ markers on GitHub pages |
-| `web_accessible_resources` (`locales/dict.json`) | To load the bundled dictionary from the page context |
+Chrome separates API permissions from the sites a content script may be injected into. Both are kept minimal here.
 
-No `host_permissions`, `tabs`, `activeTab`, or `scripting` permissions are requested.
+| Category | Value | Purpose |
+|---|---|---|
+| Chrome API permission | `storage` | To remember the on/off setting. Nothing else |
+| Site access | `content_scripts.matches` = `https://github.com/*` | To match visible text against the dictionary and place ⓘ markers on GitHub pages |
+| Bundled file access | `web_accessible_resources` (`locales/dict.json`) | So the content script can load the dictionary bundled with the extension. The dictionary holds no secrets and is never fetched from a server |
+
+No `host_permissions`, `tabs`, `activeTab`, `scripting`, or background service worker is requested. Browsing history is not read.
 
 ### 5. Sharing with third parties
 
@@ -100,7 +104,7 @@ Changes will be made in this file and recorded in the repository history. Any ch
 
 ### 7. Contact
 
-Please open an issue on the GitHub repository.
+Please open an issue on the GitHub repository. For security reports, see [SECURITY.md](./SECURITY.md).
 
 ---
 

@@ -76,6 +76,7 @@ const REPO_PAGE = `<!doctype html><html lang="en" data-color-mode="light">
 <body>
   <!-- 旧版が使っていた固定 ID。衝突しないことを確かめるために先に置く -->
   <span id="iiyaku-tooltip">ページ側にもともとある要素</span>
+  <a href="#" id="before">before</a>
 
   <!-- ① 編集できる領域。ここには一切触れてはいけない -->
   <div contenteditable="true" id="ce-true">a fork of the project</div>
@@ -91,35 +92,72 @@ const REPO_PAGE = `<!doctype html><html lang="en" data-color-mode="light">
   <nav><a href="/octocat/Hello-World/pulls" id="nav-multi">Merge pull request</a>
        <a href="/octocat/Hello-World/issues" id="nav-issues">Issues</a></nav>
 
-  <!-- ④ 入口の境界。到達できる／できないを分ける -->
+  <!-- ④ 入口の境界：到達できる -->
   <label id="lab-for" for="inp-for">artifact</label><input id="inp-for">
   <label id="lab-wrap">milestone <input id="inp-wrap"></label>
+  <fieldset disabled id="fs">
+    <legend id="fs-legend"><button id="btn-legend">license</button></legend>
+    <button id="btn-in-fs">sync</button>
+  </fieldset>
+  <details id="det"><summary id="sum-first">remote</summary><summary id="sum-second">packages</summary></details>
+
+  <!-- ⑤ 入口の境界：到達できない（印を付けてはいけない） -->
   <label id="lab-none">blame</label>
   <div role="button" id="role-only">diff</div>
   <button id="btn-disabled" disabled>conflict</button>
-  <ul role="tree"><li role="treeitem" tabindex="-1" id="tree-item">release</li></ul>
-  <div tabindex="-1" id="ti-minus1">insights</div>
-  <div tabindex="-2" id="ti-minus2">packages</div>
+  <label id="lab-hidden">visibility <input type="hidden" id="inp-hidden"></label>
+  <label id="lab-dnone" for="inp-dnone">collaborator</label><input id="inp-dnone" style="display:none">
+  <label id="lab-vhidden" for="inp-vhidden">contributors</label><input id="inp-vhidden" style="visibility:hidden">
+  <div role="button" tabindex="" id="ti-empty">watch</div>
+  <div role="button" tabindex="   " id="ti-space">watching</div>
+  <summary id="orphan-summary">origin</summary>
 
-  <!-- ④-2 フォーカスできる大きな容器（GitHub の本文はこの中にある）。
-       ここを入口にすると中の印が全部1か所へ集まってしまう -->
-  <div tabindex="0" id="scroll-region"><p>Notes about a commit and a remote.</p></div>
+  <!-- ⑥ 矢印キーで移動する部品：壊れている（容器も入口も無い／入口が無い） -->
+  <ul role="tree" id="broken-tree"><li role="treeitem" tabindex="-1" id="broken-item">insights</li></ul>
+  <li role="treeitem" tabindex="-1" id="orphan-item">forks</li>
 
-  <!-- ⑤ ④で入口が無かった語が、後のふつうの文章では説明されること -->
-  <p id="prose-fallback">Notes on blame, diff, conflict, insights and packages.</p>
+  <!-- ⑦ 矢印キーで移動する部品：正しい（Tab の入口があり、矢印で移動する） -->
+  <ul role="tree" id="good-tree">
+    <li role="treeitem" tabindex="0" id="tree-entry">star</li>
+    <li role="treeitem" tabindex="-1" id="tree-target">release</li>
+  </ul>
 
-  <!-- ⑥ もともと aria-describedby を持つ入口 -->
+  <!-- ⑧ フォーカスできるだけの容器／できない容器 -->
+  <div tabindex="0" id="scroll-region"><p>Notes about a commit and a fetch.</p></div>
+  <div tabindex="-1" id="ti-minus1">draft release</div>
+
+  <!-- ⑨ ④⑤⑥で入口が無かった語が、後のふつうの文章では説明されること -->
+  <p id="prose-fallback">Notes on blame, diff, conflict, visibility, collaborator, contributors,
+     sync, watch, watching, origin, packages, forks and insights.</p>
+
+  <!-- ⑩ もともと aria-describedby を持つ入口 -->
   <a href="#" id="aria-host" aria-describedby="existing-help">workflow</a>
   <span id="existing-help">既存の説明</span>
 
-  <!-- ⑦ ふつうの文章（単独の印） -->
+  <!-- ⑪ ふつうの文章（単独の印） -->
   <p id="prose">Create a branch and ask for a review.</p>
 
-  <!-- ⑧ 画面の右端に寄せた入口（はみ出しの確認用） -->
+  <!-- ⑫ 画面の右端に寄せた入口（はみ出しの確認用） -->
   <p id="edge" style="position:absolute; right:0; top:0; margin:0;">rebase</p>
 
-  <!-- ⑨ コード表示 -->
+  <!-- ⑬ コード表示 -->
   <pre id="code"><code>git push --force origin main</code></pre>
+  <a href="#" id="after">after</a>
+
+  <script>
+    // 正しい roving tabindex の実装。矢印で対象を移し、tabindex も入れ替える。
+    document.getElementById('good-tree').addEventListener('keydown', function (e) {
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+      var items = Array.prototype.slice.call(this.querySelectorAll('[role="treeitem"]'));
+      var i = items.indexOf(document.activeElement);
+      if (i < 0) return;
+      var next = items[e.key === 'ArrowDown' ? Math.min(i + 1, items.length - 1) : Math.max(i - 1, 0)];
+      items.forEach(function (it) { it.tabIndex = -1; });
+      next.tabIndex = 0;
+      next.focus();
+      e.preventDefault();
+    });
+  </script>
 </body></html>`;
 
 export function startTestServer() {
@@ -153,26 +191,32 @@ export class Cdp {
       let m;
       try { m = JSON.parse(raw); } catch (e) { continue; }
       if (m.id && this.pending.has(m.id)) {
-        const { resolve, reject } = this.pending.get(m.id);
+        const { resolve, reject, timer } = this.pending.get(m.id);
         this.pending.delete(m.id);
+        clearTimeout(timer);   // 応答が来たタイマーを残すと、終了まで待たされる
         if (m.error) reject(new Error(`${m.error.message} (${JSON.stringify(m.error)})`));
         else resolve(m.result);
       }
     }
   }
+  rejectAll(err) {
+    for (const [, { reject, timer }] of this.pending) { clearTimeout(timer); reject(err); }
+    this.pending.clear();
+  }
+
   send(method, params = {}, sessionId) {
     const id = ++this.id;
     const payload = { id, method, params };
     if (sessionId) payload.sessionId = sessionId;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.proc.stdio[3].write(JSON.stringify(payload) + '\0');
-      setTimeout(() => {
+      const timer = setTimeout(() => {
         if (this.pending.has(id)) {
           this.pending.delete(id);
           reject(new Error(`CDP タイムアウト: ${method}`));
         }
       }, 20000);
+      this.pending.set(id, { resolve, reject, timer });
+      this.proc.stdio[3].write(JSON.stringify(payload) + '\0');
     });
   }
 }
@@ -195,6 +239,10 @@ export async function launchChrome({ port } = {}) {
   let stderr = '';
   proc.stderr.on('data', d => { stderr += d.toString(); });
   const cdp = new Cdp(proc);
+  // Chrome が落ちたら、待っている呼び出しを timeout まで放置しない
+  const abort = () => cdp.rejectAll(new Error(`Chrome が終了した: ${stderr.slice(-300)}`));
+  proc.on('exit', abort);
+  proc.on('error', abort);
   let ok = false;
   for (let i = 0; i < 40; i++) {
     try { await cdp.send('Browser.getVersion'); ok = true; break; } catch (e) { await sleep(250); }
@@ -216,6 +264,41 @@ export async function openPage(cdp, url) {
     return r.result?.value;
   };
   return { targetId, sessionId, evaluate, close: () => cdp.send('Target.closeTarget', { targetId }) };
+}
+
+/* 実際のキー入力を送る。合成イベントではなくブラウザが解釈する入力にする */
+const KEYS = {
+  Tab: { key: 'Tab', code: 'Tab', vk: 9 },
+  ArrowDown: { key: 'ArrowDown', code: 'ArrowDown', vk: 40 },
+  ArrowUp: { key: 'ArrowUp', code: 'ArrowUp', vk: 38 },
+  Escape: { key: 'Escape', code: 'Escape', vk: 27 }
+};
+
+export async function pressKey(cdp, sessionId, name, { shift = false } = {}) {
+  const k = KEYS[name];
+  if (!k) throw new Error(`未対応のキー: ${name}`);
+  const base = { key: k.key, code: k.code, windowsVirtualKeyCode: k.vk, nativeVirtualKeyCode: k.vk,
+                 modifiers: shift ? 8 : 0 };
+  await cdp.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...base }, sessionId);
+  await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...base }, sessionId);
+}
+
+/* Tab を押し続けて、ブラウザが実際に止まった要素の id を順に集める。
+   到達できるかどうかを自分の式で計算し直さないための「別の物差し」。 */
+export async function collectTabOrder(cdp, page, steps = 60, startId = 'before') {
+  // 開始位置を決めないと、前のテストが残したフォーカス位置から続いてしまい、
+  // 何周目を見ているのか分からなくなる。先頭の要素へ明示的に置いてから数える。
+  await page.evaluate(`(() => {
+    const s = document.getElementById(${JSON.stringify(startId)});
+    if (s) s.focus(); else { document.body.focus(); document.activeElement && document.activeElement.blur(); }
+  })(); true`);
+  const seen = [];
+  for (let i = 0; i < steps; i++) {
+    await pressKey(cdp, page.sessionId, 'Tab');
+    seen.push(await page.evaluate(
+      `document.activeElement ? (document.activeElement.id || document.activeElement.tagName) : null`));
+  }
+  return seen;
 }
 
 export const sleep = ms => new Promise(r => setTimeout(r, ms));

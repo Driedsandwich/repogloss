@@ -360,6 +360,17 @@
     placeTip(anchor);
   }
 
+  // 画面が動いたとき。印が見えていれば位置を追従させ、画面の外へ出たら閉じる。
+  function onViewportChange() {
+    if (!tip) return;
+    if (!tipAnchor || !tipAnchor.isConnected) { hideTip(); return; }
+    const r = tipAnchor.getBoundingClientRect();
+    const vw = document.documentElement.clientWidth;
+    const vh = document.documentElement.clientHeight;
+    if (r.bottom < 0 || r.top > vh || r.right < 0 || r.left > vw) { hideTip(); return; }
+    placeTip(tipAnchor);
+  }
+
   // 触れた場所から「何を出すか」を決める。
   //   印そのもの     … その1件だけ
   //   入口の要素     … その入口に属する印すべて（1つのリンクに複数の用語があるとき）
@@ -434,9 +445,11 @@
       if (!inTooltip(e.target)) hideTip();
     }, true);
 
-    // スクロールや画面の変化で置き去りにならないようにする
-    window.addEventListener('scroll', hideTip, true);
-    window.addEventListener('resize', hideTip);
+    // スクロールや画面の変化では、閉じずに位置を合わせ直す。
+    // キーボードで画面外の印へ移ると、ブラウザがその要素まで自動でスクロールする。
+    // ここで一律に閉じると、Tab で止まった瞬間に説明が消えてしまう（実測）。
+    window.addEventListener('scroll', onViewportChange, true);
+    window.addEventListener('resize', onViewportChange);
   }
 
   /* ---------- 6. 注記 ---------- */

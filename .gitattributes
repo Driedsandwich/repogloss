@@ -1,0 +1,7 @@
+# 改行を OS で揺らさない。揺れると、同じコミットから作った ZIP の
+# ハッシュが OS ごとに変わり、「提出物が main と一致する」ことを言えなくなる。
+# Windows の既定（core.autocrlf=true）でも、チェックアウトの中身を LF に固定する。
+* text=auto eol=lf
+
+# 画像は変換の対象外
+*.png binary

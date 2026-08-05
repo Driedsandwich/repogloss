@@ -6,7 +6,7 @@
 // 最後に表示する。dist/ は Git の管理外（.gitignore）。
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, cpSync, readdirSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { PACKAGE_FILES } from './package-files.mjs';
 
@@ -24,7 +24,8 @@ function walk(dir, base = dir) {
   for (const name of readdirSync(dir)) {
     const p = join(dir, name);
     if (statSync(p).isDirectory()) out.push(...walk(p, base));
-    else out.push(relative(base, p));
+    // 区切りは / に揃える。Windows は \ を返すので、配布一覧と突き合わない。
+    else out.push(relative(base, p).split(sep).join('/'));
   }
   return out;
 }
@@ -55,7 +56,9 @@ if (VERIFY_ONLY) {
     console.error(`NG: ${problems.length} 件\n` + problems.map(p => '  - ' + p).join('\n'));
     process.exit(1);
   }
+  const combined = sha256(Buffer.from(staged.map(f => `${f.path} ${f.sha256}`).join('\n')));
   console.log(`OK: ${staged.length} ファイルが配布一覧と一致（version ${version}）`);
+  console.log(`COMBINED_SHA256 ${combined}`);
   process.exit(0);
 }
 
@@ -78,11 +81,15 @@ if (staged.length !== PACKAGE_FILES.length) {
 }
 
 const total = staged.reduce((n, f) => n + f.bytes, 0);
-writeFileSync(LIST, JSON.stringify({ version, files: staged, totalBytes: total }, null, 2) + '\n');
+// 配布物全体を1つの値にまとめる。OS をまたいで同じかどうかを1行で比べられる。
+// 改行が OS で揺れると、ここが変わる（.gitattributes で揃えている）。
+const combined = sha256(Buffer.from(staged.map(f => `${f.path} ${f.sha256}`).join('\n')));
+writeFileSync(LIST, JSON.stringify({ version, files: staged, totalBytes: total, combinedSha256: combined }, null, 2) + '\n');
 
 console.log(`並べた: ${relative(ROOT, STAGE)}`);
 console.log(`  ${staged.length} ファイル / 合計 ${total.toLocaleString()} バイト`);
 console.log(`  1件ずつの大きさとハッシュ: ${relative(ROOT, LIST)}`);
+console.log(`COMBINED_SHA256 ${combined}`);   // CI が OS 間で突き合わせるための1行
 console.log('');
 console.log('ZIP にするとき（拡張の中身が最上位に来るように、フォルダの中で固める）:');
 console.log(`  cd ${relative(ROOT, STAGE)} && zip -r -X ../repogloss-${version}.zip . && cd -`);

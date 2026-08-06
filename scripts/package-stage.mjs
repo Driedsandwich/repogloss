@@ -80,11 +80,16 @@ if (staged.length !== PACKAGE_FILES.length) {
   process.exit(1);
 }
 
+const HASH_FILE = join(DIST, 'COMBINED_SHA256.txt');
+
 const total = staged.reduce((n, f) => n + f.bytes, 0);
 // 配布物全体を1つの値にまとめる。OS をまたいで同じかどうかを1行で比べられる。
 // 改行が OS で揺れると、ここが変わる（.gitattributes で揃えている）。
 const combined = sha256(Buffer.from(staged.map(f => `${f.path} ${f.sha256}`).join('\n')));
 writeFileSync(LIST, JSON.stringify({ version, files: staged, totalBytes: total, combinedSha256: combined }, null, 2) + '\n');
+// CI が OS 間で突き合わせるための1行。ログを shell で切り出すと OS ごとに
+// 書き方が変わるので、ファイルへ出しておく（改行は \n に固定する）。
+writeFileSync(HASH_FILE, combined + '\n');
 
 console.log(`並べた: ${relative(ROOT, STAGE)}`);
 console.log(`  ${staged.length} ファイル / 合計 ${total.toLocaleString()} バイト`);

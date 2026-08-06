@@ -6,6 +6,8 @@
     "test": "node --check src/matcher.js && node --check src/content.js && node --test \"tests/**/*.test.js\" && node scripts/verify.mjs",
     "test:e2e": "node --test tests/e2e/extension.e2e.mjs",
     "package:stage": "node scripts/package-stage.mjs",
-    "package:verify": "node scripts/package-stage.mjs --verify"
+    "package:verify": "node scripts/package-stage.mjs --verify",
+    "package:zip": "node scripts/package-zip.mjs",
+    "package:verify-zip": "node scripts/package-zip.mjs --verify"
   }
 }

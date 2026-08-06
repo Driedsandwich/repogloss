@@ -179,6 +179,16 @@ check(`README の変更履歴に ${manifest.version} の行がある`, readme.in
 check(`STORE_LISTING が今回の提出版 ${manifest.version} を指している`, store.includes(manifest.version),
   'ストア掲載メモに現在のバージョンが出てこない');
 
+// 「この版 vX.Y.Z」のような現在版の言い切りが、manifest と食い違ったまま残らないようにする。
+// v1.8.3 では manifest が 1.8.3 なのに README が「この版 v1.8.2」と書いていた。
+// 「manifest の版がどこかに在る」という検査では、この取り残しを見つけられない。
+{
+  const stale = [...readme.matchAll(/この版\s*v?(\d+\.\d+\.\d+)/g)]
+    .map(mm => mm[1]).filter(v => v !== manifest.version);
+  check('README の「この版 …」が manifest の版と一致する', stale.length === 0,
+    `古い版の記載: ${stale.join(', ')}`);
+}
+
 // Limited Use への準拠を明言する文が、公開されるプライバシーポリシーに在ること。
 // 公式ポリシーが、拡張のサイトかプライバシーポリシーへ置くことを求めている。
 {
@@ -193,6 +203,10 @@ check(`STORE_LISTING が今回の提出版 ${manifest.version} を指してい�
   check('PRIVACY.md に、個人情報を一切読まないという言い切りが無い',
     !/(氏名・メール・ID のいずれも読み取らず|個人的な通信内容は一切読)/.test(privacy));
 }
+
+// CI が提出用 ZIP を作ることを、README が伏せていないこと
+check('README が CI の成果物（提出用 ZIP）について書いている',
+  /artifact/.test(readme) && /提出用 ZIP/.test(readme));
 
 /* ---------- 権限の説明が文書間でそろっているか ---------- */
 // 「storage のみ」と書くと、github.com のページ本文を読むことが伝わらない。

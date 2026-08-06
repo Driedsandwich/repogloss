@@ -10,8 +10,8 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { launchChrome, startTestServer, stageExtension,
-         LIFECYCLE_PAGE, openPage, sleep, waitFor,
+import { launchChrome, startTestServer, stageExtension, stageExtensionWithPrelude,
+         SENTINEL_PAGE, LIFECYCLE_PAGE, openPage, sleep, waitFor,
          pressKey, collectTabOrder, tabUntil } from './helpers/chrome.mjs';
 
 const PAGE = 'https://github.com/octocat/Hello-World';
@@ -539,6 +539,62 @@ test('拡張として読み込んだ状態で動く', async t => {
     })()`);
     assert.deepEqual(dupes, []);
   });
+
+  await tab.close();
+});
+
+/*
+ * 除外領域のテキストを、拡張が一度でも読んでいないか。
+ *
+ * content script は隔離された世界で動くため、ページ側から getter を差し替えても
+ * 拡張の読み取りは見えない。そこで、同じ拡張の content script として本体より先に
+ * 計測用の prelude を読み込ませ、同じ世界の中で取り出し口を計装する。
+ * 使うのは並べた一時ディレクトリの manifest だけで、配布物は変えない。
+ *
+ * 「順序が正しいか」を静的に見る検査（scripts/verify.mjs）は、別名の変数・
+ * 補助関数・bracket 記法などで迂回できる。こちらが本命の担保で、静的検査は
+ * 単純な後戻りを早く止めるための補助にすぎない。
+ */
+test('除外する領域のテキストを、拡張が一度も読んでいない（隔離世界で計測）', async t => {
+  const srv = await startTestServer(SENTINEL_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  t.after(async () => { chrome.kill(); await srv.close(); });
+
+  const loaded = await chrome.cdp.send('Extensions.loadUnpacked', { path: stageExtensionWithPrelude() });
+  assert.match(loaded.id, /^[a-p]{32}$/, `拡張IDが返らない: ${JSON.stringify(loaded)}`);
+  const tab = await openPage(chrome.cdp, PAGE);
+
+  // 計装が効いていること自体を先に確かめる（効いていなければ「0件」は無意味）
+  await waitFor('計測用の prelude が動いている', async () =>
+    await tab.evaluate(`document.documentElement.getAttribute('data-rg-prelude') === 'ready'`));
+  // 見える場所の目印は必ず読まれる＝計測が生きていることの対照
+  await waitFor('見える場所の目印が読まれる', async () =>
+    (await tab.evaluate(`document.documentElement.getAttribute('data-rg-reads') || ''`))
+      .includes('RGSENTINEL_VISIBLE'));
+  await waitFor('印が付く', async () =>
+    await tab.evaluate(`document.querySelectorAll('.iiyaku-icon').length > 0`));
+  await sleep(600);
+
+  const reads = (await tab.evaluate(`document.documentElement.getAttribute('data-rg-reads') || ''`))
+    .split(',').filter(Boolean);
+
+  const mustNotRead = ['RGSENTINEL_EDITABLE', 'RGSENTINEL_TEXTAREA', 'RGSENTINEL_INPUT',
+                       'RGSENTINEL_SELECT', 'RGSENTINEL_CODE', 'RGSENTINEL_BLOB',
+                       'RGSENTINEL_ARIAHIDDEN', 'RGSENTINEL_INERT',
+                       'RGSENTINEL_HIDDEN', 'RGSENTINEL_UNTILFOUND'];
+  const leaked = mustNotRead.filter(s => reads.includes(s));
+  assert.deepEqual(leaked, [], `除外領域なのに読まれた: ${leaked.join(', ')}`);
+  assert.ok(reads.includes('RGSENTINEL_VISIBLE'), '見える場所すら読まれていない＝計測が壊れている');
+
+  // 除外領域の中身が1文字も変わっていないこと（読まないことと、壊さないことの両方）
+  assert.deepEqual(
+    await tab.evaluate(`[document.getElementById('s-editable').textContent,
+                        document.getElementById('s-textarea').value,
+                        document.getElementById('s-input').value,
+                        document.querySelectorAll('#s-editable .iiyaku-icon').length,
+                        document.querySelectorAll('#s-code .iiyaku-icon').length]`),
+    ['RGSENTINEL_EDITABLE a repository draft', 'RGSENTINEL_TEXTAREA a commit message',
+     'RGSENTINEL_INPUT a branch name', 0, 0]);
 
   await tab.close();
 });

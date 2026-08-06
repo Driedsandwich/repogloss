@@ -7,7 +7,7 @@
  *  - github.com をローカルの HTTPS サーバへ向ける。外部通信もアカウントも要らない。
  */
 import { spawn, execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, copyFileSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, copyFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir, platform } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -50,6 +50,19 @@ export function stageExtension() {
     mkdirSync(dirname(dest), { recursive: true });
     copyFileSync(join(ROOT, rel), dest);
   }
+  return dir;
+}
+
+/* 計測用の変種。配布ファイルはそのままに、テスト専用の prelude を
+   **本体より先に**読み込ませる manifest へ差し替える。
+   触るのは並べた一時ディレクトリだけで、リポジトリの配布物は変えない。 */
+export function stageExtensionWithPrelude() {
+  const dir = stageExtension();
+  copyFileSync(join(ROOT, 'tests/e2e/prelude.js'), join(dir, 'prelude.js'));
+  const mfPath = join(dir, 'manifest.json');
+  const mf = JSON.parse(readFileSync(mfPath, 'utf8'));
+  mf.content_scripts[0].js = ['prelude.js', ...mf.content_scripts[0].js];
+  writeFileSync(mfPath, JSON.stringify(mf, null, 2) + '\n');
   return dir;
 }
 
@@ -201,6 +214,25 @@ const REPO_PAGE = `<!doctype html><html lang="en" data-color-mode="light">
       e.preventDefault();
     });
   </script>
+</body></html>`;
+
+/* 除外されるはずの領域それぞれへ目印を置いたページ。
+   拡張がその目印の文字列を一度でも取り出したかを、prelude が記録する。
+   目印は辞書語（repository / commit）と一緒に置く——語が無いと、そもそも
+   読む理由が無くなり「読まれなかった」が意味を失うため。 */
+export const SENTINEL_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>sentinel</title></head><body>
+  <div contenteditable="true" id="s-editable">RGSENTINEL_EDITABLE a repository draft</div>
+  <textarea id="s-textarea">RGSENTINEL_TEXTAREA a commit message</textarea>
+  <input id="s-input" value="RGSENTINEL_INPUT a branch name">
+  <select id="s-select"><option>RGSENTINEL_SELECT a remote</option></select>
+  <pre id="s-code"><code>RGSENTINEL_CODE git commit</code></pre>
+  <div class="blob-code" id="s-blob">RGSENTINEL_BLOB a merge here</div>
+  <div aria-hidden="true" id="s-ariahidden">RGSENTINEL_ARIAHIDDEN a repository note</div>
+  <div inert id="s-inert">RGSENTINEL_INERT a commit note</div>
+  <div hidden id="s-hidden">RGSENTINEL_HIDDEN a branch note</div>
+  <div hidden="until-found" id="s-untilfound">RGSENTINEL_UNTILFOUND a merge note</div>
+  <p id="s-visible">RGSENTINEL_VISIBLE open a pull request</p>
 </body></html>`;
 
 /* 見えない場所の直接テキストと、印の付け直し（ライフサイクル）を確かめるページ。

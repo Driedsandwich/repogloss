@@ -118,11 +118,16 @@ check('content.js が編集可能な領域を走査対象から外している',
 check('content.js が入力欄も走査対象から外している', /'textarea', 'input', 'select'/.test(content));
 check('content.js が inert の中も走査対象から外している', /'\[inert\]'/.test(content));
 
-/* ---------- 除外を決める前に、テキストの中身を読まないこと ---------- */
+/* ---------- 除外を決める前に、テキストの中身を読まないこと（補助の検査） ---------- */
 // 「書き換えない」と「読み取らない」は別のこと。除外対象（編集領域・フォーム・
-// コード・aria-hidden・inert）の文字列は、除外が決まる前に取り出してはいけない。
-// 順序が将来戻されると、公開しているプライバシーの説明と食い違うので、
-// ここで機械的に止める。
+// コード・aria-hidden・inert・hidden）の文字列は、除外が決まる前に取り出してはいけない。
+//
+// ⚠️ これは**補助**にすぎない。見ているのは isTarget の中の文字位置だけなので、
+// 別名の変数・補助関数・bracket 記法・分割代入などを使えば迂回できる。
+// **本命の担保は tests/e2e の「除外する領域のテキストを、拡張が一度も読んでいない」**
+// で、同じ拡張の content script として計測用の prelude を先に読み込ませ、
+// 隔離された世界の中で実際に読まれた回数を数えている。
+// ここは、単純な後戻りを早く止めるためのものである。
 {
   const m = content.match(/function isTarget\(node\)\s*\{([\s\S]*?)\n  \}/);
   check('content.js に isTarget がある', !!m);
@@ -149,6 +154,14 @@ check('content.js が contentVisibilityAuto を渡していない',
   !/contentVisibilityAuto/.test(stripComments(content)));
 check('content.js が、付けた印の有効性を isConnected だけで判断していない',
   /function usableGloss/.test(content) && !/prev\s*&&\s*prev\.isConnected/.test(content));
+
+/* ---------- テスト専用のものが配布物へ混ざっていないこと ---------- */
+// 計測用の prelude は同じ拡張の content script として読み込ませるが、
+// それは E2E が並べた一時ディレクトリの中だけの話。配布物には入れない。
+check('計測用の prelude が配布一覧に入っていない',
+  !PACKAGE_FILES.some(f => f.includes('prelude')));
+check('manifest が読み込む JS に prelude が入っていない',
+  !(cs.js ?? []).some(f => f.includes('prelude')));
 
 /* ---------- 辞書 ---------- */
 const dict = readJson('locales/dict.json');

@@ -414,6 +414,14 @@ test('拡張として読み込んだ状態で動く', async t => {
     assert.deepEqual(r, { tipHasJa: true, toggleHasJa: true, square: true, drawn: true, tipBox: true });
   });
 
+  // ⚠️ 一時的な検証用。Windows でだけ必ず落ちる assertion を入れ、
+  // e2e-windows ジョブが赤くなる（＝ゲートとして働く）ことを確かめる。
+  // 確認後に取り消す。
+  await t.test('【一時】Windows のゲートが働くことの確認', async () => {
+    assert.notEqual(process.platform, 'win32',
+      '意図的な失敗: Windows でこの assertion は必ず落ちる（ゲート確認用）');
+  });
+
   await t.test('コード表示部分には印が付かない', async () => {
     assert.equal(await tab.evaluate(`document.querySelectorAll('#code .iiyaku-icon').length`), 0);
   });

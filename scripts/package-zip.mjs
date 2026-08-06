@@ -21,6 +21,15 @@ const sha256 = buf => createHash('sha256').update(buf).digest('hex');
 
 const version = JSON.parse(readFileSync(join(ROOT, 'manifest.json'), 'utf8')).version;
 
+/* いま作っている中身が、どのコミットのものか（CI の外で作ったときの記録用） */
+function gitRev() {
+  try {
+    return execFileSync('git', ['-C', ROOT, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  } catch (e) {
+    return null;
+  }
+}
+
 /* 作業ツリーと HEAD が食い違っていないか。食い違ったまま提出物を作らない。 */
 function dirtyFiles() {
   try {
@@ -78,9 +87,27 @@ if (problems.length) {
 }
 
 // 提出物の身元を1つのファイルにまとめておく。報告や CI の成果物へそのまま添える。
+// どのコミットの、どの実行から出たものかを、この1枚だけで特定できるようにする
+// （成果物だけ手元に残ったときに出どころを追えないと、提出物を取り違える）。
+const env = process.env;
 writeFileSync(join(DIST, `${zipName}.json`), JSON.stringify({
   name: zipName, version, bytes: raw.length, fileCount: names.length,
-  sha256: sha256(raw), contentSha256: contentSha, files: names
+  sha256: sha256(raw), contentSha256: contentSha, files: names,
+  source: {
+    repository: env.GITHUB_REPOSITORY ?? null,
+    commit: env.GITHUB_SHA ?? gitRev(),
+    ref: env.GITHUB_REF ?? null,
+    workflowRunId: env.GITHUB_RUN_ID ?? null,
+    workflowRunAttempt: env.GITHUB_RUN_ATTEMPT ?? null,
+    builtInCI: !!env.GITHUB_RUN_ID
+  },
+  // deflate の出力は zlib の版に依存しうる。将来ハッシュが変わったときに
+  // 「何が違ったのか」を後から言えるよう、作った環境を残す。
+  environment: {
+    node: process.versions.node,
+    zlib: process.versions.zlib ?? null,
+    platform: process.platform
+  }
 }, null, 2) + '\n');
 
 console.log(`OK: ${names.length} ファイル / ${raw.length.toLocaleString()} バイト（version ${version}）`);

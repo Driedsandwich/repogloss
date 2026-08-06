@@ -117,8 +117,15 @@ jobs:
 
   # 提出用 ZIP は CI で作り、CI で検査したものだけを使う。
   # 手元で別に作ると、提出したものと検査したものが別物になりうる。
+  #
+  # 必須の検査すべてに依存させる。verify と ubuntu の e2e だけに依存していると、
+  # Windows E2E や OS 間ハッシュ比較が落ちた実行からでも「提出候補」という名前の
+  # 成果物が出てしまい、後から取り違えうる。
+  # また main への push のときだけ作る。PR からは作らない
+  # （まだマージされていない内容の成果物が、提出候補と同じ名前で残るのを防ぐ）。
   release-zip:
-    needs: [verify, e2e]
+    needs: [verify, e2e, e2e-windows, hash-compare]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

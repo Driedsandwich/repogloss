@@ -427,7 +427,35 @@
       id = UID + '-t' + (++triggerSeq);
       trigger.setAttribute('data-iiyaku-trigger', id);
     }
+    ownedTriggers.add(trigger);
     return id;
+  }
+
+  /* ---------- 3-2. 自分が作ったものだけを自分のものとして扱う ---------- */
+  // ページ側が、注記済みの領域を丸ごと cloneNode で複製することがある。
+  // 複製された印は class も data 属性も入口 ID もそのままなので、見た目には
+  // 区別が付かない。実測では、同じ入口 ID を持つ要素が2つになり、
+  // その ID で入口を引くと**複製側**が返りうる状態になった。
+  // 自分が作ったものを控えておき、それ以外は自分のものとして扱わない。
+  const ownedIcons = new WeakSet();
+  const ownedTriggers = new WeakSet();
+
+  // 追加された領域を走査する前に、複製された「自分のふり」を取り除く。
+  // 触るのは自分の印と、自分の UID 形式の入口 ID だけ。ページ側の属性や
+  // 本文には手を出さない。取り除いたあと、その中の文字はふつうの候補に戻る。
+  function sanitizeClones(root) {
+    if (!root || root.nodeType !== Node.ELEMENT_NODE) return;
+    const pick = sel => {
+      const out = root.matches && root.matches(sel) ? [root] : [];
+      if (root.querySelectorAll) out.push(...root.querySelectorAll(sel));
+      return out;
+    };
+    for (const ic of pick('.iiyaku-icon')) if (!ownedIcons.has(ic)) ic.remove();
+    for (const t of pick('[data-iiyaku-trigger]')) {
+      if (ownedTriggers.has(t)) continue;
+      const v = t.getAttribute('data-iiyaku-trigger');
+      if (v && v.startsWith(UID + '-t')) t.removeAttribute('data-iiyaku-trigger');
+    }
   }
 
   /* ---------- 4. アイコン注入 ---------- */
@@ -442,6 +470,7 @@
     icon.dataset.iiyaku = ja;
     icon.dataset.iiyakuKey = key;
     icon.dataset.iiyakuTerm = term;
+    ownedIcons.add(icon);   // 複製された印と区別するため、自分の作ったものを控える
     return icon;
   }
 
@@ -887,6 +916,10 @@
   let lastUrl = location.href;
   // 差し込みが一度に何十件も来るので、1回分の呼び出しでは測定結果を共有する。
   const observer = new MutationObserver(muts => withRenderCache(() => {
+    // ① 複製された「自分のふり」を先に取り除く。走査より前にやらないと、
+    //    複製された印が入口 ID の引き当てを乱す。
+    for (const mu of muts) for (const n of mu.addedNodes) sanitizeClones(n);
+
     // ② 記録と DOM の食い違いを片づける。印が外された形だけでなく、語だけが
     //    消された形・語と印のあいだへ挿し込まれた形もあるので、ノードが
     //    増えただけの変更でも数え直す。

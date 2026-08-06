@@ -221,6 +221,57 @@ check(`STORE_LISTING が今回の提出版 ${manifest.version} を指してい�
   // 走査は広いので、「個人情報を読み取らない」という言い切りは事実と合わない
   check('PRIVACY.md に、個人情報を一切読まないという言い切りが無い',
     !/(氏名・メール・ID のいずれも読み取らず|個人的な通信内容は一切読)/.test(privacy));
+
+  // 「取得元として触れない」ことと「本文として一時処理し得る」ことを混ぜない。
+  // v1.8.5 は Cookie・認証情報・入力欄・編集中の文章を1行にまとめて「しない」と
+  // 書いていたが、通常の本文に出た token らしき文字列は一時処理される。
+  // 一括りにした断定が戻ってきたら落とす。
+  //
+  // ⚠️ 「〜とは書きません」という打ち消しの文にも同じ言葉が出る。polarity を見ずに
+  // 語だけを探すと、打ち消しているほうを断定と取り違える（実際に誤検出した）。
+  // 打ち消し文を先に取り除いてから探す。
+  const claims = privacy.replace(/「[^」]*」とは書きません。?/g, '');
+  const LUMPED = [
+    [/Cookie[・･]認証情報[・･]入力欄/, '日本語: Cookie・認証情報・入力欄… を1行にまとめている'],
+    [/Cookies,\s*credentials,\s*form fields/i, '英語: Cookies, credentials, form fields … をまとめている'],
+    [/認証情報[^\n|「」]{0,30}(?:扱わない|取り扱わない|読み取りません)/, '日本語: 認証情報を扱わない、という言い切り']
+  ];
+  for (const [re, label] of LUMPED) {
+    check(`PRIVACY.md に一括りの断定が無い（${label}）`, !re.test(claims));
+  }
+  // 陽性対照: この検査が、実際に v1.8.5 の書き方を落とせること。
+  // 「見つからなかった」が、探し方が壊れているせいでないことを同じ実行で示す。
+  const OLD_WORDING = [
+    '| Cookie・認証情報・入力欄やフォームの中身・編集中の文章 | **しない** |',
+    '| Cookies, credentials, form fields, editable content | **No** |',
+    '本拡張は認証情報を扱わないため、開示は不要です。'
+  ];
+  for (let i = 0; i < LUMPED.length; i++) {
+    check(`一括りの断定を探す検査が、実際に v1.8.5 の書き方を捕まえる（陽性対照 ${i + 1}）`,
+      LUMPED[i][0].test(OLD_WORDING[i]), `この文を捕まえられない: ${OLD_WORDING[i]}`);
+  }
+  // 分けて書けていること（否定の検査だけだと、丸ごと消しても通ってしまう）
+  check('PRIVACY.md が、取得元と本文の一時処理を分けて書いている（日本語）',
+    /取得元として触れない/.test(privacy) && /通常の本文に表示されている/.test(privacy));
+  check('PRIVACY.md が、取得元と本文の一時処理を分けて書いている（英語）',
+    /Sources never touched/.test(privacy) && /displayed in ordinary page text/i.test(privacy));
+}
+
+// ストアの申告は、Dashboard の実画面を人が読むまで確定させない。
+// 冒頭で「他の項目は選択しない」と言い切ると、そのあとの「要確認」が効かなくなる。
+{
+  check('STORE_LISTING が申告を冒頭で言い切っていない',
+    !/他の項目は選択しない/.test(store) && !/Website content以外は選択しない/.test(store));
+  check('STORE_LISTING が、確定と要確認を分けて書いている',
+    /\*\*確定\*\*/.test(store) && /\*\*要確認\*\*/.test(store));
+  // 認証情報は「要確認」側にあること（取得元と本文の一時処理を分けたため）
+  const credRow = store.split('\n').find(l => l.startsWith('| 認証情報'));
+  check('STORE_LISTING の認証情報の行が要確認になっている',
+    !!credRow && credRow.includes('要確認'), credRow ?? '認証情報の行が見つからない');
+  // Dashboard の定義文を書き写す欄が残っていること
+  for (const w of ['確認日', '添えられていた定義文', '外部送信', '人手閲覧']) {
+    check(`STORE_LISTING の転記欄に「${w}」がある`, store.includes(w));
+  }
 }
 
 // CI が提出用 ZIP を作ることを、README が伏せていないこと

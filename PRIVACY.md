@@ -22,16 +22,22 @@
 | GitHub のページ上の**文章**（下の除外領域を除く。CSS で見えなくなっているものを含む） | **する**（同梱辞書との照合と、見えるかどうかの判定） | しない | しない | しない | しない |
 | 開いている GitHub ページの**URL** | **する**（画面が切り替わったことの検知にだけ使う） | しない | しない | しない | しない |
 | ON / OFF の設定（真偽値 `iiyakuEnabled` ひとつ） | する | **する**（`chrome.storage.local`） | しない | しない | しない |
-| Cookie・認証情報・入力欄やフォームの中身・編集中の文章 | **しない**（走査の前に除外します） | しない | しない | しない | しない |
+| **取得元として触れないもの**: Cookie（`cookies` 権限なし）・認証 API・入力欄やフォーム（`input` / `textarea` / `select`）・編集中の領域（`contenteditable`） | **しない**（走査の前に除外し、値そのものを取り出しません） | しない | しない | しない | しない |
+| **通常の本文に表示されている**、認証情報らしき文字列・氏名・投稿済みのコメントなど | **する**（上の「ページ上の文章」の一部として、辞書照合のあいだだけ） | しない | しない | しない | しない |
 
 外部のサーバーとの通信は一切行いません（翻訳API・解析サービス・広告のいずれも使っていません）。
+
+> **「認証情報を扱わない」とは書きません。**
+> 取得元として触れないもの（Cookie・認証 API・入力欄・編集中の領域）と、通常の本文として一時的に処理し得るものは、別のことです。
+>
+> **Cookie やフォームの入力値は取得しません。** 一方、通常のページ本文に token やパスワードらしき文字列が**表示されている**場合、その文字列は「ウェブサイトのコンテンツ」の一部として、端末内の辞書照合へ一時的に渡り得ます。**それを認証情報として抽出・識別・保存・送信・共有・人手で閲覧することはありません。**
 
 > **「個人情報は読み取らない」とは書きません。**
 > 本拡張は、表示されている文章を広く走査します。そこに氏名・ユーザー名・メールアドレス・Issue や Pull Request のコメントが含まれていれば、**その文字列も一時的な照合の対象になります**。
 >
-> 正確には次のとおりです。**それらを個人情報として抽出・識別・保存・送信・共有・人手で閲覧することはありません。** 文章は端末の中で辞書と照らし合わせるためだけに一瞬使われ、その場で捨てられます。
+> 正確には次のとおりです。**それらを個人情報として抽出・識別・保存・送信・共有・人手で閲覧することはありません。** 文章は端末の中で辞書と照らし合わせるためだけに一瞬使われ、その場で捨てられます。意味のカテゴリ（これは氏名、これはトークン、といった区別）としての抽出は一切行いません。判定に使うのは同梱辞書の 61 語との一致だけです。
 >
-> 一方、**入力欄・フォーム・編集中の領域・コード表示は、文字列を取り出す前に除外**します。「書き換えない」だけでなく「読み取らない」という意味です（`src/content.js` の `isTarget` が、除外を決めてからでないと文字列に触れない作りになっており、その順序は自動検査で固定しています）。
+> 一方、**入力欄・フォーム・編集中の領域・コード表示は、文字列を取り出す前に除外**します。「書き換えない」だけでなく「読み取らない」という意味です（`src/content.js` の `isTarget` が、除外を決めてからでないと文字列に触れない作りになっており、実際に辞書照合まで届いていないことを、拡張と同じ隔離世界の中で計測しています）。
 
 ### 2. ページの文章の扱い（くわしく）
 
@@ -119,16 +125,22 @@ GitHub リポジトリの Issue でお願いします。脆弱性の報告のみ
 | **Text on** GitHub pages, excluding the regions listed below (this includes text hidden by CSS) | **Yes** (dictionary matching and a visibility check) | No | No | No | No |
 | **URL** of the GitHub page being viewed | **Yes** (compared with the previous value to detect in-page navigation) | No | No | No | No |
 | On/off setting (a single boolean, `iiyakuEnabled`) | Yes | **Yes** (`chrome.storage.local`) | No | No | No |
-| Cookies, credentials, form fields, editable content | **No** (excluded before any text is read) | No | No | No | No |
+| **Sources never touched**: cookies (no `cookies` permission), authentication APIs, form fields (`input` / `textarea` / `select`), editable regions (`contenteditable`) | **No** (excluded before any value is read) | No | No | No | No |
+| Credential-like strings, names, or posted comments **displayed in ordinary page text** | **Yes** (as part of "text on GitHub pages" above, only while dictionary matching runs) | No | No | No | No |
 
 No network requests are made to any external server (no translation API, no analytics, no ads).
+
+> **We do not claim that credentials are "never handled".**
+> Not reading a *source* and not processing *content* are different claims.
+>
+> **Cookies and form input values are never read.** However, if a credential-like string such as a token or password is **displayed in ordinary page text**, that string may transiently reach the on-device dictionary matching as part of Website content. **It is never extracted, identified, stored, transmitted, shared, or viewed by a human as a credential.**
 
 > **We do not claim that personal information is "never read".**
 > The extension scans displayed text broadly. If a page shows a name, username, email address, or an issue/PR comment, **those strings are also part of the transient matching.**
 >
-> Precisely: **such content is never extracted as personal information, identified, stored, transmitted, shared, or viewed by a human.** Text is used for a moment, in the browser, only to compare against the bundled dictionary, and is then discarded.
+> Precisely: **such content is never extracted as personal information, identified, stored, transmitted, shared, or viewed by a human.** Text is used for a moment, in the browser, only to compare against the bundled dictionary, and is then discarded. No semantic category is ever derived from it (nothing is labelled "this is a name", "this is a token"); the only judgement made is whether the text matches one of the 61 bundled dictionary terms.
 >
-> Separately, **form fields, editable regions, and code views are excluded before their text is read at all** — not merely left unmodified. `isTarget` in `src/content.js` cannot touch a text value until the exclusion check has passed, and that ordering is enforced by an automated check.
+> Separately, **form fields, editable regions, and code views are excluded before their text is read at all** — not merely left unmodified. `isTarget` in `src/content.js` cannot touch a text value until the exclusion check has passed, and an automated test measures, inside the extension's own isolated world, that such text never reaches the dictionary matcher.
 
 ### 2. Page text, in detail
 

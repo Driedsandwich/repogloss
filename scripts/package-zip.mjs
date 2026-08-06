@@ -89,8 +89,13 @@ if (problems.length) {
 // 提出物の身元を1つのファイルにまとめておく。報告や CI の成果物へそのまま添える。
 // どのコミットの、どの実行から出たものかを、この1枚だけで特定できるようにする
 // （成果物だけ手元に残ったときに出どころを追えないと、提出物を取り違える）。
+//
+// **作るときだけ書く。** 検査のときに書き直してはいけない。CI が作った成果物を
+// 別の環境で検証すると、正本に入っている CI の run・commit・環境の記録が、
+// 検証した側のローカル情報へ置き換わってしまう（実測で再現した）。
 const env = process.env;
-writeFileSync(join(DIST, `${zipName}.json`), JSON.stringify({
+const PROVENANCE = join(DIST, `${zipName}.json`);
+const provenance = {
   name: zipName, version, bytes: raw.length, fileCount: names.length,
   sha256: sha256(raw), contentSha256: contentSha, files: names,
   source: {
@@ -108,7 +113,41 @@ writeFileSync(join(DIST, `${zipName}.json`), JSON.stringify({
     zlib: process.versions.zlib ?? null,
     platform: process.platform
   }
-}, null, 2) + '\n');
+};
+
+if (VERIFY_ONLY) {
+  // 検査だけ。正本には触れず、記録が実物と合っているかを確かめる。
+  if (!existsSync(PROVENANCE)) {
+    console.error(`NG: 正本の身元ファイルが無い: ${relative(ROOT, PROVENANCE)}`);
+    console.error('提出物の検証では、どの実行から出たものか分からない ZIP を通さない');
+    process.exit(1);
+  }
+  let rec;
+  try { rec = JSON.parse(readFileSync(PROVENANCE, 'utf8')); }
+  catch (e) { console.error(`NG: 身元ファイルが JSON として読めない: ${e.message}`); process.exit(1); }
+  const mismatch = [];
+  if (rec.sha256 !== provenance.sha256) mismatch.push(`ZIP の SHA-256（記録 ${rec.sha256} / 実物 ${provenance.sha256}）`);
+  if (rec.contentSha256 !== provenance.contentSha256) mismatch.push('中身の合算ハッシュ');
+  if (rec.version !== provenance.version) mismatch.push(`version（記録 ${rec.version} / 実物 ${provenance.version}）`);
+  if (rec.bytes !== provenance.bytes) mismatch.push(`大きさ（記録 ${rec.bytes} / 実物 ${provenance.bytes}）`);
+  if (rec.fileCount !== provenance.fileCount) mismatch.push('ファイル数');
+  if (JSON.stringify(rec.files) !== JSON.stringify(provenance.files)) mismatch.push('ファイルの一覧');
+  // 出どころは、記録側だけが知っている（別環境で検証するときは env が空になる）。
+  // 今の HEAD と食い違っていたら、別のコミットの成果物を見ている可能性がある。
+  const here = provenance.source.commit;
+  if (rec.source && rec.source.commit && here && rec.source.commit !== here) {
+    mismatch.push(`出どころのコミット（記録 ${rec.source.commit} / いまの HEAD ${here}）`);
+  }
+  if (mismatch.length) {
+    console.error(`NG: 正本の記録と実物が食い違う\n` + mismatch.map(m => '  - ' + m).join('\n'));
+    process.exit(1);
+  }
+  // ローカルで検証した記録を残したい場合は、正本と別の名前へ出す
+  writeFileSync(join(DIST, `${zipName}.verified-local.json`),
+    JSON.stringify({ verifiedAt: 'local', ...provenance }, null, 2) + '\n');
+} else {
+  writeFileSync(PROVENANCE, JSON.stringify(provenance, null, 2) + '\n');
+}
 
 console.log(`OK: ${names.length} ファイル / ${raw.length.toLocaleString()} バイト（version ${version}）`);
 console.log(`ZIP_NAME        ${zipName}`);

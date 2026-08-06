@@ -147,6 +147,8 @@ check('content.js が checkVisibility で祖先まで可視性を見ている',
 // 判定はコメントを除いた本体で行う（説明文で名前に触れることはあるため）
 check('content.js が contentVisibilityAuto を渡していない',
   !/contentVisibilityAuto/.test(stripComments(content)));
+check('content.js が、付けた印の有効性を isConnected だけで判断していない',
+  /function usableGloss/.test(content) && !/prev\s*&&\s*prev\.isConnected/.test(content));
 
 /* ---------- 辞書 ---------- */
 const dict = readJson('locales/dict.json');

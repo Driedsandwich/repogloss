@@ -175,6 +175,16 @@ const REPO_PAGE = `<!doctype html><html lang="en" data-color-mode="light">
         clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap">this repository navigation</span>
   <p id="after-clip">Later visible repository paragraph.</p>
 
+  <!-- ⑯ 後から隠される印（古い印が後続を抑止しないかの確認に使う） -->
+  <p id="stale-a">Do not reset it lightly.</p>
+  <p id="stale-b">Add an ssh key first.</p>
+  <div id="sink"></div>
+
+  <!-- ⑭ 画面の外にある印。実際に Tab を押し続けて到達する（focus() を呼ばない）。
+       ここへ止まるとブラウザが自動でスクロールするので、説明が消えないことを確かめる。 -->
+  <div style="height:1800px"></div>
+  <p id="far-below">Undo it with a revert.</p>
+
   <a href="#" id="after">after</a>
 
   <script>

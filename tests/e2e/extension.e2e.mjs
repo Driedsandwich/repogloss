@@ -459,6 +459,38 @@ test('拡張として読み込んだ状態で動く', async t => {
     assert.ok(r.clip.rects > 0, 'clip 要素に箱が無い＝箱の検査で落ちてしまい反例にならない');
   });
 
+  await t.test('見えなくなった古い印は、後から現れた読める語を妨げない', async () => {
+    // DOM に残っていること（isConnected）は、説明として使えることを意味しない。
+    const before = await tab.evaluate(`(() => {
+      const n = k => document.querySelectorAll('.iiyaku-icon[data-iiyaku-key="' + k + '"]').length;
+      return { reset: n('reset'), sshKey: n('ssh key') };
+    })()`);
+    assert.deepEqual(before, { reset: 1, sshKey: 1 }, '前提の印が付いていない');
+
+    await tab.evaluate(`(() => {
+      document.getElementById('stale-a').style.display = 'none';   // reset を隠す
+      document.getElementById('stale-b').style.opacity = '0';      // ssh key を隠す
+      const a = document.createElement('p'); a.id = 'new-reset';
+      a.textContent = 'A fresh reset appears here.';
+      const b = document.createElement('p'); b.id = 'new-sshkey';
+      b.textContent = 'A fresh ssh key appears here.';
+      document.getElementById('sink').append(a, b);
+    })(); true`);
+    await waitFor('隠れた語が、新しく現れた読める場所へ付き直る', async () =>
+      await tab.evaluate(`document.querySelectorAll('#new-reset .iiyaku-icon').length === 1
+                       && document.querySelectorAll('#new-sshkey .iiyaku-icon').length === 1`));
+
+    const after = await tab.evaluate(`(() => {
+      const n = k => document.querySelectorAll('.iiyaku-icon[data-iiyaku-key="' + k + '"]').length;
+      return { oldReset: document.querySelectorAll('#stale-a .iiyaku-icon').length,
+               oldSshKey: document.querySelectorAll('#stale-b .iiyaku-icon').length,
+               totalReset: n('reset'), totalSshKey: n('ssh key') };
+    })()`);
+    // 古い印は片づける。残すと同じ語の印が画面に2つあることになる。
+    assert.deepEqual(after, { oldReset: 0, oldSshKey: 0, totalReset: 1, totalSshKey: 1 },
+      `古い印が残っているか、同じ語の印が増えている: ${JSON.stringify(after)}`);
+  });
+
   await t.test('コード表示部分には印が付かない', async () => {
     assert.equal(await tab.evaluate(`document.querySelectorAll('#code .iiyaku-icon').length`), 0);
   });

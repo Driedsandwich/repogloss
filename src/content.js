@@ -510,6 +510,41 @@
     window.addEventListener('resize', onViewportChange);
   }
 
+  /* ---------- 5-2. 付けた印が、まだ説明として使えるか ---------- */
+  // DOM に残っていること（isConnected）は「使える」ことを意味しない。
+  // 祖先が display:none や opacity:0 になっても、inert の中へ移されても、
+  // isConnected は true のままである。それを説明済みの証拠にすると、
+  // 後から現れた**読める同じ語**へ説明が付かなくなる（実測で再現）。
+  //
+  // 使えると言えるのは、次をすべて満たすときだけ:
+  //   - DOM にあり、その場所が実際に見えている
+  //   - 単独の印なら、その印自身が Tab の順路に入る
+  //   - 装飾扱いの印なら、対応する入口が生きていて Tab の順路に入る
+  function usableGloss(key) {
+    const icon = glossed.get(key);
+    if (!icon || !icon.isConnected) return null;
+    if (!isVisibleOccurrence(icon.parentElement)) return null;
+    const forId = icon.dataset.iiyakuFor;
+    if (forId) {
+      const trigger = document.querySelector(`[data-iiyaku-trigger="${forId}"]`);
+      return trigger && tabbable(trigger) ? icon : null;
+    }
+    return tabbable(icon) ? icon : null;
+  }
+
+  // 使えなくなった印を片づける。本文の文字は触らない（印は <sup> 1つで、
+  // 中に文字を持たないため、取り除いても文章は壊れない）。
+  function retireGloss(key) {
+    const icon = glossed.get(key);
+    if (!icon) return;
+    if (icon.isConnected) {
+      // その印について説明を出している最中なら、先に閉じる
+      if (tip && tipIcons.includes(icon)) hideTip();
+      icon.remove();
+    }
+    glossed.delete(key);
+  }
+
   /* ---------- 6. 注記 ---------- */
   // 1つのテキストノードに含まれる一致すべてへ注記する。
   // 後ろの一致から順に分割すれば、まだ処理していない前方の位置がずれない。
@@ -521,11 +556,11 @@
     // 同じ語はページで最初の1回だけ。説明は一度読めば足りるうえ、
     // git の解説ページのような文書では印が数百個になり本文が読めなくなる。
     // ただし前に付けた印が「もう説明として使えない」なら、付け直す。
-    const hits = matcher.findHits(node.nodeValue, key => {
-      const prev = glossed.get(key);
-      return !!(prev && prev.isConnected);
-    });
+    const hits = matcher.findHits(node.nodeValue, key => usableGloss(key) !== null);
     if (hits.length === 0) { handled.add(node); return 0; }
+    // 付け直すと決まったキーについて、使えなくなった古い印を取り除く。
+    // 残しておくと、同じ語の印が画面に2つあることになる。
+    for (const h of hits) retireGloss(h.key);
 
     // 入れる場所の扱いは、印を入れると決まってから調べる。
     // closest() は祖先をたどるので、一致の有無に関わらず全候補で呼ぶと重い

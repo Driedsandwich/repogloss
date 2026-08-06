@@ -28,10 +28,10 @@ RepoGloss は、GitHub の画面に出てくる英語のうち Git / GitHub 固�
 差分は次のコマンドで確認できます。
 
 ```sh
-git diff --name-only v1.8.4 main
+git diff --name-only v1.8.5 main
 # → STORE_LISTING.md と AUDIT.md（提出物の記録）のみ。配布13ファイルは出てこない
 
-git diff --name-only v1.8.3 v1.8.4
+git diff --name-only v1.8.4 v1.8.5
 # → 第5回監査への対応。配布13ファイルのうち src/content.js・src/matcher.js・
 #    styles.css・README.md・DESIGN.md・PRIVACY.md・manifest.json が変わっている
 ```
@@ -49,7 +49,7 @@ git diff --name-only v1.8.3 v1.8.4
 **入手方法**: 上記 run の Artifacts から取得できる（保存期間30日）。
 
 ```sh
-gh run download 31076712703 -R Driedsandwich/repogloss -n repogloss-store-zip
+gh run download 31094587675 -R Driedsandwich/repogloss -n repogloss-store-zip
 ```
 
 **照合済み**: ダウンロードして計算した SHA-256 が CI のログと一致し、展開した13ファイルは**タグ `v1.8.4` の中身と1バイトも違わない**。対照として v1.8.3 と比べると7ファイルで相違が出る。

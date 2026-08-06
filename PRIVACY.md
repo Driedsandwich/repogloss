@@ -6,18 +6,27 @@
 
 ## 日本語
 
-### 1. 収集・送信するもの
+### 1. 取り扱うデータの一覧
 
-**ありません。** 本拡張は、利用者の情報を収集せず、外部へ送信せず、第三者へ提供しません。外部のサーバーとの通信を一切行いません（翻訳API・解析サービス・広告のいずれも使っていません）。
+「取り扱う（handle）」には、集める・送る・**使う**・共有する、のすべてが含まれます。端末の中だけで処理し、どこへも送らない場合でも、**使っていること自体は開示が必要**です。そのため、以下では動作を5つに分けて書きます。
 
-### 2. 読み取るもの
+| データ | 処理（使う） | 端末内に保存 | 外部へ送信 | 第三者と共有 | 開発者が閲覧 |
+|---|---|---|---|---|---|
+| GitHub のページ上に**表示されている文章** | **する**（同梱辞書との照合） | しない | しない | しない | しない |
+| ON / OFF の設定（真偽値 `iiyakuEnabled` ひとつ） | する | **する**（`chrome.storage.local`） | しない | しない | しない |
+| 閲覧履歴・アカウント情報・入力内容・Cookie・認証情報 | しない | しない | しない | しない | しない |
 
-`github.com` のページを開いている間、**ページ上に表示されている文章を読み取ります。**
+外部のサーバーとの通信は一切行いません（翻訳API・解析サービス・広告のいずれも使っていません）。
 
-- 読み取った文章は、拡張に同梱された辞書（`locales/dict.json`）と照合するためだけに使います。
-- 照合はすべて利用者の端末内（ブラウザの中）で完結します。
-- 一致した用語の横に ⓘ を表示し、日本語の説明をツールチップとして出す以外の用途には使いません。
+### 2. 表示されている文章の扱い（くわしく）
+
+`github.com` のページを開いている間、**ページ上に表示されている文章を読み取り、利用します。**
+
+- 用途は、拡張に同梱された辞書（`locales/dict.json`）と照合することだけです。
+- 照合はすべて利用者の端末内（ブラウザの中）で完結します。ネットワークへは出ません。
+- 結果として、一致した用語の横に ⓘ を表示し、日本語の説明をツールチップとして出します。それ以外の用途はありません。
 - 読み取った内容を保存しません。ページを閉じれば残りません。
+- 編集中の領域（`contenteditable`・入力欄・コード表示）には触れず、読み取りも書き換えもしません。
 
 読み取りの範囲は `github.com` に限られます。他のサイトでは動作しません（`manifest.json` の `content_scripts.matches` が `https://github.com/*` のみのため）。
 
@@ -59,18 +68,27 @@ GitHub リポジトリの Issue でお願いします。脆弱性の報告のみ
 
 ## English
 
-### 1. What we collect or transmit
+### 1. What data is handled
 
-**Nothing.** This extension does not collect, transmit, or share any user information. It makes no network requests to any external server (no translation API, no analytics, no ads).
+"Handling" user data covers collecting, transmitting, **using**, and sharing it. Processing that happens entirely on the user's own device, and is never transmitted anywhere, still counts as *use* and is disclosed here. The table separates the five actions.
 
-### 2. What we read
+| Data | Processed (used) | Stored on device | Transmitted off device | Shared with third parties | Viewed by the developer |
+|---|---|---|---|---|---|
+| **Text displayed on** GitHub pages | **Yes** (matched against the bundled dictionary) | No | No | No | No |
+| On/off setting (a single boolean, `iiyakuEnabled`) | Yes | **Yes** (`chrome.storage.local`) | No | No | No |
+| Browsing history, account info, form input, cookies, credentials | No | No | No | No | No |
 
-While a `github.com` page is open, the extension **reads the text displayed on that page.**
+No network requests are made to any external server (no translation API, no analytics, no ads).
+
+### 2. Displayed text, in detail
+
+While a `github.com` page is open, the extension **reads and uses the text displayed on that page.**
 
 - The text is used solely to match against a dictionary bundled with the extension (`locales/dict.json`).
-- All matching happens locally, inside the user's browser.
+- All matching happens locally, inside the user's browser. Nothing leaves the device.
 - The only result is a small ⓘ marker next to a matched term, showing a Japanese explanation as a tooltip.
 - Read text is never stored. Nothing remains once the page is closed.
+- Editable regions (`contenteditable`, form fields, code views) are neither read nor modified.
 
 Reading is limited to `github.com`. The extension does not run on any other site.
 

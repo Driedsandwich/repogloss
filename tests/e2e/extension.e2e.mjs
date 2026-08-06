@@ -11,7 +11,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { launchChrome, startTestServer, stageExtension, stageExtensionWithPrelude, stageExtensionWith,
-         SENTINEL_PAGE, LIFECYCLE_PAGE, RETIRE_PAGE, openPage, sleep, waitFor,
+         SENTINEL_PAGE, LIFECYCLE_PAGE, VISIBILITY_PAGE, RETIRE_PAGE, openPage, sleep, waitFor,
          pressKey, collectTabOrder, tabUntil } from './helpers/chrome.mjs';
 
 const PAGE = 'https://github.com/octocat/Hello-World';
@@ -726,6 +726,176 @@ test('見えない直接テキストを避け、印を付け直せる', async t 
     const after = await count();
     assert.deepEqual([after.old, after.total], [1, 1], `リンクへ戻らない: ${JSON.stringify(after)}`);
     assert.equal(after.text, 'Add an ssh key', 'リンクの文字が変わっている');
+  });
+
+  await tab.close();
+});
+
+/*
+ * 箱を作らない要素（display:contents）と、切り取りによる非表示。
+ *
+ * どちらも「箱を持つ先祖に1回聞いた答え」を子へ転用すると誤る。しかも
+ * 誤り方が両方向にある——見えないものへ印を付ける側と、見えているものを
+ * 落とす側の両方。片側だけを試すと、もう片側を壊しても気づけないので、
+ * 反例を対にして置く。
+ */
+test('箱を持たない文字と、切り取りの判定', async t => {
+  const srv = await startTestServer(VISIBILITY_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await chrome.cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(chrome.cdp, PAGE);
+  await waitFor('印が付く', async () =>
+    await tab.evaluate(`document.querySelectorAll('.iiyaku-icon').length > 0`));
+  await sleep(400);
+
+  const counts = async ids => await tab.evaluate(`${JSON.stringify(ids)}
+    .map(id => document.getElementById(id).querySelectorAll('.iiyaku-icon').length)`);
+
+  await t.test('display:contents の文字を、性質ごとに分けて判定する（5種）', async () => {
+    const r = await tab.evaluate(`(() => {
+      const n = id => document.getElementById(id).querySelectorAll('.iiyaku-icon').length;
+      return {
+        // 先祖が中身を飛ばしている: 読めないので、後ろの本文へ回す
+        contentVisibility: { there: n('cv-host'), later: n('cv-later') },
+        // 先祖が visibility:hidden でも、子が visible に戻していれば読める
+        visibilityRestored: { there: n('vh-host'), later: n('vh-later') },
+        // 先祖が opacity:0 / display:none: 読めない
+        opacity: { there: n('op-host'), later: n('op-later') },
+        display:  { there: n('dn-host'), later: n('dn-later') },
+        // ふつうの display:contents（直接テキスト）: 読める
+        plain: n('plain-dc')
+      };
+    })()`);
+    assert.deepEqual(r, {
+      contentVisibility:  { there: 0, later: 1 },
+      visibilityRestored: { there: 1, later: 0 },
+      opacity:            { there: 0, later: 1 },
+      display:            { there: 0, later: 1 },
+      plain: 1
+    }, `判定が実際の見え方と合っていない: ${JSON.stringify(r)}`);
+  });
+
+  await t.test('反例が本当に反例であることを、ブラウザ自身に確かめる（対照）', async () => {
+    // ここが崩れると、上の試験は何も確かめていないことになる。
+    const r = await tab.evaluate(`(() => {
+      const OPT = { opacityProperty: true, visibilityProperty: true };
+      const NOVIS = { opacityProperty: true };
+      const rects = el => { const g = document.createRange();
+        g.selectNodeContents(el); return g.getClientRects().length; };
+      const f = id => { const el = document.getElementById(id); const cs = getComputedStyle(el);
+        return { display: cs.display, visibility: cs.visibility,
+                 visible: el.checkVisibility(OPT), rects: rects(el) }; };
+      return {
+        cvDc: f('cv-dc'), vhDc: f('vh-dc'),
+        cvHostVisible: document.getElementById('cv-host').checkVisibility(OPT),
+        cvHostCv: getComputedStyle(document.getElementById('cv-host')).contentVisibility,
+        vhHostVisible: document.getElementById('vh-host').checkVisibility(OPT),
+        vhHostNoVis: document.getElementById('vh-host').checkVisibility(NOVIS)
+      };
+    })()`);
+    // ① 中身を飛ばす先祖: 先祖自身は「見えている」と答える。
+    //    最初から飛ばされている場合は Range の矩形も 0 になる（実測）。
+    //    一度描かれてから飛ばした場合は矩形が残る——そちらは下の別の試験で見る。
+    assert.equal(r.cvHostVisible, true, '先祖が false＝別の理由で落ちており反例になっていない');
+    assert.equal(r.cvHostCv, 'hidden', 'content-visibility:hidden が効いていない');
+    assert.equal(r.cvDc.rects, 0, `最初から飛ばした中身に矩形が出た（${r.cvDc.rects}）＝前提が変わった`);
+    // ② visibility を戻した子: 先祖は「見えていない」と答えるが、子は visible
+    assert.equal(r.vhHostVisible, false, '先祖が true＝反例になっていない');
+    assert.equal(r.vhDc.visibility, 'visible', '子の visibility が visible に戻っていない');
+    assert.ok(r.vhDc.rects > 0, '子の文字に矩形が無い＝見えているという前提が崩れている');
+    // ③ visibility を外して聞けば、先祖は「見えている」と答える（判定の要）
+    assert.equal(r.vhHostNoVis, true, 'visibility を外しても先祖が false＝この分け方が成り立たない');
+    // ④ どちらも箱を持たない（だから先祖に聞く必要がある）
+    assert.equal(r.cvDc.display, 'contents');
+    assert.equal(r.vhDc.display, 'contents');
+    assert.equal(r.cvDc.visible, false, 'display:contents で checkVisibility が true＝前提が変わった');
+  });
+
+  await t.test('一度描かれてから中身を飛ばされた場所は、矩形が残っていても除外する', async () => {
+    // これが RG-7-01a の本命。Range は隠したあとも矩形を返し続けるので
+    // （実測: 前 1 個 / 後 1 個）、「矩形があるか」だけでは見抜けない。
+    assert.deepEqual(await counts(['late-host']), [1], '前提の印が無い');
+    const before = await tab.evaluate(`(() => { const g = document.createRange();
+      g.selectNodeContents(document.getElementById('late-dc')); return g.getClientRects().length; })()`);
+    await tab.evaluate(`(() => {
+      document.getElementById('late-host').style.contentVisibility = 'hidden';
+      document.getElementById('late-host').getBoundingClientRect();   // レイアウトを起こす
+      const p = document.createElement('p'); p.id = 'late-fresh';
+      p.textContent = 'Another fetch happens.';
+      document.getElementById('late-sink').append(p);
+    })(); true`);
+    await waitFor('読める側へ回る', async () => await counts(['late-fresh']).then(c => c[0] === 1));
+    const r = await tab.evaluate(`(() => {
+      const g = document.createRange(); g.selectNodeContents(document.getElementById('late-dc'));
+      const host = document.getElementById('late-host');
+      return { rectsAfter: g.getClientRects().length,
+               hostVisible: host.checkVisibility({ opacityProperty: true, visibilityProperty: true }),
+               there: host.querySelectorAll('.iiyaku-icon').length,
+               fresh: document.querySelectorAll('#late-fresh .iiyaku-icon').length };
+    })()`);
+    // 対照: 矩形も先祖の答えも「見えている」と言い続けている
+    assert.ok(before > 0, '隠す前に矩形が無い＝前提が崩れている');
+    assert.ok(r.rectsAfter > 0, `隠したら矩形も消えた（${r.rectsAfter}）＝この反例が成り立たない`);
+    assert.equal(r.hostVisible, true, '先祖が false を返す＝別の理由で落ちており反例にならない');
+    // それでも、飛ばされた側には付けず、読める側へ回すこと
+    assert.deepEqual([r.there, r.fresh], [0, 1], `飛ばされた側に印が残っている: ${JSON.stringify(r)}`);
+  });
+
+  await t.test('画面外の content-visibility:auto は除外しない', async () => {
+    // 画面外というだけで落とすと、長いページの下が永久に注記されない。
+    assert.deepEqual(await counts(['cva-host']), [1]);
+  });
+
+  await t.test('legacy clip は絶対配置のときだけ効く（6種）', async () => {
+    const r = await tab.evaluate(`(() => {
+      const n = id => document.getElementById(id).querySelectorAll('.iiyaku-icon').length;
+      return { staticClip: n('clip-static'), relativeClip: n('clip-relative'),
+               absClip: { there: n('clip-abs'), later: n('abs-later') },
+               fixedClip: { there: n('clip-fixed'), later: n('fixed-later') },
+               clipPath: { there: n('clippath-static'), later: n('clippath-later') },
+               primer: { there: n('primer'), later: n('primer-later') } };
+    })()`);
+    assert.deepEqual(r, {
+      staticClip: 1,          // 見えている。除外してはいけない
+      relativeClip: 1,        // 同上
+      absClip:   { there: 0, later: 1 },
+      fixedClip: { there: 0, later: 1 },
+      clipPath:  { there: 0, later: 1 },   // clip-path は配置に関係なく効く
+      primer:    { there: 0, later: 1 }    // 1px 四方の読み上げ専用
+    }, `切り取りの判定が実際の見え方と合っていない: ${JSON.stringify(r)}`);
+  });
+
+  await t.test('切り取りが実際に効いているかを、当たり判定で確かめる（対照）', async () => {
+    // 「clip は絶対配置にしか効かない」を、こちらの式の言い換えではなく
+    // ブラウザの振る舞いで見る。切り取られた領域は指も当たらない。
+    const r = await tab.evaluate(`(() => {
+      const at = id => { const el = document.getElementById(id);
+        // elementFromPoint は画面の座標で見る。画面の外にあると必ず null になり、
+        // 「当たらない＝切り取られている」と取り違える（実測でそうなった）。
+        el.scrollIntoView({ block: 'center' });
+        const b = el.getBoundingClientRect();
+        const hit = document.elementFromPoint(b.left + Math.min(4, b.width / 2), b.top + b.height / 2);
+        return { self: !!hit && (hit === el || el.contains(hit)),
+                 onScreen: b.top >= 0 && b.bottom <= document.documentElement.clientHeight,
+                 w: Math.round(b.width), clip: getComputedStyle(el).clip,
+                 position: getComputedStyle(el).position }; };
+      return { st: at('clip-static'), rel: at('clip-relative'), abs: at('clip-abs') };
+    })()`);
+    // まず、3つとも画面の中で測れていること（測れていなければ以下は無意味）
+    for (const [k, v] of Object.entries(r)) {
+      assert.equal(v.onScreen, true, `${k} が画面の外にある＝当たり判定を測れていない`);
+    }
+    // 3つとも同じ clip 指定であること（違いは position だけ）
+    assert.equal(r.st.clip, 'rect(0px, 0px, 0px, 0px)', `static の clip 指定が違う: ${r.st.clip}`);
+    assert.equal(r.abs.clip, 'rect(0px, 0px, 0px, 0px)', `absolute の clip 指定が違う: ${r.abs.clip}`);
+    assert.equal(r.st.position, 'static');
+    assert.equal(r.abs.position, 'absolute');
+    assert.ok(r.st.w > 100, `static の箱が小さい＝反例になっていない: ${r.st.w}`);
+    // 効き方が違う: static/relative は当たる（＝見えている）、absolute は当たらない
+    assert.equal(r.st.self, true, 'static で clip が効いている＝この判定の前提が変わった');
+    assert.equal(r.rel.self, true, 'relative で clip が効いている＝この判定の前提が変わった');
+    assert.equal(r.abs.self, false, 'absolute で clip が効いていない＝反例になっていない');
   });
 
   await tab.close();

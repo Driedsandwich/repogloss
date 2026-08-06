@@ -104,6 +104,12 @@
     opacityProperty: true, visibilityProperty: true,     // 現行の綴り
     checkOpacity: true, checkVisibilityCSS: true         // 古い綴り
   };
+  // 箱を持たない要素（display:contents）の**先祖**に聞くとき用。
+  // visibility だけをわざと外す——visibility は継承する性質で、子が
+  // visibility:visible に戻していれば、先祖が hidden でも文字は見えているため。
+  // display:none・opacity・先祖の content-visibility は継承しないので、
+  // これらは先祖側に聞くしかない。
+  const CONTENTS_HOST_OPTS = { opacityProperty: true, checkOpacity: true };
   const HAS_CHECK_VISIBILITY = typeof Element.prototype.checkVisibility === 'function';
 
   let visibleCache = null;   // 走査1回のあいだだけ有効
@@ -170,10 +176,42 @@
   // 文字そのものが描かれているか。display:contents の要素は箱を持たないので
   // offsetWidth / offsetHeight が 0 になるが、中の文字は普通に見えている。
   // 要素の箱ではなく、文字の範囲で確かめる。
+  //
+  // ⚠️ これ単独では可視性の証明にならない。content-visibility:hidden で飛ばされた
+  // 中身にも Range は矩形を返す（実測で 3 個）。描かれていない文字にも矩形が出る。
   function hasRenderedText(el) {
     const r = document.createRange();
     r.selectNodeContents(el);
     return r.getClientRects().length > 0;
+  }
+
+  // display:contents の要素にある文字が、実際に読めるか。
+  //
+  // 箱を持つ先祖の可視性を、そのまま子の答えに使ってはいけない。実測の反例が2つある:
+  //   - 先祖が content-visibility:hidden … 先祖自身は描画されたままなので、
+  //     先祖に聞くと「見えている」と答える。しかし中身は飛ばされていて読めない
+  //     （Range の矩形も出るので、矩形の有無でも見抜けない）。
+  //   - 先祖が visibility:hidden で、子が visibility:visible に戻している …
+  //     先祖に聞くと「見えていない」。しかし子の文字は見えている。
+  // どちらも「先祖の1つの答え」を子へ転用したことが原因なので、性質ごとに分ける。
+  //   visibility            … 継承する。子の computed 値が正しい
+  //   display:none / opacity / 先祖の content-visibility … 継承しない。先祖に聞く
+  //   文字が実際に描かれているか … 子の Range で見る
+  //   clip                  … 子から上へたどる（既存の判定）
+  // content-visibility:auto は落とさない（画面外というだけで永久に除外しないため）。
+  function isVisibleContentsText(el, cs) {
+    if (cs.visibility !== 'visible') return false;
+    const host = boxedAncestor(el);
+    if (host) {
+      // visibility を外して聞く。display:none と opacity と、
+      // さらに上の content-visibility:hidden は、これで落ちる。
+      if (!host.checkVisibility(CONTENTS_HOST_OPTS)) return false;
+      // 先祖自身が中身を飛ばしている場合、その先祖は描画されたままなので
+      // checkVisibility では落ちない。ここだけは名指しで見る。
+      if (getComputedStyle(host).contentVisibility === 'hidden') return false;
+    }
+    if (!hasRenderedText(el)) return false;
+    return !isClipHidden(el);
   }
 
   function isVisibleOccurrence(el) {
@@ -182,32 +220,33 @@
       const hit = visibleCache.get(el);
       if (hit !== undefined) return hit;
     }
+    // レイアウトを起こすので高い。1要素につき1回だけ取って使い回す。
+    const cs = getComputedStyle(el);
     let ok;
-    let cs = null;   // 必要になったときだけ1回だけ取る（レイアウトを起こすので高い）
-    if (HAS_CHECK_VISIBILITY) {
+    if (cs.display === 'contents') {
+      // 箱を作らない要素。Chrome は checkVisibility に false を返すが（実測）、
+      // それは「隠れている」ではなく「箱が無い」という意味なので、転用できない。
+      ok = HAS_CHECK_VISIBILITY
+        ? isVisibleContentsText(el, cs)
+        : (cs.visibility === 'visible' && hasRenderedText(el) && !isClipHidden(el));
+    } else if (HAS_CHECK_VISIBILITY) {
       ok = el.checkVisibility(CHECK_VISIBILITY_OPTS);
-      // display:contents の要素は箱を作らないので、Chrome は「描画されていない」と
-      // 答える（実測で false）。しかし中の文字は普通に見えている（文字の範囲は
-      // 矩形を持つ）。ここで落とすと、見えている語を取りこぼす。
-      // 箱を持つ最も近い先祖の可視性で判断し、文字が実際に描かれていることも確かめる。
-      if (!ok && (cs = getComputedStyle(el)).display === 'contents') {
-        const host = boxedAncestor(el);
-        ok = !!host && host.checkVisibility(CHECK_VISIBILITY_OPTS) && hasRenderedText(el);
-      }
+      // その要素自身が content-visibility:hidden のとき、**中身**は隠れているのに
+      // 要素自体は描画されているので checkVisibility は true を返す（実測）。
+      // 直接テキストを持つ場合はここで落とさないと、見えない語に印が付く。
+      if (ok && cs.contentVisibility === 'hidden') ok = false;
+      // 箱をまったく持たず、文字も描かれていないもの
+      if (ok && el.offsetWidth === 0 && el.offsetHeight === 0) ok = hasRenderedText(el);
+      if (ok && isClipHidden(el)) ok = false;
     } else {
-      // 使えない環境では、せめて直接の親だけでも見る（v1.8.3 までの判定）
-      cs = getComputedStyle(el);
+      // checkVisibility が無い環境。manifest の minimum_chrome_version より古い
+      // Chrome か、拡張を手で読み込んだ場合にしか起きない。祖先の opacity や
+      // content-visibility は見抜けないので、ここは「落ちないための保険」にすぎない。
       ok = !(cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0');
+      if (ok && cs.contentVisibility === 'hidden') ok = false;
+      if (ok && el.offsetWidth === 0 && el.offsetHeight === 0) ok = hasRenderedText(el);
+      if (ok && isClipHidden(el)) ok = false;
     }
-    // その要素自身が content-visibility:hidden のとき、**中身**は隠れているのに
-    // 要素自体は描画されているので checkVisibility は true を返す（実測）。
-    // 直接テキストを持つ場合はここで落とさないと、見えない語に印が付く。
-    // content-visibility:auto は落とさない（画面外というだけで永久に除外しないため）。
-    if (ok && (cs || (cs = getComputedStyle(el))).contentVisibility === 'hidden') ok = false;
-    // 箱をまったく持たないもの。ただし display:contents は箱を作らないだけで
-    // 文字は見えているので、文字の範囲で描かれているかを確かめる。
-    if (ok && el.offsetWidth === 0 && el.offsetHeight === 0) ok = hasRenderedText(el);
-    if (ok && isClipHidden(el)) ok = false;
     if (visibleCache) visibleCache.set(el, ok);
     return ok;
   }

@@ -29,9 +29,13 @@ const manifest = readJson('manifest.json');
 
 // 増やすときは、ここと文書と審査の申告を同時に直す、と決めておく
 const ALLOWED_TOP_KEYS = [
-  'manifest_version', 'name', 'version', 'description',
+  'manifest_version', 'name', 'version', 'description', 'minimum_chrome_version',
   'permissions', 'action', 'icons', 'content_scripts', 'web_accessible_resources'
 ];
+// 動作に必要な最低の Chrome。Element.checkVisibility が入った版。
+// これが無い環境では、祖先の opacity と content-visibility を見抜けず、
+// 見えない場所へ印が付く（実測: 8 つの場面のうち 2 つで逆の答えになった）。
+const MIN_CHROME = '105';
 const ALLOWED_PERMISSIONS = ['storage'];
 const ALLOWED_MATCHES = ['https://github.com/*'];
 const ALLOWED_JS = ['src/matcher.js', 'src/content.js'];
@@ -42,6 +46,8 @@ check('manifest: Manifest V3', manifest.manifest_version === 3, `manifest_versio
 check('manifest: version が x.y.z', /^\d+\.\d+\.\d+$/.test(manifest.version), `version=${manifest.version}`);
 const extraKeys = Object.keys(manifest).filter(k => !ALLOWED_TOP_KEYS.includes(k));
 check('manifest: 想定外の項目が無い', extraKeys.length === 0, `増えた項目: ${extraKeys.join(', ')}`);
+check(`manifest: minimum_chrome_version が ${MIN_CHROME}`, manifest.minimum_chrome_version === MIN_CHROME,
+  `minimum_chrome_version=${manifest.minimum_chrome_version}`);
 check('manifest: permissions は storage だけ', eq(manifest.permissions, ALLOWED_PERMISSIONS), `permissions=${JSON.stringify(manifest.permissions)}`);
 check('manifest: host_permissions を持たない', !manifest.host_permissions);
 check('manifest: optional_permissions を持たない', !manifest.optional_permissions);

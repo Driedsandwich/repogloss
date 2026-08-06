@@ -600,6 +600,45 @@ test('除外する領域のテキストを、拡張が一度も読んでいな�
 });
 
 /*
+ * manifest の minimum_chrome_version が要る理由を、実測で残す。
+ *
+ * Element.checkVisibility が無い環境では、祖先の opacity / content-visibility を
+ * 見抜けない。「単純な代替手段では支えられない」ことを、印の付き方の差で示す。
+ * これが成り立たなくなったら（＝代替手段で同じ答えが出るなら）、最低版の指定を
+ * 見直してよい、という関係を固定しておく。
+ */
+test('checkVisibility が無いと、見えない場所へ印が付く（最低版を要する理由）', async t => {
+  const srv = await startTestServer(VISIBILITY_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  t.after(async () => { chrome.kill(); await srv.close(); });
+
+  await chrome.cdp.send('Extensions.loadUnpacked', { path: stageExtensionWith(
+    { 'no-cv.js': 'tests/e2e/no-checkvisibility.js' }, js => ['no-cv.js', ...js]) });
+  const tab = await openPage(chrome.cdp, PAGE);
+  await waitFor('計測用の差し替えが効いている', async () =>
+    await tab.evaluate(`document.documentElement.getAttribute('data-rg-no-checkvisibility') === 'ready'`));
+  await waitFor('印が付く', async () =>
+    await tab.evaluate(`document.querySelectorAll('.iiyaku-icon').length > 0`));
+  await sleep(600);
+
+  const r = await tab.evaluate(`(() => {
+    const n = id => document.getElementById(id).querySelectorAll('.iiyaku-icon').length;
+    return { cv: { there: n('cv-host'), later: n('cv-later') },
+             opacity: { there: n('op-host'), later: n('op-later') },
+             display: { there: n('dn-host'), later: n('dn-later') } };
+  })()`);
+  // 祖先の content-visibility と opacity は見抜けず、見えない側へ付いてしまう
+  assert.deepEqual(r.cv, { there: 1, later: 0 },
+    `代替手段だけで content-visibility を見抜けている＝最低版の根拠が変わった: ${JSON.stringify(r.cv)}`);
+  assert.deepEqual(r.opacity, { there: 1, later: 0 },
+    `代替手段だけで opacity を見抜けている＝最低版の根拠が変わった: ${JSON.stringify(r.opacity)}`);
+  // display:none は代替手段でも見抜ける（差が出るのは上の2つだけ、という切り分け）
+  assert.deepEqual(r.display, { there: 0, later: 1 });
+
+  await tab.close();
+});
+
+/*
  * 見えない場所の「直接テキスト」と、印の付け直し。
  * 語が重ならないよう、専用のページを使う（同じ語はページで1回しか注記しないため）。
  */

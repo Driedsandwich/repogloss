@@ -125,8 +125,14 @@
   // 大きな箱へ全面の切り取りを掛ける書き方もある（実測で、この形の中の語に
   // 印が付いていた）。1px という大きさだけを条件にすると取りこぼすので、
   // 「全面を切り落とす指定」もあわせて見る。
+  // ただし CSS2 の clip は **絶対配置の要素にしか効かない**。position が static や
+  // relative のままの要素に rect(0 0 0 0) と書いても、中身はふつうに見えている。
+  // 位置を見ずに「全面の切り取り」とみなすと、読める文章のほうを除外してしまう
+  // （実測: position:static・幅1264px の要素にある語へ印が付かなかった）。
+  // clip-path は position に関係なく効くので、こちらは位置を問わない。
   const FULL_CLIP = /^rect\(0(?:px)?(?:,)?\s+0(?:px)?(?:,)?\s+0(?:px)?(?:,)?\s+0(?:px)?\)$/;
   const FULL_CLIP_PATH = /^inset\(\s*50%\s*\)$/;
+  const CLIP_POSITIONS = ['absolute', 'fixed'];   // legacy clip が効く配置
 
   let clipCache = null;   // 走査1回のあいだだけ有効
 
@@ -139,7 +145,8 @@
     // 大きさの確認は安い。ここを先に見て、多くの要素で getComputedStyle を避ける。
     const tiny = n.offsetWidth <= 1 && n.offsetHeight <= 1;
     const cs = getComputedStyle(n);
-    const clip = cs.clip && cs.clip !== 'auto' ? cs.clip.replace(/\s+/g, ' ').trim() : '';
+    const clip = CLIP_POSITIONS.includes(cs.position) && cs.clip && cs.clip !== 'auto'
+      ? cs.clip.replace(/\s+/g, ' ').trim() : '';
     const path = cs.clipPath && cs.clipPath !== 'none' ? cs.clipPath.trim() : '';
     if (clip || path) {
       // 1px 四方まで潰したうえで切り取る書き方（読み上げ専用の定番）か、

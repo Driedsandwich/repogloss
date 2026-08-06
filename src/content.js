@@ -81,6 +81,64 @@
   const glossed = new Map();
   let triggerSeq = 0;
 
+  // その語が「実際に読める場所」に出ているか。
+  //
+  // 直接の親だけを見ていては足りない。opacity と content-visibility は、
+  // 祖先に掛かっていても子の computed 値は変わらないため、子を見ても分からない。
+  // 実測（Chrome 151）: 祖先が opacity:0 でも content-visibility:hidden でも、
+  // 子は rects=1・offsetWidth=1264 を返す。箱の有無では判別できない。
+  //
+  // checkVisibility は祖先までまとめて見てくれる。ただし contentVisibilityAuto は
+  // 渡さない——渡すと content-visibility:auto の画面外要素まで false になり、
+  // 長いページの下のほうが永久に注記されなくなる（実測で確認）。
+  // 古い Chrome では引数名が違うので、両方の綴りを一緒に渡す（知らない項目は無視される）。
+  const CHECK_VISIBILITY_OPTS = {
+    opacityProperty: true, visibilityProperty: true,     // 現行の綴り
+    checkOpacity: true, checkVisibilityCSS: true         // 古い綴り
+  };
+  const HAS_CHECK_VISIBILITY = typeof Element.prototype.checkVisibility === 'function';
+
+  let visibleCache = null;   // 走査1回のあいだだけ有効
+
+  // 読み上げ専用テキストの定番の書き方: 1px 四方まで潰し、clip で中身を隠す。
+  // checkVisibility はこれを不可視と見なさない（実測で true が返る）。
+  //
+  // GitHub も使っている。実測では `prc-src-InternalVisuallyHidden-…` の中の
+  // "Repository files navigation" に印が付いており、目に見える repository より先に
+  // 「ページで最初の1回」を使い切っていた。クラス名は版ごとに変わる自動生成なので、
+  // 名前ではなく形（1px 以下 ＋ clip）で判定する。
+  // 大きさの確認は安いので先に置き、getComputedStyle はそこを通ったものだけで呼ぶ。
+  function isClipHidden(el) {
+    for (let n = el; n && n !== document.body; n = n.parentElement) {
+      if (n.offsetWidth > 1 || n.offsetHeight > 1) continue;
+      const cs = getComputedStyle(n);
+      if ((cs.clip && cs.clip !== 'auto') || (cs.clipPath && cs.clipPath !== 'none')) return true;
+    }
+    return false;
+  }
+
+  function isVisibleOccurrence(el) {
+    if (!el || !el.isConnected) return false;
+    if (visibleCache) {
+      const hit = visibleCache.get(el);
+      if (hit !== undefined) return hit;
+    }
+    let ok;
+    if (HAS_CHECK_VISIBILITY) {
+      ok = el.checkVisibility(CHECK_VISIBILITY_OPTS);
+    } else {
+      // 使えない環境では、せめて直接の親だけでも見る（v1.8.3 までの判定）
+      const cs = getComputedStyle(el);
+      ok = !(cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0');
+    }
+    // 箱をまったく持たないものも読めない。content-visibility:auto の画面外は
+    // 箱を持つので、ここでは落ちない。
+    if (ok && el.offsetWidth === 0 && el.offsetHeight === 0) ok = false;
+    if (ok && isClipHidden(el)) ok = false;
+    if (visibleCache) visibleCache.set(el, ok);
+    return ok;
+  }
+
   // 走査してよい場所かを、**テキストの中身に触れる前に**決める。
   // 編集中の内容・フォーム・コード・aria-hidden・inert は、書き換えないだけでなく
   // 値を読み取りもしない。「変えない」と「読まない」は別のことなので、
@@ -97,10 +155,7 @@
     // 辞書に当たらないノードで可視性の計算をしないよう、正規表現を先に通す。
     // 逆順にすると全テキストノードでレイアウト計算が走り、ページが重くなる。
     if (!matcher.test(v)) return false;
-    const cs = getComputedStyle(el);
-    if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return false;
-    if (el.offsetWidth === 0 && el.offsetHeight === 0) return false;
-    return true;
+    return isVisibleOccurrence(el);
   }
 
   /* ---------- 3. 入口（trigger）の解決 ---------- */
@@ -498,11 +553,11 @@
   // 古い測定値で判定してしまう。
   function withRenderCache(fn) {
     const owner = renderCache === null;
-    if (owner) renderCache = new WeakMap();
+    if (owner) { renderCache = new WeakMap(); visibleCache = new WeakMap(); }
     try {
       return fn();
     } finally {
-      if (owner) renderCache = null;
+      if (owner) { renderCache = null; visibleCache = null; }
     }
   }
 

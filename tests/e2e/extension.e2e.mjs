@@ -414,6 +414,51 @@ test('拡張として読み込んだ状態で動く', async t => {
     assert.deepEqual(r, { tipHasJa: true, toggleHasJa: true, square: true, drawn: true, tipBox: true });
   });
 
+  /* ---------- 見えていない場所が「最初の1回」を使い切らない ---------- */
+
+  await t.test('見えていない場所には印を付けず、後ろの読める語へ付ける（4種）', async () => {
+    // 隠れている側に付くと、その語はページのどこでも説明されなくなる。
+    // 祖先の opacity と content-visibility は、子の computed 値には出ないので、
+    // 直接の親だけを見る判定では見抜けない（実測: 子は箱も持つ）。
+    const r = await tab.evaluate(`(() => {
+      const n = sel => document.querySelectorAll(sel + ' .iiyaku-icon').length;
+      return {
+        inert:   { hidden: n('#inert-box'), later: n('#after-inert') },
+        opacity: { hidden: n('#op-host'),   later: n('#after-op') },
+        cvHidden:{ hidden: n('#cv-host'),   later: n('#after-cv') },
+        clip:    { hidden: n('#clip-box'),  later: n('#after-clip') }
+      };
+    })()`);
+    assert.deepEqual(r, {
+      inert:    { hidden: 0, later: 1 },
+      opacity:  { hidden: 0, later: 1 },
+      cvHidden: { hidden: 0, later: 1 },
+      clip:     { hidden: 0, later: 1 }
+    }, `隠れている側に印が付いた: ${JSON.stringify(r)}`);
+  });
+
+  await t.test('反例が本当に「見えない」ことをブラウザ自身に確かめる（対照）', async () => {
+    // fixture が反例になっていることの裏取り。ここが崩れると上の試験は無意味になる。
+    const r = await tab.evaluate(`(() => {
+      const opt = { opacityProperty: true, visibilityProperty: true };
+      const f = id => { const el = document.getElementById(id);
+        return { visible: el.checkVisibility(opt), rects: el.getClientRects().length }; };
+      // content-visibility:hidden が隠すのは「中身」なので、host 自身ではなく
+      // 語が入っている子要素で測る。host 自身は描画されたままである。
+      return { op: f('op-p'), cv: f('cv-p'), clip: f('clip-box'),
+               cvHostItself: f('cv-host').visible,
+               inertHit: !!document.getElementById('inert-box').closest('[inert]') };
+    })()`);
+    assert.equal(r.op.visible, false, 'opacity:0 が見えている扱いになっている');
+    assert.equal(r.cv.visible, false, 'content-visibility:hidden の中身が見えている扱いになっている');
+    assert.equal(r.cvHostItself, true, 'host 自身は描画されたまま＝子で測る必要があることの確認');
+    assert.ok(r.cv.rects > 0, '中身に箱が無い＝箱の検査で落ちてしまい反例にならない');
+    assert.equal(r.inertHit, true, 'inert が効いていない');
+    // clip は checkVisibility では見抜けない。だから形（1px＋clip）で判定している
+    assert.equal(r.clip.visible, true, 'clip が checkVisibility で落ちる＝この対照の前提が変わった');
+    assert.ok(r.clip.rects > 0, 'clip 要素に箱が無い＝箱の検査で落ちてしまい反例にならない');
+  });
+
   await t.test('コード表示部分には印が付かない', async () => {
     assert.equal(await tab.evaluate(`document.querySelectorAll('#code .iiyaku-icon').length`), 0);
   });

@@ -139,6 +139,15 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   }
 }
 
+/* ---------- 可視性の判定が祖先まで見ているか ---------- */
+check('content.js が checkVisibility で祖先まで可視性を見ている',
+  /checkVisibility\(/.test(content) && /opacityProperty/.test(content));
+// contentVisibilityAuto を true で渡すと、画面外の content-visibility:auto まで
+// 不可視扱いになり、長いページの下が永久に注記されなくなる（実測）。
+// 判定はコメントを除いた本体で行う（説明文で名前に触れることはあるため）
+check('content.js が contentVisibilityAuto を渡していない',
+  !/contentVisibilityAuto/.test(stripComments(content)));
+
 /* ---------- 辞書 ---------- */
 const dict = readJson('locales/dict.json');
 const keys = Object.keys(dict);

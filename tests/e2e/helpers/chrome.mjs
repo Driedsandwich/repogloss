@@ -122,13 +122,28 @@ const REPO_PAGE = `<!doctype html><html lang="en" data-color-mode="light">
     <li role="treeitem" tabindex="-1" id="tree-target">release</li>
   </ul>
 
+  <!-- ⑦-b 構造だけ正しく、矢印に応答する実装が無い部品。
+       role も容器も tabindex 0/-1 の並びも ⑦ と同じだが、keydown handler が無い。
+       静的な構造から到達可能と決めつけると、ここで誤る（第4回監査の反例）。 -->
+  <ul role="tree" id="nohandler-tree">
+    <li role="treeitem" tabindex="0" id="nh-entry">tags</li>
+    <li role="treeitem" tabindex="-1" id="nh-target">projects</li>
+  </ul>
+
+  <!-- ⑦-c 描画されない入口。語を含むテキストの「直接の親」は描画されているが、
+       操作要素である先祖のほうが箱を持たない。子から先祖の描画を推し量ると誤る。 -->
+  <a href="#" id="dc-link" style="display:contents"><span id="dc-link-text">topic</span></a>
+  <button id="dc-btn" style="display:contents"><span id="dc-btn-text">security</span></button>
+  <a href="#" id="vh-host" style="visibility:hidden"><span id="vh-child" style="visibility:visible">wiki</span></a>
+
   <!-- ⑧ フォーカスできるだけの容器／できない容器 -->
   <div tabindex="0" id="scroll-region"><p>Notes about a commit and a fetch.</p></div>
   <div tabindex="-1" id="ti-minus1">draft release</div>
 
-  <!-- ⑨ ④⑤⑥で入口が無かった語が、後のふつうの文章では説明されること -->
+  <!-- ⑨ ④〜⑦で入口が無かった語が、後のふつうの文章では説明されること -->
   <p id="prose-fallback">Notes on blame, diff, conflict, visibility, collaborator, contributors,
-     sync, watch, watching, origin, packages, forks and insights.</p>
+     sync, watch, watching, origin, packages, forks and insights.
+     Also release, projects, topic, security and wiki.</p>
 
   <!-- ⑩ もともと aria-describedby を持つ入口 -->
   <a href="#" id="aria-host" aria-describedby="existing-help">workflow</a>
@@ -142,6 +157,12 @@ const REPO_PAGE = `<!doctype html><html lang="en" data-color-mode="light">
 
   <!-- ⑬ コード表示 -->
   <pre id="code"><code>git push --force origin main</code></pre>
+
+  <!-- ⑭ 画面の外にある印。実際に Tab を押し続けて到達する（focus() を呼ばない）。
+       ここへ止まるとブラウザが自動でスクロールするので、説明が消えないことを確かめる。 -->
+  <div style="height:1800px"></div>
+  <p id="far-below">Undo it with a revert.</p>
+
   <a href="#" id="after">after</a>
 
   <script>
@@ -285,20 +306,37 @@ export async function pressKey(cdp, sessionId, name, { shift = false } = {}) {
 
 /* Tab を押し続けて、ブラウザが実際に止まった要素の id を順に集める。
    到達できるかどうかを自分の式で計算し直さないための「別の物差し」。 */
-export async function collectTabOrder(cdp, page, steps = 60, startId = 'before') {
+export async function collectTabOrder(cdp, page, steps = 60, startId = 'before', { shift = false } = {}) {
   // 開始位置を決めないと、前のテストが残したフォーカス位置から続いてしまい、
-  // 何周目を見ているのか分からなくなる。先頭の要素へ明示的に置いてから数える。
+  // 何周目を見ているのか分からなくなる。開始位置の固定にだけ focus() を使い、
+  // 「到達できるか」の判定そのものには使わない（それでは実装の式の言い換えになる）。
   await page.evaluate(`(() => {
     const s = document.getElementById(${JSON.stringify(startId)});
     if (s) s.focus(); else { document.body.focus(); document.activeElement && document.activeElement.blur(); }
   })(); true`);
   const seen = [];
   for (let i = 0; i < steps; i++) {
-    await pressKey(cdp, page.sessionId, 'Tab');
+    await pressKey(cdp, page.sessionId, 'Tab', { shift });
     seen.push(await page.evaluate(
       `document.activeElement ? (document.activeElement.id || document.activeElement.tagName) : null`));
   }
   return seen;
+}
+
+/* Tab を押し続けて、条件を満たす要素へ実際に止まるまで進む。
+   到達できなければ null を返す（失敗の理由をテスト側で書けるようにする）。 */
+export async function tabUntil(cdp, page, testExpr, { steps = 120, shift = false, startId = 'before' } = {}) {
+  await page.evaluate(`(() => {
+    const s = document.getElementById(${JSON.stringify(startId)});
+    if (s) s.focus(); else { document.body.focus(); document.activeElement && document.activeElement.blur(); }
+  })(); true`);
+  for (let i = 0; i < steps; i++) {
+    await pressKey(cdp, page.sessionId, 'Tab', { shift });
+    const hit = await page.evaluate(`(() => { const el = document.activeElement;
+      return el && (${testExpr}) ? (el.id || el.tagName) : null; })()`);
+    if (hit) return hit;
+  }
+  return null;
 }
 
 export const sleep = ms => new Promise(r => setTimeout(r, ms));

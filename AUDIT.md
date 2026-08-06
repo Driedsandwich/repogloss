@@ -1,10 +1,10 @@
-# 監査のための資料（第7回監査用）
+# 監査のための資料（第8回監査用）
 
 このファイルは、外部監査を受けるための入口です。**このリポジトリだけを読めば監査に必要な情報が揃う**ようにしてあります。
 
 RepoGloss は、GitHub の画面に出てくる英語のうち Git / GitHub 固有の用語に印を付け、日本語の説明を出す Chrome 拡張です。作者は非エンジニアで、実装は AI エージェントとの共同作業によります。**そのため、外部監査に合格するまでウェブストアへ提出しない**という運用にしています。
 
-> このファイルと `docs/audit/` は**配布物には入りません**（[`scripts/package-files.mjs`](scripts/package-files.mjs) が配布物の唯一の正本）。タグ `v1.8.3` を打った後に追加したものなので、タグには含まれていません。
+> このファイルと `docs/audit/` は**配布物には入りません**（[`scripts/package-files.mjs`](scripts/package-files.mjs) が配布物の唯一の正本）。監査用の資料であり、拡張の動作には関係しません。
 
 ---
 
@@ -12,99 +12,83 @@ RepoGloss は、GitHub の画面に出てくる英語のうち Git / GitHub 固�
 
 | 項目 | 値 |
 |---|---|
-| **監査対象タグ** | **`v1.8.5`** |
-| **対象コミット** | **`e96c113ee73b998b83a635bd99edd1c536a8b420`**（PR #15 の merge commit） |
-| 直前の版 | `v1.8.4` = コミット `1ff48290c5b0da71349aada11584f3d435019bd2`（**提出しない**） |
+| **監査対象** | **v1.8.6 候補（作業ツリー）。まだ commit も tag もしていない** |
+| 直前の版 | `v1.8.5` = コミット `e96c113ee73b998b83a635bd99edd1c536a8b420`（**提出しない**） |
+| 基点コミット | `9893f3606380d25edaf2372d986420f18a834c15`（`main`。ここからの差分が今回の変更） |
 | 現在の既定ブランチ | `main` |
-| main とタグの差分 | **配布する13ファイルは差分ゼロ。** 違うのは `STORE_LISTING.md`（提出物の記録）と、このファイルおよび `docs/audit/`（監査用の資料）だけ |
-| Manifest | v1.8.5 / Manifest V3 |
+| Manifest | v1.8.6 / Manifest V3 |
+| **最低の Chrome** | **105**（`minimum_chrome_version`。v1.8.6 で追加） |
 | Chrome API 権限 | `storage` のみ |
 | サイトアクセス | `https://github.com/*` |
 | `host_permissions` | 宣言なし |
 | 実行されるコード | [`src/matcher.js`](src/matcher.js) と [`src/content.js`](src/content.js) の2本（同梱のみ・リモートコードなし） |
 | 外部依存パッケージ | **なし**（`package.json` は検証用の scripts だけ。ZIP 生成も Node 標準の `zlib` で自作） |
-| ストア公開中の版 | **v1.7.1**（v1.8.0〜v1.8.5 はいずれも未提出） |
+| ストア公開中の版 | **v1.7.1**（v1.8.0〜v1.8.5 はいずれも未提出。v1.8.6 も未提出） |
 
 差分は次のコマンドで確認できます。
 
 ```sh
-git diff --name-only v1.8.5 main
-# → STORE_LISTING.md と AUDIT.md（提出物の記録）のみ。配布13ファイルは出てこない
-
-git diff --name-only v1.8.4 v1.8.5
-# → 第5回監査への対応。配布13ファイルのうち src/content.js・src/matcher.js・
-#    styles.css・README.md・DESIGN.md・PRIVACY.md・manifest.json が変わっている
+git diff --name-only v1.8.5            # 作業ツリーと、直前の版との差分
+# → 配布13ファイルのうち manifest.json・src/content.js・README.md・DESIGN.md・
+#    PRIVACY.md が変わっている（辞書・styles.css・matcher.js・アイコン・LICENSE は無変更）
+# → ほかに scripts/ と tests/ と .github/（配布物には入らない）
 ```
 
-### 1-1. 提出物（まだ提出していない）
+**まだ commit していないので、タグも提出候補の ZIP もありません。** 監査は作業ツリーの内容に対して行ってください。
+
+### 1-1. 提出物（まだ作っていない）
+
+**v1.8.6 の提出候補 ZIP は、この時点では存在しません。** commit・push・tag を行っていないため、CI が動いておらず、CI が作る `repogloss-store-zip` もありません。
 
 | 項目 | 値 |
 |---|---|
-| ZIP | `repogloss-1.8.5.zip`・**80,004 バイト**・**13ファイル** |
-| **SHA-256** | **`c8bdbe3d5c140b68525d3d9a851647edec7384a0449aa6d6903c5400e15d9d29`** |
-| 中身の合算ハッシュ | `4e07719134aa4395693b9b57f81ec93a45368e15de92c2153a75cb124d804ec0` |
-| 出どころ | **CI が生成した artifact `repogloss-store-zip`**（run [`31094587675`](https://github.com/Driedsandwich/repogloss/actions/runs/31094587675) の `release-zip` ジョブ）。手元でビルドしたものは使っていない |
-| 生成条件 | **`main` への push で、`verify` `e2e` `e2e-windows` `hash-compare` がすべて成功したときだけ**作られる。PR では作られない（下記 §4-2 で実測） |
+| ZIP | **未作成** |
+| SHA-256 | **未確定**（CI の `release-zip` が出した artifact を採用する） |
+| 生成条件 | **`main` への push で、`verify` `e2e` `e2e-windows` `hash-compare` がすべて成功したときだけ**作られる。PR では作られない（v1.8.3 と v1.8.4 の対応時に、必須ジョブをわざと落として skipped になること・PR では artifact が出ないことを実測済み） |
 
-**入手方法**: 上記 run の Artifacts から取得できる（保存期間30日）。
+参考: 直前の v1.8.5 の提出候補は `c8bdbe3d5c140b68525d3d9a851647edec7384a0449aa6d6903c5400e15d9d29`（80,004 バイト・13ファイル）でしたが、**第7回監査の指摘により提出しません**。タグ `v1.8.5` とその ZIP は保存したまま、動かしていません。
 
-```sh
-gh run download 31094587675 -R Driedsandwich/repogloss -n repogloss-store-zip
-```
-
-**照合済み**: ダウンロードして計算した SHA-256 が CI のログと一致し、展開した13ファイルは**タグ `v1.8.5` の中身と1バイトも違わない**。対照として v1.8.4 と比べると5ファイルで相違が出る。
-
-**別環境でも同じものができた**: 手元（macOS・Node 22.22.3）と CI（Linux・Node 22.23.1）で ZIP の SHA-256 が一致した。zlib はどちらも 1.3.1。**Node の patch 版が違っても同じになる**ことは実測できたが、zlib の版が変わった場合は未確認。
-
-参考: 直前の v1.8.4 の提出候補は `8abc340d…` だったが、**第6回監査の指摘により提出しない**。
-
-**この ZIP は誰でも再現できます。** 日時を 1980-01-01 に固定し、並び順を配布一覧の順に固定してあるため、同じコミットからは1バイト違わない同じものができます。
+**ZIP は誰でも再現できます。** 日時を 1980-01-01 に固定し、並び順を配布一覧の順に固定してあるため、同じ内容からは1バイト違わない同じものができます（v1.8.5 では、手元の macOS / Node 22.22.3 と CI の Linux / Node 22.23.1 で SHA-256 が一致することを実測。zlib はどちらも 1.3.1）。
 
 ```sh
-git checkout v1.8.5
-npm run package:zip          # → ZIP_SHA256 e76c9245... が出る
-npm run package:verify-zip   # → 中身が13ファイルと一致することを検査
-```
-
-前回の監査で「記録された ZIP を独立に照合できない」と指摘されたため、CI の artifact としても取得できるようにしました。
-
-```sh
-gh run download <run-id> -R Driedsandwich/repogloss -n repogloss-store-zip
+npm run package:zip -- --allow-uncommitted   # commit 前に試す場合。名前に UNCOMMITTED が入る
+npm run package:verify-zip                   # 中身と身元の記録を検査する
 ```
 
 ---
 
-## 2. 今回（v1.8.4）で直したこと
+## 2. 今回（v1.8.6）で直したこと
 
-第5回監査の指摘 **P1 4件・P2 4件**への対応。詳細と証拠は [`docs/audit/v1.8.4-changes.md`](docs/audit/v1.8.4-changes.md)。
-
-| ID | 内容 | 主な変更箇所 |
-|---|---|---|
-| RG-5-01 | 除外する領域（編集中・フォーム・コード）の文字列を、除外を決める**前に**読んでいた | [`src/content.js`](src/content.js) `isTarget` の順序 |
-| RG-5-02 | 祖先の `opacity:0` / `content-visibility:hidden` / `inert` の中に注記し、その語の「最初の1回」を使い切っていた | `isVisibleOccurrence` |
-| RG-5-03 | 見えなくなった古い印が、後から現れた読める同じ語を抑止していた | `usableGloss` / `retireGloss` |
-| RG-5-04 | Limited Use 準拠の明言が無く、「個人情報を読まない」が実態より強かった | [`PRIVACY.md`](PRIVACY.md) / [`STORE_LISTING.md`](STORE_LISTING.md) |
-| RG-5-05 | 綴りを機械生成し、`securities` `cis` `gits` 等の別語まで拾っていた | [`src/matcher.js`](src/matcher.js) `EXTRA_FORMS` |
-| RG-5-06 | `release-zip` が Windows E2E と OS 間比較に依存せず、PR でも提出候補名の成果物を作っていた | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
-| RG-5-07 | README・DESIGN・CSS のコメントに旧版・旧説明が残っていた | 各文書＋[`scripts/verify.mjs`](scripts/verify.mjs) |
-| RG-5-08 | 1px＋`clip` の読み上げ専用領域を拾っていた（**GitHub 実画面でも発生していた**） | `isClipHidden` |
-
-**RG-5-08 は監査が「実画面での発生は未確認」としていたが、こちらで実測したところ実際に起きていた。** `prc-src-InternalVisuallyHidden-…` の中の "Repository files navigation" に印が付き、目に見える `repository` より先に「最初の1回」を使い切っていた（2ページで各1件）。直したあと、注記される語の集合は変わらず、見えない領域の中の印は 2 → 0 になった。
-
-### 2-0. 直前（v1.8.3）で直したこと
-
-第4回監査の指摘 **P1 5件・P2 3件**への対応です。詳細と証拠は [`docs/audit/v1.8.3-changes.md`](docs/audit/v1.8.3-changes.md) にあります。
+第7回監査の指摘 **P1 3件・P2 5件**への対応。詳細と証拠は [`docs/audit/v1.8.6-changes.md`](docs/audit/v1.8.6-changes.md)。
 
 | ID | 内容 | 主な変更箇所 |
 |---|---|---|
-| RG-4-01 | 描画されていない先祖を、キーボードの入口と誤認していた | [`src/content.js`](src/content.js) `isRendered` / `renderCache` |
-| RG-4-02 | 矢印キーで動く部品を、構造だけで到達可能と認定していた | `rovingEntry` と `COMPOSITE_OF` を**削除** |
-| RG-4-03 | E2E に反例が無く、到達性の判定に `focus()` を使っていた | [`tests/e2e/`](tests/e2e/) |
-| RG-4-04 | データ取り扱いの申告が、公式の "handle" の定義と合っていなかった | [`PRIVACY.md`](PRIVACY.md) / [`STORE_LISTING.md`](STORE_LISTING.md) §3-4 |
-| RG-4-05 | Windows の E2E が `continue-on-error` で、失敗しても CI が緑だった | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
-| RG-4-06 | OS 間のハッシュ比較と、提出物 ZIP の検証が CI で完結していなかった | `hash-compare` / `release-zip` ジョブ、[`scripts/zip.mjs`](scripts/zip.mjs) |
-| RG-4-07 | 既に複数形のキーを、さらに複数形にしていた（`actionses` 等） | [`src/matcher.js`](src/matcher.js) |
-| RG-4-08 | 文書と実装・検証の記述が食い違っていた | 各文書 |
+| RG-7-01 | `display:contents` の可視性を、箱を持つ先祖の1つの答えで代用していた（**両方向に誤っていた**） | [`src/content.js`](src/content.js) `isVisibleContentsText` |
+| RG-7-02 | 印を片づけるとき、隣にあるものを「自分が割った対」と推し量っていた | `annotate` の記録と `retireGloss` / `recoverDetachedGlosses` |
+| RG-7-03 | プライバシー文書が、通常本文に出た認証情報らしき文字列の一時処理を落としていた | [`PRIVACY.md`](PRIVACY.md) / [`STORE_LISTING.md`](STORE_LISTING.md) |
+| RG-7-04 | legacy `clip` を `position` を見ずに判定し、**読める文章を除外していた** | `clipsAwayContent` |
+| RG-7-05 | 動作に必要な最低の Chrome を宣言していなかった | [`manifest.json`](manifest.json) `minimum_chrome_version` |
+| RG-7-06 | 提出物の身元の検査が、項目の欠落を落とせなかった | [`scripts/provenance.mjs`](scripts/provenance.mjs)（新設）／[`scripts/package-zip.mjs`](scripts/package-zip.mjs) |
+| RG-7-07 | 隔離世界の計測が「取り出し口を6つ塞ぐ」方式で、塞ぎ忘れを塞げなかった | [`tests/e2e/matcher-tap.js`](tests/e2e/matcher-tap.js)（新設・`prelude.js` を置き換え） |
+| RG-7-08 | `AUDIT.md` に旧版の記載が残り、検査で見つけられなかった | このファイル＋[`scripts/verify.mjs`](scripts/verify.mjs) の現在版検査 |
+
+**8件すべて、実物と一致することを実測してから直しました。** 通算7巡で 64 件の指摘があり、事実と異なるものは 0 件です。
+
+**RG-7-01 は、こちらで測ったところ監査の反例より条件が広いことが分かりました。** 監査は「`content-visibility:hidden` の中の `display:contents` に印が付く」としていましたが、その形は**一度描かれてから隠された場合にだけ**成り立ちます。最初から隠れている場合は `Range` の矩形が 0 になり、別の経路で落ちます。一度描かれてから隠すと矩形が残り続けるため（実測: 隠す前 1 個 / 隠した後も 1 個）、そちらを反例として E2E に固定しました。
+
+### 2-0. 直前（v1.8.5）で直したこと（履歴）
+
+第6回監査の指摘 **P1 3件・P2 4件**への対応です。詳細と証拠は [`docs/audit/v1.8.5-changes.md`](docs/audit/v1.8.5-changes.md) にあります。
+
+| ID | 内容 | 主な変更箇所 |
+|---|---|---|
+| RG-6-01 | 退役させた印の元テキストが `handled` に残り、その語が二度と注記されなかった | [`src/content.js`](src/content.js) `retireGloss` |
+| RG-6-02 | 要素**自身**が `content-visibility:hidden` / `hidden="until-found"` で中身を隠す形を見抜けなかった | `isVisibleOccurrence` |
+| RG-6-03 | `checkVisibility` が `display:contents` に false を返すため、見えている文字を落としていた | `boxedAncestor` / `hasRenderedText` |
+| RG-6-04 | プライバシーの説明が実装より狭かった（CSS 非表示の文章も一度は読む） | [`PRIVACY.md`](PRIVACY.md) |
+| RG-6-05 | 順序の静的検査は迂回できるため、担保になっていなかった | 隔離世界での計測 E2E |
+| RG-6-06 | `verify-zip` が提出物の身元 JSON を上書きしていた | [`scripts/package-zip.mjs`](scripts/package-zip.mjs) |
+| RG-6-07 | 大きな箱への全面 `clip` を拾っていた | `clipsAwayContent` |
 
 ### 2-1. 中心にあった誤り
 
@@ -163,58 +147,75 @@ v1.8.2 と v1.8.3 で、**注記される語の集合は3ページとも完全�
 
 ## 4. 検証の結果
 
-### 4-1. 手元（macOS / Google Chrome 151.0.7922.72 / Node.js v22.22.3）
+### 4-1. 手元（macOS 26 / Google Chrome 151.0.7922.76 / Node.js v22.22.3・2026-08-06）
+
+**commit していないため CI は回っていません。** 下は手元での実行結果です。
 
 | command | exit | 結果 |
 |---|---:|---|
-| `npm test` | 0 | 単体 **35件**全成功 / 構成 **119項目**・不一致0（辞書61語・version 1.8.4） |
-| `npm run test:e2e` | 0 | **35件**全成功（拡張として実際に読み込み・実キー送信） |
+| `node --check src/matcher.js` / `src/content.js` | 0 | 構文 OK |
+| `npm test` | 0 | 単体 **63件**全成功 / 構成検査 **158項目**・不一致0（辞書61語・version 1.8.6） |
+| `npm run test:e2e` | 0 | **60件**全成功（拡張として実際に読み込み・実キー送信） |
 | `npm run package:stage` / `:verify` | 0 | 13ファイル一致 |
-| `npm run package:zip` / `:verify-zip` | 0 | 13ファイル・69,230バイト・`e76c9245…` |
+| `npm run package:zip -- --allow-uncommitted` / `:verify-zip` | 0 | 13ファイル（**commit 前なので名前に `UNCOMMITTED` が入る。提出候補ではない**） |
 
-### 4-2. CI（run [`31094587675`](https://github.com/Driedsandwich/repogloss/actions/runs/31094587675) / headSha `e96c113`・**8ジョブすべて success**）
+単体テストの内訳: 用語判定 `tests/matcher.test.js`／配布物 `tests/package.test.js`／**身元の記録 `tests/provenance.test.js`（新設・28件）**。
 
-| job | 中身 |
-|---|---|
-| `verify` | 構文検査・単体テスト・構成と文書の整合（119項目） |
-| `e2e` | ubuntu で、配布ファイルだけを拡張として読み込んで実行（35件） |
-| `e2e-windows` | **windows-latest で 35件全成功** |
-| `package-hash` × 3 OS | 各 OS で配布物の合算ハッシュを出し、artifact として持ち出す |
-| `hash-compare` | 3件そろい、3つとも同じ値であることを**機械的に**確認（割れると落ちる） |
-| `release-zip` | 提出用 ZIP を生成・検査し、artifact として持ち出す。**必須4ジョブへ依存し、`main` への push でだけ動く** |
+### 4-2. CI — **今回は未実行**
 
-**ゲートが本当に働くことを、3つとも実測しました。** 「緑に見えること」と「実際に止まること」は別なので、赤くなる側を必ず確かめています。
+commit・push をしていないため、次は**確認できていません**。
 
-| 確かめたこと | 方法 | 結果 |
-|---|---|---|
-| Windows E2E の失敗が CI を落とす | 使い捨て PR に Windows だけ落ちる assertion を1つ | `e2e-windows` **failure**・run 全体 **failure**（対照の無傷 PR は success） |
-| 必須ジョブが落ちたら提出候補が出ない | 使い捨てブランチで `release-zip` の対象ブランチを一時的に付け替え、**同じブランチで対照→破壊** | 無傷: `release-zip` **success**・成果物あり／`e2e-windows` を落とすと **skipped**・`repogloss-store-zip` **なし** |
-| PR からは提出候補が出ない | PR #14 の run と、変更前の PR #11 の run を比較 | #14: `release-zip` **skipped**・成果物は `package-hash-*` 3件のみ／#11（変更前）: `repogloss-store-zip` **あり** |
+- Linux / Windows / macOS 3 OS での実行
+- 3 OS 間の配布物ハッシュ一致（`hash-compare`）
+- 提出候補 ZIP の生成（`release-zip`）と、その `--release` 検査
 
-いずれも確認後、検証用の PR とブランチはローカル・リモート両方から削除しました。**現在のコードと workflow に痕跡はありません**（`if` の条件は `refs/heads/main` に戻っています）。
+`release-zip` のゲートが実際に働くことは、v1.8.3 と v1.8.4 の対応時に実測済みです（必須ジョブをわざと落とすと `skipped` になり成果物が出ない／PR では成果物が出ない／対照として無傷なら出る）。**今回の変更でその条件式は触っていません**（足したのは検査コマンドへの `--release` だけ）。
+
+### 4-2b. 実サイトでの前後比較（2026-08-06）
+
+GitHub の実ページ4枚で、v1.8.5 と v1.8.6 の**注記される語の集合**を突き合わせた（件数ではなくキーの集合まで）。**減った語は 0 件**、増えたのは `insights` のみ（2ページ）。RG-7-04 の是正で、`position:static` の要素に効かない `clip` によって落としていた語が拾えるようになったもの。
+
+**未解決の観察を1件残します。** 上の計測の1回で、`Driedsandwich/repogloss` の印19個のうち2個（`security` / `insights`）の親が computed `visibility: hidden` でした。同じ2ページを同じ順で開く A/B を両版で4回、および幅 700px ↔ 1600px の切り替えを試しましたが、いずれも18個・該当0件で**再現しません**。再現した回に v1.8.5 側を同じページ状態で測れておらず、**版の違いによるものかは言えていません**（→ §7 の既知の制約4と同じ仕組みで説明は付きますが、推測です）。
 
 ### 4-3. テストに判別力があることの確認
 
 **通るだけのテストは、何も見ていないテストと区別できません。** そこで、直す前のコードへぶつけて落ちることを確かめています。
 
-```text
-src/content.js を v1.8.2 へ戻す → E2E 32件中 6件が失敗
-  境界18件 / 後続の文章での説明 / 前向き Tab / Shift+Tab / 矢印の応答の見分け
+**今回追加した試験を、v1.8.5 の `src/content.js` へぶつけた結果**（2026-08-06 実測）:
 
-src/matcher.js を v1.8.2 へ戻す → 単体 21件中 3件が失敗
-  再複数形化 / 複数形キー自身の一致 / s で終わるキーの分類
+```text
+16件中 12件が失敗
+  可視性: display:contents の5種 / 反例の対照 / 一度描かれてから飛ばした場合 /
+          legacy clip の6種
+  片づけ: 印だけを外された場合 / 印の前の節点 / 印の後ろの節点 /
+          選択範囲の3通り / 1節点に2用語 / 10往復での形の安定
 ```
+
+落ちなかった4件は、いずれも**そうあるべきもの**です。
+
+| 落ちなかった試験 | 理由 |
+|---|---|
+| 画面外の `content-visibility:auto` を除外しない | v1.8.5 でも正しい。**後戻り防止の見張り**として置いている |
+| 切り取りの当たり判定（対照） | ブラウザの挙動を見るだけで、こちらのコードに依存しない |
+| 親ごと差し替え（対照） | 同上に近く、両版で同じ結果になる |
+| リンクの中の印の往復 | この形では v1.8.5 の推し量りが偶然当たる（判別できないが、不変条件としては必要） |
+
+> 「1節点に2用語」は最初 v1.8.5 でも通っていました。本文と印の数だけを見ていたためで、**印のあいだにある節点の同一性**まで見るように強化したところ判別できるようになりました（11件 → 12件）。
 
 再現方法:
 
 ```sh
-git checkout v1.8.5
-git show v1.8.2:src/content.js > src/content.js
-npm run test:e2e            # → 6件落ちる
-git checkout src/content.js # 戻す
+git stash                                      # v1.8.6 の変更を退避
+git show HEAD:src/content.js > src/content.js  # 直前の版へ戻す
+node --test --test-name-pattern="箱を持たない文字|印の片づけ" tests/e2e/extension.e2e.mjs
+git checkout src/content.js && git stash pop   # 戻す
 ```
 
-ZIP の検査は、**壊した ZIP 9種類**を1件ずつぶつけて必ず落ちることを確認しています（[`tests/package.test.js`](tests/package.test.js) の13件のうち9件が「壊れたものを落とす」試験、残り4件は対照＝正しい ZIP が通る／読み書きで中身が変わらない／同じ中身なら毎回同じバイト列になる／配布一覧そのものに配布禁止のものが載っていない）。余分なファイル・開発用ファイル・鍵らしきファイル・不足・version 不一致・親フォルダで包む・中身の1バイト書き換え（CRC）・末尾のごみ・先頭の切り詰め。**壊し方は、検査が持っている一覧の外側からも入れています。**
+**隔離世界の計測が働くことも、本体を壊して確かめました。** `isTarget` の除外判定より**前**に、`innerText` / `Range.toString()` / `substringData()` で文字列を照合へ渡す行を1つずつ入れ、そのたびに E2E が赤になることを確認しています（3件とも `not ok`）。確認後は元へ戻し、`src/content.js` の SHA-256 が戻す前と一致することを確かめました。
+
+ZIP の検査は、**壊した ZIP 9種類**を1件ずつぶつけて必ず落ちることを確認しています（[`tests/package.test.js`](tests/package.test.js)）。余分なファイル・開発用ファイル・鍵らしきファイル・不足・version 不一致・親フォルダで包む・中身の1バイト書き換え（CRC）・末尾のごみ・先頭の切り詰め。**壊し方は、検査が持っている一覧の外側からも入れています。**
+
+**身元の記録の検査**も同じ形です（[`tests/provenance.test.js`](tests/provenance.test.js) 28件）。監査が挙げた9通りの改ざん・欠落に加えて、**記録の項目を1つずつ総当たりで消す試験**を置いてあります（手で書いた一覧は、項目が増えたときに書き忘れるため）。
 
 ### 4-4. E2E で実際に送っているキー
 
@@ -282,17 +283,19 @@ E2E は `--remote-debugging-pipe` と `--enable-unsafe-extension-debugging` を�
 
 ## 5. データ取り扱いの申告
 
-**「ウェブサイトのコンテンツ」を選択する（＝収集または使用する）。他の8項目は選択しない。**
+**確定しているのは1件だけです。** 残りは Developer Dashboard の定義文を人が読むまで確定させません（→ 下の「未確定」）。
 
 | 項目 | 申告 | 根拠 |
 |---|---|---|
-| 個人を特定できる情報 | 選択しない | 氏名・メール・IDを読み取らず、保持しない |
+| **ウェブサイトのコンテンツ** | **選択する（確定）** | github.com の表示文章を読み取り、同梱辞書との照合に**使う**（端末内のみ・保存なし・送信なし・共有なし・人手閲覧なし） |
+| 個人を特定できる情報 | 選択しない（**要確認**） | 氏名・メール・ID を**個人情報として抽出・識別・保存・送信しない**。ただし画面に出ていれば、表示文章の一部として一時的な照合対象になる |
+| 認証情報 | 選択しない（**要確認**） | **取得元としては触れない**（Cookie API なし・入力欄／フォーム／編集領域は文字列を取り出す前に除外）。**一方、通常の本文に token らしき文字列が表示されていれば、ウェブサイトのコンテンツの一部として一時的な照合対象になる**。認証情報として抽出・識別・保存・送信はしない |
+| 個人的な通信内容 | 選択しない（**要確認**） | 入力欄・`contenteditable` は文字列を取り出す前に除外する（隔離世界での実測 E2E で確認）。ただし投稿済みのコメントは、ページの文章として一時的な照合対象になる |
+| ウェブ閲覧履歴 | 選択しない（**要確認**） | 訪問先を記録・保存・送信しない。`tabs` / `history` 権限も持たない。ただし画面の切り替わりを検知するため、自分が動いているページの URL を直前の値と比べている |
 | 健康情報 / 金融・決済情報 / 位置情報 | 選択しない | 扱わない |
-| 認証情報 | 選択しない | Cookie・トークン・パスワードを読まない |
-| 個人的な通信内容 | 選択しない | 入力欄・`contenteditable` に触れない（コードで除外し、E2E で確認） |
-| ウェブ閲覧履歴 | 選択しない | 訪問先を記録・保存・送信しない。`tabs` / `history` 権限も持たない |
 | ユーザーの操作 | 選択しない | クリック等を記録・集計しない |
-| **ウェブサイトのコンテンツ** | **選択する** | github.com の表示文章を読み取り、同梱辞書との照合に**使う**（端末内のみ・保存なし・送信なし・共有なし・人手閲覧なし） |
+
+**認証情報を「要確認」へ移しました（v1.8.6）。** v1.8.5 までの根拠（「読まない」）は**取得元の話だけで、通常の本文に出た文字列の一時処理を落としていました**。取得元と、本文として処理し得る内容は別のこととして書き分けています。
 
 **改めた理由**: 公式 FAQ は user data の "handle" に collecting・transmitting・**using**・sharing を含め、ウェブサイトのコンテンツを user data の例に挙げたうえで、**端末内のみで処理し外部送信しない場合でも開示が必要**としています。v1.8.2 までの「collect＝デバイスからの転送」という解釈は、「使う」を取りこぼしていました。
 
@@ -300,10 +303,11 @@ E2E は `--remote-debugging-pipe` と `--enable-unsafe-extension-debugging` を�
 
 ---
 
-## 6. 権限・通信・保存データ（v1.8.2 → v1.8.3 の差分）
+## 6. 権限・通信・保存データ（v1.8.5 → v1.8.6 の差分）
 
 ```text
 permissions:                 ['storage'] → ['storage']（差分なし）
+minimum_chrome_version:      なし → "105"（新規。配信先を絞るだけで、権限ではない）
 host_permissions:            なし → なし
 optional_permissions:        なし → なし
 optional_host_permissions:   なし → なし
@@ -342,7 +346,7 @@ web_accessible_resources:    差分なし（locales/dict.json のみ）
 
 ---
 
-## 8. これまでの監査の履歴
+## 8. これまでの監査の履歴（履歴）
 
 | 回 | 指摘 | 結果 | 対象版 |
 |---|---:|---|---|
@@ -352,7 +356,8 @@ web_accessible_resources:    差分なし（locales/dict.json のみ）
 | 4 | 8件 | 全件が実在。対応して v1.8.3 へ（v1.8.2 は提出見送り） | v1.8.2 |
 | 5 | 8件 | 全件が実在。対応して v1.8.4 へ（v1.8.3 は提出見送り） | v1.8.3 |
 | 6 | 7件 | 全件が実在。対応して v1.8.5 へ（v1.8.4 は提出見送り） | v1.8.4 |
-| **合計** | **56件** | **56件連続で、事実と違う指摘は0件** | |
+| 7 | 8件 | 全件が実在。対応して v1.8.6 へ（v1.8.5 は提出見送り） | v1.8.5 |
+| **合計** | **64件** | **64件連続で、事実と違う指摘は0件** | |
 
 第4回の指摘のうち1件（RG-4-07）は、**該当が11件ではなく12件**でした。辞書で `s` で終わるキーを数え直すと `request changes` も該当し、`request changeses` が作られていました。指摘そのものは正しく、影響範囲がわずかに広かったものです。
 
@@ -385,14 +390,15 @@ web_accessible_resources:    差分なし（locales/dict.json のみ）
 | プライバシーポリシー | [`PRIVACY.md`](PRIVACY.md) |
 | 拡張として読み込む E2E | [`tests/e2e/`](tests/e2e/) |
 | 用語判定の単体テスト | [`tests/matcher.test.js`](tests/matcher.test.js) |
-| 配布物の検査（壊した ZIP を11種ぶつける） | [`tests/package.test.js`](tests/package.test.js) |
+| 配布物の検査（壊した ZIP を9種ぶつける） | [`tests/package.test.js`](tests/package.test.js) |
+| 提出物の身元の schema と、その検査（28件） | [`scripts/provenance.mjs`](scripts/provenance.mjs) / [`tests/provenance.test.js`](tests/provenance.test.js) |
 | 配布物の一覧（唯一の正本） | [`scripts/package-files.mjs`](scripts/package-files.mjs) |
-| 構成と文書の整合検査（107項目） | [`scripts/verify.mjs`](scripts/verify.mjs) |
+| 構成と文書の整合検査（158項目） | [`scripts/verify.mjs`](scripts/verify.mjs) |
 | ZIP の読み書き（自作） | [`scripts/zip.mjs`](scripts/zip.mjs) |
 | ZIP の検査 | [`scripts/verify-zip.mjs`](scripts/verify-zip.mjs) |
 | CI | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
 | ストア掲載情報と提出記録 | [`STORE_LISTING.md`](STORE_LISTING.md) |
-| **今回の変更の詳細と証拠** | [`docs/audit/v1.8.3-changes.md`](docs/audit/v1.8.3-changes.md) |
+| **今回の変更の詳細と証拠** | [`docs/audit/v1.8.6-changes.md`](docs/audit/v1.8.6-changes.md) |
 
 ---
 

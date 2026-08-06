@@ -314,6 +314,60 @@ check('README が CI の成果物（提出用 ZIP）について書いている'
     .filter(w => head.includes(w));
   check('変更記録の冒頭に、準備段階の言い切りが残っていない', prep.length === 0,
     `残っている表現: ${prep.join(' / ')}`);
+
+  /* ---- 現在の版を名乗る場所に、古い版が残っていないか ---- */
+  // 「版がどこかに在るか」だけを見る検査では、見出しやリンクの取り残しに気づけない。
+  // v1.8.5 の時点で、§2 の見出しが「今回（v1.8.4）」、§2-0 が「直前（v1.8.3）」、
+  // §6 が「v1.8.2 → v1.8.3 の差分」、再現手順の SHA が v1.8.3 のもの、のまま残っていた。
+  //
+  // 過去を書いている節まで落とすと、正しい記述まで直させることになる。
+  // **見出しに「履歴」を含む節だけを対象外**にし、そこは明示的に履歴だと書かせる。
+  const lines = audit.split('\n');
+  let inHistory = false;
+  const currentLines = [];
+  for (const line of lines) {
+    const h = /^#{2,4}\s+(.*)$/.exec(line);
+    if (h) inHistory = h[1].includes('履歴');
+    if (!inHistory) currentLines.push(line);
+  }
+  const current = currentLines.join('\n');
+  check('AUDIT.md に、現在版を名乗る節が残っている', current.length > 500,
+    `履歴でない部分が ${current.length} 文字しかない＝節の切り分けが壊れている`);
+
+  // それぞれ「ここに書かれた版は、いまの版と同じはず」という場所
+  const SLOTS = [
+    [/今回（v?(\d+\.\d+\.\d+)）/g, '「今回（…）」の見出し',
+     '## 2. 今回（v1.8.4）で直したこと'],
+    [/\|\s*Manifest\s*\|\s*v(\d+\.\d+\.\d+)/g, '「Manifest」の行',
+     '| Manifest | v1.8.5 / Manifest V3 |'],
+    [/docs\/audit\/v(\d+\.\d+\.\d+)-changes\.md/g, '変更記録へのリンク',
+     '| **今回の変更の詳細と証拠** | [`docs/audit/v1.8.3-changes.md`](docs/audit/v1.8.3-changes.md) |'],
+    [/（v\d+\.\d+\.\d+ → v(\d+\.\d+\.\d+) の差分）/g, '「vA → vB の差分」の見出し',
+     '## 6. 権限・通信・保存データ（v1.8.2 → v1.8.3 の差分）'],
+    [/repogloss-(\d+\.\d+\.\d+)(?:-UNCOMMITTED)?\.zip/g, '提出候補の ZIP 名',
+     '| ZIP | `repogloss-1.8.5.zip`・**80,004 バイト**・**13ファイル** |']
+  ];
+  for (const [re, label, staleSample] of SLOTS) {
+    const found = [...current.matchAll(re)].map(mm => mm[1]).filter(x => x !== v);
+    check(`AUDIT.md の${label}が現在の版を指している`, found.length === 0,
+      `古い版: ${[...new Set(found)].join(', ')}`);
+    // 陽性対照: この探し方が、実際に v1.8.5 時点の取り残しを捕まえること。
+    // 「見つからなかった」が、探し方が壊れているせいでないことを同じ実行で示す。
+    re.lastIndex = 0;
+    const hit = re.exec(staleSample);
+    check(`${label}を探す検査が、実際に古い記載を捕まえる（陽性対照）`,
+      !!hit && hit[1] !== v, `この行を捕まえられない: ${staleSample}`);
+    re.lastIndex = 0;
+  }
+
+  // 既に取り下げた提出候補の SHA は、履歴か「参考」と書いた行にしか出てこないこと
+  const SUPERSEDED_SHA = ['e76c9245', '8abc340d', 'c8bdbe3d'];
+  for (const sha of SUPERSEDED_SHA) {
+    const bad = current.split('\n')
+      .filter(l => l.includes(sha) && !l.includes('参考') && !l.includes('提出しない'));
+    check(`AUDIT.md の現在版の説明に、取り下げた候補の SHA（${sha}…）が紛れていない`,
+      bad.length === 0, bad.map(l => l.trim().slice(0, 70)).join(' / '));
+  }
 }
 
 /* ---------- 権限の説明が文書間でそろっているか ---------- */

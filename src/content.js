@@ -99,36 +99,53 @@
   // ずれる。ずれた結果、印を装飾扱いにしたのに代わりの入口が無い、という
   // キーボードから読めない説明ができてしまう。
 
+  // 描画されているか。ここは「その要素自身が箱を持つか」だけを見る。
+  //
+  // 先祖が描画されていることを、子から推し量ってはいけない。isTarget が確認
+  // しているのはテキストの**直接の親**だけで、それより上は別の要素である。
+  //   - display:contents の先祖は箱を作らないので、子が見えていても
+  //     その先祖自身は Tab の順路に入らない（getClientRects().length === 0）。
+  //   - visibility:hidden の先祖の中で、子だけ visibility:visible に戻すこともできる。
+  // v1.8.2 はここを「先祖は確認済み」として省いており、上の2つと
+  // display:contents の button を、到達できると誤って判定していた（外部監査で実証）。
+  //
+  // getComputedStyle と getClientRects はレイアウトを強制するので高い。
+  // 省くのではなく、同じ要素を測り直さないようにして戻す。
+  let renderCache = null;   // 走査1回のあいだだけ有効（scan が作って捨てる）
+
+  function isRendered(el) {
+    if (renderCache) {
+      const hit = renderCache.get(el);
+      if (hit !== undefined) return hit;
+    }
+    const cs = getComputedStyle(el);
+    let ok = !(cs.display === 'none' || cs.visibility === 'hidden' || cs.visibility === 'collapse');
+    // 箱が無いものは押せない。display:none の子孫と display:contents は
+    // どちらもここで落ちる。opacity:0 は箱があるので除外しない
+    // （透明でもフォーカスは当たり、読み上げにも出るため）。
+    if (ok && el.getClientRects().length === 0) ok = false;
+    if (renderCache) renderCache.set(el, ok);
+    return ok;
+  }
+
   // フォーカスを持てる前提。ここを通らないものは tabIndex がいくつでも入口にしない。
-  // 安い判定から順に並べる。getComputedStyle と getClientRects はレイアウトを
-  // 強制するので、最後に置く（先に置くと大きなページで走査時間が1.7倍になった）。
-  // known = true は「この要素が描画されていることを既に確認済み」という意味。
-  // 印を入れる場所の先祖はこれに当たる（isTarget が、テキストの親の display /
-  // visibility と箱の有無を確認してから通している）。先祖まで描画の確認を
-  // やり直すと、大きなページで走査が 29ms から 67ms へ倍増した（実測）。
-  // label が指す入力欄や、矢印ウィジェットの兄弟は先祖ではないので、確認する。
-  function canHoldFocus(el, known = false) {
+  // 安い判定から順に並べる（レイアウトを起こす isRendered は最後）。
+  function canHoldFocus(el) {
     if (!el || !el.isConnected) return false;
     if (el.tagName === 'INPUT' && el.type === 'hidden') return false;
     // fieldset[disabled] の子孫は、要素の disabled プロパティが false のままでも
     // 実際には無効になる。:disabled なら、最初の legend の中だけ例外にしてくれる。
     if (el.matches(':disabled')) return false;
     if (el.closest('[inert]')) return false;
-    if (known) return true;
-    const cs = getComputedStyle(el);
-    if (cs.display === 'none' || cs.visibility === 'hidden' || cs.visibility === 'collapse') return false;
-    // 描画の箱が無いものは押せない（display:none の親を持つ子孫はここで落ちる）。
-    // opacity:0 は箱があるので除外しない。透明でもフォーカスは当たるため。
-    if (el.getClientRects().length === 0) return false;
-    return true;
+    return isRendered(el);
   }
 
   // Tab の順路に入るか。tabIndex はブラウザが解釈したあとの値なので、
   // tabindex="" や空白だけの指定、details の2番目の summary、
   // details の外に置かれた summary も、正しく -1 になる。
   // tabIndex の読み取りはレイアウトを起こさないので、こちらを先に見る。
-  function tabbable(el, known = false) {
-    return !!el && el.tabIndex >= 0 && canHoldFocus(el, known);
+  function tabbable(el) {
+    return !!el && el.tabIndex >= 0 && canHoldFocus(el);
   }
 
   // 矢印キーで移動する複合ウィジェット（roving tabindex）。
@@ -145,12 +162,12 @@
     radio: ['radiogroup']
   };
 
-  function rovingEntry(el, known = false) {
+  function rovingEntry(el) {
     const role = el.getAttribute('role');
     const wanted = COMPOSITE_OF[role];
     if (!wanted) return null;
     if (el.tabIndex !== -1) return null;   // 0 以上なら上の tabbable が拾う
-    if (!canHoldFocus(el, known)) return null;
+    if (!canHoldFocus(el)) return null;
     const composite = el.closest(wanted.map(r => `[role="${r}"]`).join(','));
     if (!composite) return null;
     // 同じ容器の中に、Tab で入れる同種の項目があるか
@@ -160,18 +177,16 @@
     return null;
   }
 
-  // known = true は「host が描画されている先祖である」ことが分かっている場合。
-  function resolveTrigger(host, known = false) {
+  function resolveTrigger(host) {
     if (!host) return null;
     if (host.tagName === 'LABEL') {
       // label 自体は止まれない。関連付いた control だけを入口にする。
       // 中を querySelector で探すと、隠れた入力欄まで拾ってしまう。
-      // control は先祖ではないので、描画の確認まで行う。
       const c = host.control;
       return c && tabbable(c) ? c : null;
     }
-    if (tabbable(host, known)) return host;
-    return rovingEntry(host, known);
+    if (tabbable(host)) return host;
+    return rovingEntry(host);
   }
 
   // 印を入れようとしている場所から、扱いを決める。
@@ -182,8 +197,8 @@
     let el = parentEl.closest(HOST_CANDIDATE);
     if (!el) return { kind: 'standalone' };
     while (el) {
-      // ここでたどるのは、印を入れる場所の先祖だけ。isTarget が可視を確認済み。
-      const trigger = resolveTrigger(el, true);
+      // 先祖であっても、その要素自身が描画されているかを毎回確かめる（isRendered）。
+      const trigger = resolveTrigger(el);
       if (trigger) return { kind: 'hosted', trigger };
       el = el.parentElement && el.parentElement.closest(HOST_CANDIDATE);
     }
@@ -488,7 +503,26 @@
   }
 
   /* ---------- 7. 走査 ---------- */
+  // 走査のあいだだけ、描画状態の測定結果を覚えておく。
+  // 走査は同期的に走り、その間にページ側が要素を隠したり display を変えたりはしない
+  // （こちらが差し込む印は <sup> 1つで、入口候補の display や箱の有無を変えない）。
+  // 走査を抜けたら必ず捨てる。持ち越すと、GitHub が画面を差し替えたあとに
+  // 古い測定値で判定してしまう。
+  function withRenderCache(fn) {
+    const owner = renderCache === null;
+    if (owner) renderCache = new WeakMap();
+    try {
+      return fn();
+    } finally {
+      if (owner) renderCache = null;
+    }
+  }
+
   function scan(root) {
+    return withRenderCache(() => scanInner(root));
+  }
+
+  function scanInner(root) {
     if (!root || !root.nodeType) return 0;
     if (root.nodeType === Node.TEXT_NODE) {
       return isTarget(root) ? annotate(root) : 0;
@@ -508,7 +542,8 @@
   // GitHub は画面遷移でページ全体を読み直さないことがあるため、
   // 後から差し込まれた部分も見張る。自分が挿入した断片は handled で弾く。
   let lastUrl = location.href;
-  const observer = new MutationObserver(muts => {
+  // 差し込みが一度に何十件も来るので、1回分の呼び出しでは測定結果を共有する。
+  const observer = new MutationObserver(muts => withRenderCache(() => {
     // GitHub はページを読み直さずに画面を差し替えることがある。
     // 別のページに移ったら「印を付けた語」を数え直す。そうしないと、
     // 前の画面で出た語が新しい画面では一度も説明されないままになる。
@@ -528,7 +563,7 @@
     for (const mu of muts) {
       for (const n of mu.addedNodes) scan(n);
     }
-  });
+  }));
 
   /* ---------- 9. ON / OFF の切り替え ---------- */
   let observing = false;

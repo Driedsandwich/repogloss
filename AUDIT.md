@@ -1,4 +1,4 @@
-# 監査のための資料（第8回監査用）
+# 監査のための資料（第9回監査用）
 
 このファイルは、外部監査を受けるための入口です。**このリポジトリだけを読めば監査に必要な情報が揃う**ようにしてあります。
 
@@ -12,19 +12,18 @@ RepoGloss は、GitHub の画面に出てくる英語のうち Git / GitHub 固�
 
 | 項目 | 値 |
 |---|---|
-| **監査対象タグ** | **`v1.8.6`** |
-| **対象コミット** | **`3848b89a9cdc7df62dc2eaff8c4ae4b6e6e18086`**（PR #16 の merge commit） |
-| 直前の版 | `v1.8.5` = コミット `e96c113ee73b998b83a635bd99edd1c536a8b420`（**提出しない**） |
-| 現在の既定ブランチ | `main`（タグ `v1.8.6` と同じコミット） |
-| main とタグの差分 | **配布する13ファイルは差分ゼロ。** 違うのは `STORE_LISTING.md`（提出物の記録）と、このファイル（監査用の資料）だけ |
-| Manifest | v1.8.6 / Manifest V3 |
+| **監査対象** | **v1.8.7 候補（作業ツリー）。まだ commit も tag もしていない** |
+| 直前の版 | `v1.8.6` = コミット `3848b89a9cdc7df62dc2eaff8c4ae4b6e6e18086`（**第8回監査の指摘により提出しない**） |
+| 基点コミット | `3cbe4bb767e368e00456855614cd0db1e9a24aeb`（`main`。ここからの差分が今回の変更） |
+| 現在の既定ブランチ | `main` |
+| Manifest | v1.8.7 / Manifest V3 |
 | **最低の Chrome** | **105**（`minimum_chrome_version`。v1.8.6 で追加） |
 | Chrome API 権限 | `storage` のみ |
 | サイトアクセス | `https://github.com/*` |
 | `host_permissions` | 宣言なし |
 | 実行されるコード | [`src/matcher.js`](src/matcher.js) と [`src/content.js`](src/content.js) の2本（同梱のみ・リモートコードなし） |
 | 外部依存パッケージ | **なし**（`package.json` は検証用の scripts だけ。ZIP 生成も Node 標準の `zlib` で自作） |
-| ストア公開中の版 | **v1.7.1**（v1.8.0〜v1.8.5 はいずれも未提出。v1.8.6 も未提出） |
+| ストア公開中の版 | **v1.7.1**（v1.8.0〜v1.8.7 はいずれも未提出） |
 
 差分は次のコマンドで確認できます。
 
@@ -37,75 +36,72 @@ git diff --name-only v1.8.5            # 作業ツリーと、直前の版との
 
 **まだ commit していないので、タグも提出候補の ZIP もありません。** 監査は作業ツリーの内容に対して行ってください。
 
-### 1-1. 提出物（まだ提出していない）
+### 1-1. 提出物（まだ作っていない）
 
-| 項目 | 値 |
-|---|---|
-| ZIP | `repogloss-1.8.6.zip`・**86,123 バイト**・**13ファイル** |
-| **SHA-256** | **`6603ca7a2f7653f3786b197b4058bfc45c354a8c5692dcdd5e3cf2455018ba35`** |
-| 中身の合算ハッシュ | `18464c772767c5d04c1bb484ffe8ae1d774de1ca5d74bd1ec131b5a086252709` |
-| 出どころ | **CI が生成した artifact `repogloss-store-zip`**（run [`31110318795`](https://github.com/Driedsandwich/repogloss/actions/runs/31110318795) の `release-zip` ジョブ）。手元でビルドしたものは使っていない |
-| 生成条件 | **`main` への push で、`verify` `e2e` `e2e-windows` `hash-compare` がすべて成功したときだけ**作られる。PR では作られない（§4-2 で実測） |
+**v1.8.7 の提出候補 ZIP は、この時点では存在しません。** commit・push・tag をしていないため CI が動いておらず、CI が作る `repogloss-store-zip` もありません。
 
-**入手方法**: 上記 run の Artifacts から取得できる（保存期間30日）。
+現在版の事実を、機械で読める形で1か所にまとめます（**ここが正本**。他の節はここを引用します）。
 
-```sh
-gh run download 31110318795 -R Driedsandwich/repogloss -n repogloss-store-zip
+```yaml
+version:            1.8.7
+state:              uncommitted        # commit / tag / release / store submission いずれも未実施
+base_commit:        3cbe4bb767e368e00456855614cd0db1e9a24aeb
+tag:                null
+candidate_zip:      null
+candidate_sha256:   null
+content_sha256:     null
+workflow_run:       null
+superseded:
+  - version: 1.8.6
+    tag: v1.8.6
+    commit: 3848b89a9cdc7df62dc2eaff8c4ae4b6e6e18086
+    zip: repogloss-1.8.6.zip
+    sha256: 6603ca7a2f7653f3786b197b4058bfc45c354a8c5692dcdd5e3cf2455018ba35
+    reason: 第8回監査の指摘により提出しない
+store_published:    1.7.1
 ```
 
-**照合済み**（2026-08-06 実測）:
+タグ `v1.8.6` とその ZIP は保存したまま動かしていません（退避先で SHA が変わっていないことも確認済み）。
 
-- ダウンロードして計算した SHA-256 が、CI のログの値と一致する
-- 展開した13ファイルが、**タグ `v1.8.6` の中身と1バイトも違わない**（13/13 一致）
-- 対照として `v1.8.5` と比べると、**5ファイルで相違が出る**（`manifest.json` / `src/content.js` / `README.md` / `DESIGN.md` / `PRIVACY.md`）。差が出ない比較ではないことの確認
-- ダウンロードした成果物を**別の機械で** `npm run package:verify-zip -- --release` に掛けて合格する。対照として身元の記録の `workflowRunId` を1か所書き換えると落ちる
-
-**別環境でも同じものができた**: 手元（macOS・Node 22.22.3・zlib 1.3.1）と CI（Linux・Node 22.23.1・zlib 1.3.1-e00f703）で、**ZIP の SHA-256 が完全に一致**した。zlib の patch 表記が違っても同じになることは、今回はじめて実測できた。
-
-参考: 直前の v1.8.5 の提出候補は `c8bdbe3d…` だったが、**第7回監査の指摘により提出しない**。タグ `v1.8.5` とその ZIP は保存したまま動かしていない（退避先で SHA が変わっていないことも確認済み）。
-
-**この ZIP は誰でも再現できます。** 日時を 1980-01-01 に固定し、並び順を配布一覧の順に固定してあるため、同じコミットからは1バイト違わない同じものができます。
+**ZIP は誰でも再現できます。** 日時を 1980-01-01 に固定し、並び順を配布一覧の順に固定してあるため、同じ内容からは1バイト違わない同じものができます（v1.8.6 では、手元の macOS / Node 22.22.3 と CI の Linux / Node 22.23.1 で SHA-256 が完全に一致することを実測しました）。
 
 ```sh
-git checkout v1.8.6
-npm run package:zip          # → ZIP_SHA256 6603ca7a... が出る
-npm run package:verify-zip   # → 中身が13ファイルと一致することを検査
+npm run package:zip -- --allow-uncommitted   # commit 前に試す場合。名前に UNCOMMITTED が入る
+npm run package:verify-zip                   # 中身と身元の記録を検査する
 ```
 
 ---
 
-## 2. 今回（v1.8.6）で直したこと
+## 2. 今回（v1.8.7）で直したこと
 
-第7回監査の指摘 **P1 3件・P2 5件**への対応。詳細と証拠は [`docs/audit/v1.8.6-changes.md`](docs/audit/v1.8.6-changes.md)。
-
-| ID | 内容 | 主な変更箇所 |
-|---|---|---|
-| RG-7-01 | `display:contents` の可視性を、箱を持つ先祖の1つの答えで代用していた（**両方向に誤っていた**） | [`src/content.js`](src/content.js) `isVisibleContentsText` |
-| RG-7-02 | 印を片づけるとき、隣にあるものを「自分が割った対」と推し量っていた | `annotate` の記録と `retireGloss` / `recoverDetachedGlosses` |
-| RG-7-03 | プライバシー文書が、通常本文に出た認証情報らしき文字列の一時処理を落としていた | [`PRIVACY.md`](PRIVACY.md) / [`STORE_LISTING.md`](STORE_LISTING.md) |
-| RG-7-04 | legacy `clip` を `position` を見ずに判定し、**読める文章を除外していた** | `clipsAwayContent` |
-| RG-7-05 | 動作に必要な最低の Chrome を宣言していなかった | [`manifest.json`](manifest.json) `minimum_chrome_version` |
-| RG-7-06 | 提出物の身元の検査が、項目の欠落を落とせなかった | [`scripts/provenance.mjs`](scripts/provenance.mjs)（新設）／[`scripts/package-zip.mjs`](scripts/package-zip.mjs) |
-| RG-7-07 | 隔離世界の計測が「取り出し口を6つ塞ぐ」方式で、塞ぎ忘れを塞げなかった | [`tests/e2e/matcher-tap.js`](tests/e2e/matcher-tap.js)（新設・`prelude.js` を置き換え） |
-| RG-7-08 | `AUDIT.md` に旧版の記載が残り、検査で見つけられなかった | このファイル＋[`scripts/verify.mjs`](scripts/verify.mjs) の現在版検査 |
-
-**8件すべて、実物と一致することを実測してから直しました。** 通算7巡で 64 件の指摘があり、事実と異なるものは 0 件です。
-
-**RG-7-01 は、こちらで測ったところ監査の反例より条件が広いことが分かりました。** 監査は「`content-visibility:hidden` の中の `display:contents` に印が付く」としていましたが、その形は**一度描かれてから隠された場合にだけ**成り立ちます。最初から隠れている場合は `Range` の矩形が 0 になり、別の経路で落ちます。一度描かれてから隠すと矩形が残り続けるため（実測: 隠す前 1 個 / 隠した後も 1 個）、そちらを反例として E2E に固定しました。
-
-### 2-0. 直前（v1.8.5）で直したこと（履歴）
-
-第6回監査の指摘 **P1 3件・P2 4件**への対応です。詳細と証拠は [`docs/audit/v1.8.5-changes.md`](docs/audit/v1.8.5-changes.md) にあります。
+第8回監査の指摘 **P1 3件・P2 2件**への対応。詳細と証拠は [`docs/audit/v1.8.7-changes.md`](docs/audit/v1.8.7-changes.md)。
 
 | ID | 内容 | 主な変更箇所 |
 |---|---|---|
-| RG-6-01 | 退役させた印の元テキストが `handled` に残り、その語が二度と注記されなかった | [`src/content.js`](src/content.js) `retireGloss` |
-| RG-6-02 | 要素**自身**が `content-visibility:hidden` / `hidden="until-found"` で中身を隠す形を見抜けなかった | `isVisibleOccurrence` |
-| RG-6-03 | `checkVisibility` が `display:contents` に false を返すため、見えている文字を落としていた | `boxedAncestor` / `hasRenderedText` |
-| RG-6-04 | プライバシーの説明が実装より狭かった（CSS 非表示の文章も一度は読む） | [`PRIVACY.md`](PRIVACY.md) |
-| RG-6-05 | 順序の静的検査は迂回できるため、担保になっていなかった | 隔離世界での計測 E2E |
-| RG-6-06 | `verify-zip` が提出物の身元 JSON を上書きしていた | [`scripts/package-zip.mjs`](scripts/package-zip.mjs) |
-| RG-6-07 | 大きな箱への全面 `clip` を拾っていた | `clipsAwayContent` |
+| RG-8-01 | 最初の印を含む場所が消えても、**既にページにある2番目の候補**へ引き継がれなかった | [`src/content.js`](src/content.js) 世代つき `handled` と `reselect` |
+| RG-8-02 | 語と印の対応が壊れても、印だけを見て「説明済み」と抑止していた | `isCoherent` / `reconcileGlosses` |
+| RG-8-03 | 切り取りの判定に取りこぼしがあり、`display:contents` では逆に落としすぎていた | `rectClipsAll` / `insetClipsAll` / `clipsAwayContent` |
+| RG-8-04 | 注記済みの領域が複製されると、所有していない印と入口 ID が残っていた | `ownedIcons` / `ownedTriggers` / `sanitizeClones` |
+| RG-8-05 | 文書に現在版との食い違いがあり、配布物の中でリンクが切れていた | 文書一式＋[`scripts/verify.mjs`](scripts/verify.mjs) |
+
+**5件すべて、実物と一致することを実測してから直しました。** 通算8巡で 69 件の指摘があり、事実と異なるものは 0 件です。
+
+**RG-8-05 は、こちらで数え直したら指摘より範囲が広いことが分かりました。** 監査は配布 README の画像1件を挙げていましたが、同じ形（配布物に入らない場所を相対リンクで指す）が **9件** ありました（`SECURITY.md`・`.github/workflows/ci.yml`・`tests/` 4件・`scripts/` 2件）。配布物の中だけを指す相対リンクに限る、という規則にして全件を絶対 URL へ直し、検査を足しました。
+
+### 2-0. 直前（v1.8.6）で直したこと（履歴）
+
+第7回監査の指摘 **P1 3件・P2 5件**への対応です。詳細と証拠は [`docs/audit/v1.8.6-changes.md`](docs/audit/v1.8.6-changes.md) にあります。
+
+| ID | 内容 | 主な変更箇所 |
+|---|---|---|
+| RG-7-01 | `display:contents` の可視性を、箱を持つ先祖の1つの答えで代用していた | `isVisibleContentsText` |
+| RG-7-02 | 印を片づけるとき、隣にあるものを「自分が割った対」と推し量っていた | 注記時の記録と `retireGloss` |
+| RG-7-03 | プライバシー文書が、本文に出た認証情報らしき文字列の一時処理を落としていた | [`PRIVACY.md`](PRIVACY.md) |
+| RG-7-04 | legacy `clip` を `position` を見ずに判定し、読める文章を除外していた | `clipsAwayContent` |
+| RG-7-05 | 動作に必要な最低の Chrome を宣言していなかった | [`manifest.json`](manifest.json) |
+| RG-7-06 | 提出物の身元の検査が、項目の欠落を落とせなかった | [`scripts/provenance.mjs`](scripts/provenance.mjs) |
+| RG-7-07 | 隔離世界の計測が「取り出し口を6つ塞ぐ」方式だった | [`tests/e2e/matcher-tap.js`](tests/e2e/matcher-tap.js) |
+| RG-7-08 | `AUDIT.md` に旧版の記載が残り、検査で見つけられなかった | 文書一式＋`verify.mjs` |
 
 ### 2-1. 中心にあった誤り
 
@@ -164,76 +160,54 @@ v1.8.2 と v1.8.3 で、**注記される語の集合は3ページとも完全�
 
 ## 4. 検証の結果
 
-### 4-1. 手元（macOS 26 / Google Chrome 151.0.7922.76 / Node.js v22.22.3・2026-08-06）
+### 4-1. 手元（macOS 26 / Google Chrome 151.0.7922.76 / Node.js v22.22.3・2026-08-07）
 
 **commit していないため CI は回っていません。** 下は手元での実行結果です。
 
 | command | exit | 結果 |
 |---|---:|---|
 | `node --check src/matcher.js` / `src/content.js` | 0 | 構文 OK |
-| `npm test` | 0 | 単体 **63件**全成功 / 構成検査 **158項目**・不一致0（辞書61語・version 1.8.6） |
-| `npm run test:e2e` | 0 | **60件**全成功（拡張として実際に読み込み・実キー送信） |
+| `npm test` | 0 | 単体 **63件**全成功 / 構成検査 **166項目**・不一致0（辞書61語・version 1.8.7） |
+| `npm run test:e2e` | 0 | **75件**全成功（v1.8.6 は 60件） |
 | `npm run package:stage` / `:verify` | 0 | 13ファイル一致 |
 | `npm run package:zip -- --allow-uncommitted` / `:verify-zip` | 0 | 13ファイル（**commit 前なので名前に `UNCOMMITTED` が入る。提出候補ではない**） |
+| `npm run package:verify-zip -- --release` | **1** | **意図どおり落ちる**（手元ビルドは提出候補として通さない） |
 
-単体テストの内訳: 用語判定 `tests/matcher.test.js`／配布物 `tests/package.test.js`／**身元の記録 `tests/provenance.test.js`（新設・28件）**。
+### 4-1b. 実サイトでの前後比較と性能（2026-08-07）
 
-### 4-2. CI
+GitHub の実ページ4枚で、v1.8.6 と v1.8.7 の**注記される語の集合**を突き合わせました。**3ページは集合が完全に一致**。`k88hudson/git-flight-rules` だけ1回の計測で `insights` の有無が食い違いましたが、**同じ版を3回ずつ測り直すと両版とも 37 語・`insights` 0 で一致**しました。`insights` を含む3か所はいずれも `checkVisibility` が false（畳まれたメニューの中）で、開き方によって描画状態が変わります。**版の違いではありません。**
 
-#### 4-2-0. `main` の run [`31110318795`](https://github.com/Driedsandwich/repogloss/actions/runs/31110318795)（タグ `v1.8.6` と同じ内容・**8ジョブすべて success**）
+初期走査は、v1.8.6 と**交互に10往復**して測りました（実ページ・幅1600px・ページの中で計測）。
 
-提出候補を作るのはこの run です。**`release-zip` が実際に成果物を作る側の経路**を、ここではじめて確かめました（PR では `skipped` までしか見られない）。
+| | 中央値 | SD | 各回（ms） |
+|---|---:|---:|---|
+| v1.8.6 | 38.8 ms | 5.3 | 38.8 / 32.7 / 37.5 / 52.5 / 33.7 / 35.8 / 43.2 / 39.8 / 38.8 / 37.0 |
+| v1.8.7 | **36.9 ms** | **2.8** | 40.5 / 42.0 / 33.2 / 35.1 / 36.9 / 34.2 / 35.4 / 35.5 / 37.5 / 40.3 |
 
-| 見たこと | 結果 |
+組ごとの差の中央値は **−1.3 ms**、v1.8.7 のほうが遅かったのは **4/10 組**。**遅くなったとは言えません**（ばらつきはむしろ小さい）。
+
+> **途中で一度、遅くなっていました。** 5往復で測ったときは 5組すべてで v1.8.7 が遅く（中央値 33.6 → 38.6 ms）、原因は記録の整合を確かめるたびに `document` 全体から入口を引き直していたことでした。同じ ID を持つ要素が2つ出るのは複製されたときだけで、それは走査より前に取り除いてあるので、記録した入口を直接見る形へ変えました。上の数字はその後のものです。
+
+### 4-2. CI — **今回は未実行**
+
+commit・push をしていないため、次は**確認できていません**。
+
+- Linux / Windows / macOS 3 OS での実行
+- 3 OS 間の配布物ハッシュ一致（`hash-compare`）
+- 提出候補 ZIP の生成（`release-zip`）と、その `--release` 検査
+
+#### 4-2-h. 直前の版で確かめたこと（履歴）
+
+v1.8.6 では、CI の両側を実測しました。**今回の変更で workflow の条件式は触っていません。**
+
+| 見たこと | 結果（run `31110318795` / `31109709399`） |
 |---|---|
-| `release-zip` が動く | **success**（必須4ジョブがすべて成功した `main` への push） |
-| 成果物が出る | `repogloss-store-zip`（86,507 バイト。中身は ZIP と身元 JSON の2つ） |
-| その中の ZIP | `repogloss-1.8.6.zip`・86,123 バイト・13ファイル・`6603ca7a…` |
-| CI 内での `--release` 検査 | **合格**（v1.8.6 で入れた、CI 由来であることまで見るモード） |
-| 手元での再検査 | ダウンロードして `--release` に掛け、**別の機械でも合格**。身元の記録を1か所書き換えると落ちることも確認 |
-
-**対照**: 同じ内容の PR（#16）の run では `release-zip` は `skipped` で、artifact は `package-hash-*` の3件だけ、`repogloss-store-zip` は出ていません。**同じコードで、`main` への push のときだけ出る**ことを両側から見たことになります。
-
-#### 4-2-1. PR #16 の run [`31109709399`](https://github.com/Driedsandwich/repogloss/actions/runs/31109709399)・**必須7ジョブすべて success**）
-
-| job | 結果 |
-|---|---|
-| `verify` | 構成と文書の整合 **158項目**・不一致 0（version 1.8.6） |
-| `e2e` | ubuntu で **60件**全成功 |
-| `e2e-windows` | **windows-latest で 60件**全成功 |
-| `package-hash` × 3 OS | 各 OS で合算ハッシュを出し、artifact として持ち出す |
-| `hash-compare` | 3件そろい、**3つとも同じ値**（機械的に確認） |
-| `release-zip` | **skipped**（PR では動かない。`main` への push のときだけ） |
-
-**3 OS の配布物が1バイトも違わないこと**を実測しました。
-
-```text
-ubuntu-latest  57d15795b21e3b9e5701f870404b1529737bed84fb0905acc6ef028123bcf45d
-macos-latest   57d15795b21e3b9e5701f870404b1529737bed84fb0905acc6ef028123bcf45d
-windows-latest 57d15795b21e3b9e5701f870404b1529737bed84fb0905acc6ef028123bcf45d
-手元 macOS      57d15795b21e3b9e5701f870404b1529737bed84fb0905acc6ef028123bcf45d
-```
-
-**PR からは提出候補の成果物が出ないこと**も、artifact の一覧で確かめました（出ているのは `package-hash-*` の3件だけで、`repogloss-store-zip` は無い）。`release-zip` のゲートが赤い側でも働くことは v1.8.3 と v1.8.4 の対応時に実測済みで、**今回の変更でその条件式は触っていません**（足したのは検査コマンドへの `--release` だけ）。
-
-**まだ確認できていないのは、`release-zip` が実際に ZIP を作る側の経路です**（`main` への push が要るため）。
-
-### 4-2c. 初期走査の時間 — CI の Linux ランナーで実測（2026-08-06）
-
-使い捨てのブランチで、**v1.8.5 と交互に5往復**して測りました（実際の公開ページ・幅1600px・ページの中で初期走査だけを計測）。確認後、そのブランチと workflow は削除してあります。
-
-| ページ | v1.8.5 中央値 | v1.8.6 中央値 | 組ごとの差（1.8.6 − 1.8.5） | 50ms 未満 |
-|---|---:|---:|---|---|
-| `k88hudson/git-flight-rules`（用語41語） | 71.1 ms | **70.8 ms** | −2.7 / +2.5 / −1.4 / −11.8 / −3.7 | **0/5**（両版とも超える） |
-| `octocat/Hello-World`（用語20語） | 18.8 ms | **18.7 ms** | −1.2 / +0.1 / 0.0 / +3.0 / −1.5 | **5/5**（両版とも下回る） |
-
-**v1.8.6 は v1.8.5 より遅くなっていません**（5組中4組で v1.8.6 のほうが速い）。**ただし用語の多いページでは、両版とも 50ms を超えます。** これは v1.8.6 で始まったことではありません。
-
-### 4-2b. 実サイトでの前後比較（2026-08-06）
-
-GitHub の実ページ4枚で、v1.8.5 と v1.8.6 の**注記される語の集合**を突き合わせた（件数ではなくキーの集合まで）。**減った語は 0 件**、増えたのは `insights` のみ（2ページ）。RG-7-04 の是正で、`position:static` の要素に効かない `clip` によって落としていた語が拾えるようになったもの。
-
-**未解決の観察を1件残します。** 上の計測の1回で、`Driedsandwich/repogloss` の印19個のうち2個（`security` / `insights`）の親が computed `visibility: hidden` でした。同じ2ページを同じ順で開く A/B を両版で4回、および幅 700px ↔ 1600px の切り替えを試しましたが、いずれも18個・該当0件で**再現しません**。再現した回に v1.8.5 側を同じページ状態で測れておらず、**版の違いによるものかは言えていません**（→ §7 の既知の制約4と同じ仕組みで説明は付きますが、推測です）。
+| `main` への push で `release-zip` が動き、成果物が出る | success。ZIP 86,123 バイト・13ファイル・`6603ca7a…` |
+| CI 内の `--release` 検査 | 合格 |
+| 手元でダウンロードして `--release` 検査 | 別の機械でも合格。身元の記録を1か所書き換えると落ちる |
+| ダウンロードした13ファイルとタグの突合 | 1バイトも違わない（対照の v1.8.5 とは5ファイルで相違） |
+| 3 OS の配布物ハッシュ | ubuntu / macos / windows とも `57d15795…` で一致（手元 macOS とも同じ） |
+| PR では成果物が出ない（対照） | `release-zip` は skipped。artifact は `package-hash-*` の3件だけ |
 
 ### 4-3. テストに判別力があることの確認
 
@@ -289,56 +263,6 @@ ZIP の検査は、**壊した ZIP 9種類**を1件ずつぶつけて必ず落�
 
 E2E は `--remote-debugging-pipe` と `--enable-unsafe-extension-debugging` を使い、CDP の `Extensions.loadUnpacked` で**配布ファイルだけを実際の Chrome へ拡張として読み込んで**います（`--load-extension` は現行 Chrome で無効化されているため）。`github.com` は `--host-resolver-rules` でローカルの HTTPS サーバへ向けており、外部通信もアカウントも要りません。
 
-### 4-5. 性能 — **重いページは 50ms を超える（v1.8.4 も同じ）**
-
-**GitHub Actions の ubuntu-latest で、v1.8.4 と交互に5往復して測った**（実際の公開ページ・幅1600px・ページの中で初期走査だけを計測）。
-
-| ページ | v1.8.4 中央値 | v1.8.5 中央値 | v1.8.5 最小 | 50ms |
-|---|---:|---:|---:|---|
-| `k88hudson/git-flight-rules`（用語41件） | 86 ms | **77 ms** | 76 ms | **超過（両方）** |
-| `octocat/Hello-World`（用語20件） | 24 ms | **21 ms** | 21 ms | 未満 |
-
-**5往復すべてで v1.8.5 のほうが速く**（77 / 77 / 78 / 76 / 77 に対し v1.8.4 は 88 / 94 / 81 / 85 / 86）、ばらつきも小さい。**v1.8.5 は性能の後退ではない。**
-
-**しかし、用語の多いページでは 50ms を超える。** これは v1.8.5 で始まったことではなく、**v1.8.4 でも超えている**（そちらのほうが遅い）。
-
-> **「50ms 未満」という言い方を、条件なしでは使わない。** この目安は開発機（macOS・空いている状態）で測った値に基づいていた。CI の ubuntu ランナーは遅く、同じページ・同じ版で倍以上かかる。**どの機械で測ったかを書かずに「50ms 未満」とは書かない。**
->
-> 開発機（macOS・空いていた時間帯）での同じページ: v1.8.3 が 22ms、v1.8.4 が 36ms。混んでいる時間帯には v1.8.4 が 61ms、v1.8.5 が 62ms だった。**機械の状態で3倍近く動く量である。**
-
-**この版で増えた処理**（正しさのために増やしたもの）: 要素自身の `content-visibility` の確認（可視性の判定と同じ `getComputedStyle` を使い回す）／切り取りの判定を大きさに関係なく見る（**祖先をたどった結果ごと `WeakMap` で覚える**ので、同じ枝の2件目からは1回で済む）／`display:contents` のときだけ文字の範囲を測る（該当は稀）。**結果として v1.8.4 より速くなっている。**
-
-3ページの語の集合は v1.8.4 と**完全に一致**し、見えない領域の中の印は 0 のままである。
-
----|---:|---:|---:|
-| v1.8.4 | 61 ms | 57 ms | 41 |
-| v1.8.5 | 62 ms | **53 ms** | 41 |
-
-**v1.8.5 は v1.8.4 より遅くなっていません**（差は測定の揺れの範囲内で、最小値では速い）。交互に測っているので、負荷の波は両方が等しく受けています。
-
-**しかし絶対値は両方とも 50ms を超えています。** 同じページを同じ手順で、機械が空いていた時間帯に測ったときは v1.8.3 が 22ms、v1.8.4 が 36ms でした。**上がったのは主に機械の状態であって、コードではない**と考えていますが、**それは推測です。空いている環境での再測定は未実施**として扱ってください。
-
-3ページの語の集合は v1.8.4 と**完全に一致**し、見えない領域（1px＋切り取り）の中の印は 0 のままです。
-
-**この版で増えた処理**（正しさのために増やしたもの）:
-
-- 要素自身の `content-visibility` の確認（1要素につき `getComputedStyle` 1回。可視性の判定と同じ呼び出しを使い回す）
-- 切り取りの判定を、大きさに関係なく見るようにした（**祖先をたどった結果そのものを `WeakMap` で覚える**ので、同じ枝の2件目からは1回で済む）
-- `display:contents` のときだけ、文字の範囲を測る（該当は稀）
-
-> 過去の節にある「10〜13ms」は v1.7.1 を別の条件で測ったもので、この表とは比べられません（版・幅・回数・計測位置・機械の状態がすべて違う）。**数字を並べるときは条件も一緒に運びます。**
-
----|---:|---:|---:|---|---|
-| `octocat/Hello-World` | 9 ms | 11 ms | 20 / 20 | 完全一致 | なし |
-| `k88hudson/git-flight-rules` | 16 ms | 26 ms | 41 / 41 | 完全一致 | なし |
-| `Spoon-Knife`（コード表示） | 9 ms | 10 ms | 14 / 14 | 完全一致 | なし |
-
-省いていた描画確認を戻したぶん、大きなページで増えています。しきい値の 50ms には収まっており、**正しさを戻すことと引き換えの増加なので、速度を理由に戻しません。**
-
-> [`README.md`](README.md) の過去の節にある「10〜13ms」は v1.7.1 を別の条件で測ったもので、この表とは比べられません（版・幅・回数・計測位置がすべて違う）。前回この不一致を指摘されたため、数値には条件を必ず添えるようにしました。
-
----
-
 ## 5. データ取り扱いの申告
 
 **確定しているのは1件だけです。** 残りは Developer Dashboard の定義文を人が読むまで確定させません（→ 下の「未確定」）。
@@ -361,7 +285,7 @@ E2E は `--remote-debugging-pipe` と `--enable-unsafe-extension-debugging` を�
 
 ---
 
-## 6. 権限・通信・保存データ（v1.8.5 → v1.8.6 の差分）
+## 6. 権限・通信・保存データ（v1.8.6 → v1.8.7 の差分）
 
 ```text
 permissions:                 ['storage'] → ['storage']（差分なし）
@@ -415,7 +339,8 @@ web_accessible_resources:    差分なし（locales/dict.json のみ）
 | 5 | 8件 | 全件が実在。対応して v1.8.4 へ（v1.8.3 は提出見送り） | v1.8.3 |
 | 6 | 7件 | 全件が実在。対応して v1.8.5 へ（v1.8.4 は提出見送り） | v1.8.4 |
 | 7 | 8件 | 全件が実在。対応して v1.8.6 へ（v1.8.5 は提出見送り） | v1.8.5 |
-| **合計** | **64件** | **64件連続で、事実と違う指摘は0件** | |
+| 8 | 5件 | 全件が実在。対応して v1.8.7 へ（v1.8.6 は提出見送り） | v1.8.6 |
+| **合計** | **69件** | **69件連続で、事実と違う指摘は0件** | |
 
 第4回の指摘のうち1件（RG-4-07）は、**該当が11件ではなく12件**でした。辞書で `s` で終わるキーを数え直すと `request changes` も該当し、`request changeses` が作られていました。指摘そのものは正しく、影響範囲がわずかに広かったものです。
 
@@ -456,7 +381,7 @@ web_accessible_resources:    差分なし（locales/dict.json のみ）
 | ZIP の検査 | [`scripts/verify-zip.mjs`](scripts/verify-zip.mjs) |
 | CI | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
 | ストア掲載情報と提出記録 | [`STORE_LISTING.md`](STORE_LISTING.md) |
-| **今回の変更の詳細と証拠** | [`docs/audit/v1.8.6-changes.md`](docs/audit/v1.8.6-changes.md) |
+| **今回の変更の詳細と証拠** | [`docs/audit/v1.8.7-changes.md`](docs/audit/v1.8.7-changes.md) |
 
 ---
 

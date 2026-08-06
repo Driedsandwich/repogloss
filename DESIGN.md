@@ -194,6 +194,45 @@ v1.8.5 は、片づける時点の `previousSibling` / `nextSibling` を「自�
 
 一致が複数ある節点では、**前から順に**処理する。後ろから割ると、先に控えた節点があとの分割でさらに割られ、記録が実物とずれる。
 
+## 3-2-3f. 印が居なくなったら、既にある候補へ引き継ぐ（v1.8.7）
+
+同じ語はページで最初の1回だけ注記する。そのために、**既に説明済みの語しか含まない節点も「処理済み」として記録**している。この記録を永久に残すと、最初の印を含む場所がページから消えたとき、2番目の候補が二度と選ばれない。実測では、`branch` を2か所に置いて最初を削除すると、ページ全体の印が **0個**になった（URL を変えて全体を走査し直しても戻らない）。
+
+そこで、処理済みの記録を**世代つき**にした。
+
+| | v1.8.6 まで | v1.8.7 |
+|---|---|---|
+| 処理済みの持ち方 | `WeakSet<Text>` | `WeakMap<Text, 世代>` |
+| 飛ばす条件 | 集合に在る | **今の世代で**処理済み |
+| 世代を進めるとき | — | 正規の印が退役したときだけ |
+
+ふつうの変更では世代を進めないので、走査の費用は変わらない。退役は稀なので、そのときだけ `document.body` を選び直す。
+
+**印と語の対応が壊れていないかも、毎回確かめる。** 印が DOM に在ることは、その印がまだ意味を持つことを示さない。実測した壊れ方は2つ。
+
+| 壊し方 | v1.8.6 の結果 |
+|---|---|
+| 語の Text node だけを削除 | 語の無い場所に印が残り、後から現れた本物の語を「説明済み」として抑止した |
+| 語と印のあいだへページが節点を挿す | 印が語ではなく、挿し込まれた文字の直後に位置した |
+
+いまは記録全体（印・語の節点・親・語の位置・並び順・入口）を照合し、食い違えば退役させて選び直す。**ページ側の節点は動かさない**——自分の印を外し、選び直しで語の直後へ入れ直す。結果として印は語の直後へ戻り、ページが置いた節点はそのまま残る。
+
+**複製された「自分のふり」を自分のものとして扱わない。** ページが注記済みの領域を `cloneNode` すると、印も入口の名札も複製される。実測では同じ入口 ID を持つ要素が2つになった。自分が作った印と入口を `WeakSet` で持ち、追加された領域を走査する前に、所有していないものを取り除く（触るのは自分のものだけ）。
+
+## 3-2-3g. 切り取りは、書き方ではなく面積で決める（v1.8.7）
+
+v1.8.6 までは `rect(0 0 0 0)` と `inset(50%)` という**決まった書き方**を文字列で照合していた。同じ「面積0」でも書き方はいくらでもある。
+
+| 形 | v1.8.6 | 実際 |
+|---|---|---|
+| `clip: rect(5px,5px,5px,5px)` | 見えている扱い | 面積0（`right <= left`） |
+| `clip-path: inset(100%)` | 見えている扱い | 面積0 |
+| `display:contents` 自身の `clip-path: inset(50%)` | 隠れている扱い | **効かない**（箱が無い） |
+
+いまは値として解き、`rect` は `right <= left` か `bottom <= top`、`inset` は縦か横の合計が100%以上を面積0とする。`auto` や、長さと百分率が混ざる形は**断定しない**（箱の大きさ抜きには決められないため）。`display:contents` の要素自身の切り取りは適用しない。
+
+判定が正しいことは、こちらの式の言い換えではなく**ブラウザの当たり判定**で確かめている（文字が描かれている場所を `elementFromPoint` で突く）。なお `caretRangeFromPoint` は `clip-path` を無視して切り取られた文字にも当たるので、可視の判定には使えない（実測）。
+
 ## 3-2-4. 除外を決める前に、文字列を読まない（v1.8.4）
 
 **「書き換えない」と「読み取らない」は別のこと。** v1.8.3 までの `isTarget` は、最初に `node.nodeValue` を取り出してから `SKIP` の判定をしていた。印は入らず内容も変わらないが、編集中のコメントや `textarea` の中身は、除外が決まる前に一度 JavaScript へ読み込まれていた。公開しているプライバシーの説明は「読み取りも書き換えもしない」と書いていたので、実装と食い違っていた。
@@ -284,13 +323,13 @@ clone した直後に `npm test`（依存パッケージなし）で実行でき
 | 対象 | 実体 | 内容 |
 |---|---|---|
 | 構文 | `node --check` | `src/matcher.js` と `src/content.js` |
-| 用語の判定 | [`tests/matcher.test.js`](./tests/matcher.test.js) | 全 61 キーの自己一致、大文字小文字と空白、単複（`-s` `-es` `-y→-ies`）、長いキーが短いキーに食われないこと、同じ語の重複除外、`fork/forks` のように単複が別キーの語、一致位置の正しさ、部分一致しないこと |
-| 構成と文書 | [`scripts/verify.mjs`](./scripts/verify.mjs) | Manifest V3・権限が `storage` だけであること・対象サイトが `https://github.com/*` だけであること・参照ファイルの実在と配布一覧との一致・辞書の形式・辞書の語数と README/DESIGN の記載の一致・CSS クラス名の整合・外部通信や `eval` が無いこと |
-| 拡張としての動作 | [`tests/e2e/extension.e2e.mjs`](./tests/e2e/extension.e2e.mjs)（`npm run test:e2e`） | 配布ファイルだけを並べて Chrome へ実際に読み込ませ、manifest が受理されること・印の表示・コード領域の除外・リンクの中の印が装飾扱いであること・キーボードと Escape・**ON/OFF でページが読み直されず書きかけが残ること**・**タブをまたいだ設定の同期** |
+| 用語の判定 | [`tests/matcher.test.js`](https://github.com/Driedsandwich/repogloss/blob/main/tests/matcher.test.js) | 全 61 キーの自己一致、大文字小文字と空白、単複（`-s` `-es` `-y→-ies`）、長いキーが短いキーに食われないこと、同じ語の重複除外、`fork/forks` のように単複が別キーの語、一致位置の正しさ、部分一致しないこと |
+| 構成と文書 | [`scripts/verify.mjs`](https://github.com/Driedsandwich/repogloss/blob/main/scripts/verify.mjs) | Manifest V3・権限が `storage` だけであること・対象サイトが `https://github.com/*` だけであること・参照ファイルの実在と配布一覧との一致・辞書の形式・辞書の語数と README/DESIGN の記載の一致・CSS クラス名の整合・外部通信や `eval` が無いこと |
+| 拡張としての動作 | [`tests/e2e/extension.e2e.mjs`](https://github.com/Driedsandwich/repogloss/blob/main/tests/e2e/extension.e2e.mjs)（`npm run test:e2e`） | 配布ファイルだけを並べて Chrome へ実際に読み込ませ、manifest が受理されること・印の表示・コード領域の除外・リンクの中の印が装飾扱いであること・キーボードと Escape・**ON/OFF でページが読み直されず書きかけが残ること**・**タブをまたいだ設定の同期** |
 
 **前の3つが確かめるのは、判定の規則と構成の整合だけ**で、画面上の見え方・速度・読み上げは含まない。4つめの E2E は「拡張として読み込んだ状態」を作るので、`chrome.storage` の実挙動や読み込み順まで含む。
 
-E2E の作り方の要点: `--load-extension` は現行 Chrome で無効化されているため、CDP の `Extensions.loadUnpacked` を使う（`--remote-debugging-pipe` と `--enable-unsafe-extension-debugging` が要る）。`github.com` は `--host-resolver-rules` でローカルの HTTPS サーバへ向けるので、外部通信もアカウントも要らない。**読み込むのは配布する13ファイルだけ**（[`scripts/package-files.mjs`](./scripts/package-files.mjs)）なので、出荷物に足りないファイルがあれば落ちる。
+E2E の作り方の要点: `--load-extension` は現行 Chrome で無効化されているため、CDP の `Extensions.loadUnpacked` を使う（`--remote-debugging-pipe` と `--enable-unsafe-extension-debugging` が要る）。`github.com` は `--host-resolver-rules` でローカルの HTTPS サーバへ向けるので、外部通信もアカウントも要らない。**読み込むのは配布する13ファイルだけ**（[`scripts/package-files.mjs`](https://github.com/Driedsandwich/repogloss/blob/main/scripts/package-files.mjs)）なので、出荷物に足りないファイルがあれば落ちる。
 
 ### 6-1-2. ブラウザでの実測（2026-08-05）
 

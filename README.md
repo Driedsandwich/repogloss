@@ -2,7 +2,7 @@
 
 GitHub のページで、Git / GitHub 固有の英単語の右に小さな ⓘ を付ける Chrome 拡張です。ⓘ にカーソルを乗せると日本語の説明が出ます。英語表示はそのまま残ります。
 
-![Version](https://img.shields.io/badge/version-1.8.6-blue)
+![Version](https://img.shields.io/badge/version-1.8.7-blue)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 ![Manifest](https://img.shields.io/badge/manifest-v3-green)
 
@@ -10,7 +10,7 @@ GitHub のページで、Git / GitHub 固有の英単語の右に小さな ⓘ �
 
 ## 画面
 
-![GitHub のリポジトリ画面。Pull requests・Issues・Actions などの語の右に小さな ⓘ が付き、カーソルを乗せた語の日本語の説明が吹き出しで出ている](./docs/screenshot.png)
+![GitHub のリポジトリ画面。Pull requests・Issues・Actions などの語の右に小さな ⓘ が付き、カーソルを乗せた語の日本語の説明が吹き出しで出ている](https://raw.githubusercontent.com/Driedsandwich/repogloss/main/docs/screenshot.png)
 
 `Pull requests` `Issues` `Actions` `Projects` `Wiki` のように、辞書にある語の右へ小さな ⓘ が付きます。ⓘ にカーソルを乗せると、その語の説明が吹き出しで出ます（画像は `pull request` の説明）。
 
@@ -42,7 +42,7 @@ GitHub のページで、Git / GitHub 固有の英単語の右に小さな ⓘ �
 
 ## インストール
 
-**[Chrome ウェブストアで公開しています](https://chromewebstore.google.com/detail/ihkkhkleamggokepaelapoiabgmpljnn)**。ストアに出ているのは v1.7.1（2026-08-03 公開）で、この版 v1.8.6 はまだ提出していません。
+**[Chrome ウェブストアで公開しています](https://chromewebstore.google.com/detail/ihkkhkleamggokepaelapoiabgmpljnn)**。ストアに出ているのは v1.7.1（2026-08-03 公開）で、この版 v1.8.7 はまだ提出していません。
 
 <details>
 <summary>ソースから手動で読み込む場合</summary>
@@ -73,7 +73,7 @@ npm run test:e2e                   # 拡張として実際に読み込んで動�
 
 `npm run test:e2e` は、配布するファイルだけを並べて Chrome へ**拡張として読み込ませ**、印の表示・キーボード操作・ON/OFF・タブ間の設定同期を確認します。Chrome が無い環境では失敗します。
 
-同じ検証を GitHub Actions でも実行しています（[`.github/workflows/ci.yml`](./.github/workflows/ci.yml)）。CI の権限は読み取りだけ（`contents: read`）で、コミット・push・Release の公開・ストアへの提出はしません。ただし、**検証を通した提出用 ZIP を workflow の成果物（artifact）として作ります**。作るのは `main` への push のときだけで、必須の検査がすべて成功した場合に限ります。
+同じ検証を GitHub Actions でも実行しています（[`.github/workflows/ci.yml`](https://github.com/Driedsandwich/repogloss/blob/main/.github/workflows/ci.yml)）。CI の権限は読み取りだけ（`contents: read`）で、コミット・push・Release の公開・ストアへの提出はしません。ただし、**検証を通した提出用 ZIP を workflow の成果物（artifact）として作ります**。作るのは `main` への push のときだけで、必須の検査がすべて成功した場合に限ります。
 
 用語の判定は [`src/matcher.js`](./src/matcher.js) に分けてあり、ブラウザと Node の両方から同じコードを呼びます。テストが確かめているのは、この判定部分と、リポジトリの構成・文書の整合です。画面上の見え方は含みません。
 
@@ -99,7 +99,7 @@ npm run test:e2e                   # 拡張として実際に読み込んで動�
 
 継続的な保守を約束できる体制ではありません。ただし辞書は概念語に絞ってあるため、更新が止まっても内容が古くなりにくい作りにしています（[DESIGN.md](./DESIGN.md)）。
 
-不具合・誤訳・追加してほしい語は Issue でお知らせください。脆弱性の報告だけは [SECURITY.md](./SECURITY.md) をご覧ください。
+不具合・誤訳・追加してほしい語は Issue でお知らせください。脆弱性の報告だけは [SECURITY.md](https://github.com/Driedsandwich/repogloss/blob/main/SECURITY.md) をご覧ください。
 
 ## 収録している語
 
@@ -123,6 +123,7 @@ This extension is not affiliated with, endorsed by, or sponsored by GitHub, Inc.
 
 | Version | 内容 |
 |---|---|
+| 1.8.7 | **説明の印が消えたとき、既にページにある別の場所へ引き継ぐようにした。** 前の版は、最初の印を含む場所がページから消えると、同じ語が他にあってもどこにも説明されなくなっていた（説明済みとして飛ばした記録が残り続けるため）。**印と語の対応が壊れていないかを毎回確かめるようにした** — 語だけが消された・書き換えられた・ページ側が語と印のあいだへ文字を挿した場合に、印だけが残って後続を抑止していた。**切り取りによる非表示の判定を、決まった書き方の照合から面積の計算へ変えた**（`rect(5px,5px,5px,5px)` や `inset(100%)` のように、座標が0でなくても面積が0になる書き方を取りこぼしていた）。箱を作らない `display:contents` 自身の切り取りは効かないので適用しない。注記済みの場所がページ側で複製されたとき、複製された印と入口の名札を残さないようにした。配布する文書の中で切れていたリンクを直した |
 | 1.8.6 | **説明の印を片づけるときに、ページ側の持ち物と選択範囲を壊さないようにした。** 前の版は、片づける時点で印の隣にあるものを「自分が割った文字列の対」だと推し量っていた。そのため、ページ側が印の隣へ足した文字を消したり、読んでいる途中の選択範囲が空になったり、**ページ側が印だけを外すとその語が二度と説明されなくなったり**していた。印を入れたときに何を作ったかを控えておき、それだけを扱うようにした。**箱を作らない `display:contents` の可視性の判定を、性質ごとに分けた。** 中身を飛ばす先祖の中にある文字へ印を付けてしまう一方、先祖が `visibility:hidden` でも**見えている**文字を落としていた（誤りが両方向にあった）。**`clip` による非表示の判定を、実際に効く場合だけに限った**（`position` が `absolute` か `fixed` のときだけ。前の版は、ふつうに読める文章を除外していた）。動作に必要な最低の Chrome（105）を manifest に書いた。提出物の身元の記録を、項目が揃っているかまで検査するようにした。認証情報について、「取得元として触れないもの」と「本文として一時的に処理し得るもの」を分けて書き直した |
 | 1.8.5 | **見えない場所を避ける判定を、もう一段細かくした。** 要素**自身**が `content-visibility:hidden` や `hidden="until-found"` で中身を隠している場合、その要素は描画されたままなので前の版では見抜けていなかった。大きな箱に全面の切り取りを掛けた読み上げ専用テキストも拾っていた。逆に、箱を作らない `display:contents` の中の**見えている**文字は取りこぼしていたので、こちらは注記するようにした。**いったん隠して付け直した印が、元の場所へ戻れなくなっていたのを直した**（元の語がその画面を開いている間ずっと説明されないままになっていた）。プライバシーの説明を実装の範囲へ合わせ、「表示されている文章だけを読む」ではなく「除外領域を除いた文章を読み、印を付けるのは見えると判定できた一致だけ」と書き直した。提出物の身元ファイルを、検査のときに書き換えないようにした |
 | 1.8.4 | **見えていない場所に説明を付けてしまい、その語がページのどこでも説明されなくなる問題を直した。** 祖先が `opacity:0` や `content-visibility:hidden` の中、`inert` の中、読み上げ専用の1px領域（GitHub も使っている）に印が入っていた。いずれも子の見た目や箱の有無では見分けられないため、ブラウザの `checkVisibility` と形の判定を使うようにした。**いったん隠された印が、後から現れた読める同じ語を邪魔しないようにした**（DOM に残っているだけでは「説明済み」と見なさない）。**除外する領域の文字列を、除外を決める前に読み取らないようにした**（編集中の内容・フォーム・コードは、書き換えないだけでなく読み取りもしない）。`security` を `securities`、`ci` を `cis` のように、意味の違う普通の英単語まで拾っていたのをやめ、受け付ける綴りを明示した表に変えた。CI は、必要な検査がすべて通った `main` への push のときだけ提出用 ZIP を作るようにした |

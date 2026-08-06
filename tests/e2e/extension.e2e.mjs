@@ -10,8 +10,9 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { launchChrome, startTestServer, stageExtension, stageExtensionWithPrelude, stageExtensionWith,
-         SENTINEL_PAGE, LIFECYCLE_PAGE, VISIBILITY_PAGE, RETIRE_PAGE, openPage, sleep, waitFor,
+import { launchChrome, startTestServer, stageExtension, stageExtensionWith,
+         SENTINEL_PAGE, LIFECYCLE_PAGE, VISIBILITY_PAGE, RETIRE_PAGE,
+         openPage, sleep, waitFor,
          pressKey, collectTabOrder, tabUntil } from './helpers/chrome.mjs';
 
 const PAGE = 'https://github.com/octocat/Hello-World';
@@ -544,31 +545,40 @@ test('拡張として読み込んだ状態で動く', async t => {
 });
 
 /*
- * 除外領域のテキストを、拡張が一度でも読んでいないか。
+ * 除外領域のテキストが、辞書の照合まで届いていないか。
  *
  * content script は隔離された世界で動くため、ページ側から getter を差し替えても
- * 拡張の読み取りは見えない。そこで、同じ拡張の content script として本体より先に
- * 計測用の prelude を読み込ませ、同じ世界の中で取り出し口を計装する。
- * 使うのは並べた一時ディレクトリの manifest だけで、配布物は変えない。
+ * 拡張の中は見えない。同じ拡張の content script として計測用の JS を読み込ませ、
+ * 同じ世界の中で測る。使うのは並べた一時ディレクトリの manifest だけで、
+ * 配布物は変えない。
+ *
+ * 測る場所は「文字の取り出し口」ではなく「matcher の入口」。取り出し口は
+ * innerText / Range.toString() / substringData() など際限がなく、いくつ塞いでも
+ * 「全部塞いだ」とは言えない。読み取り方が何であれ、その文字列で語を判定するなら
+ * 必ず matcher を通るので、そこを1か所押さえる。
  *
  * 「順序が正しいか」を静的に見る検査（scripts/verify.mjs）は、別名の変数・
  * 補助関数・bracket 記法などで迂回できる。こちらが本命の担保で、静的検査は
  * 単純な後戻りを早く止めるための補助にすぎない。
  */
-test('除外する領域のテキストを、拡張が一度も読んでいない（隔離世界で計測）', async t => {
+const tapped = () => stageExtensionWith(
+  { 'matcher-tap.js': 'tests/e2e/matcher-tap.js' },
+  js => js.flatMap(f => f === 'src/matcher.js' ? [f, 'matcher-tap.js'] : [f]));
+
+test('除外する領域のテキストが、辞書の照合まで届かない（隔離世界で計測）', async t => {
   const srv = await startTestServer(SENTINEL_PAGE);
   const chrome = await launchChrome({ port: srv.port });
   t.after(async () => { chrome.kill(); await srv.close(); });
 
-  const loaded = await chrome.cdp.send('Extensions.loadUnpacked', { path: stageExtensionWithPrelude() });
+  const loaded = await chrome.cdp.send('Extensions.loadUnpacked', { path: tapped() });
   assert.match(loaded.id, /^[a-p]{32}$/, `拡張IDが返らない: ${JSON.stringify(loaded)}`);
   const tab = await openPage(chrome.cdp, PAGE);
 
   // 計装が効いていること自体を先に確かめる（効いていなければ「0件」は無意味）
-  await waitFor('計測用の prelude が動いている', async () =>
-    await tab.evaluate(`document.documentElement.getAttribute('data-rg-prelude') === 'ready'`));
-  // 見える場所の目印は必ず読まれる＝計測が生きていることの対照
-  await waitFor('見える場所の目印が読まれる', async () =>
+  await waitFor('matcher を包めている', async () =>
+    await tab.evaluate(`document.documentElement.getAttribute('data-rg-tap') === 'ready'`));
+  // 見える場所の目印は必ず届く＝計測が生きていることの対照
+  await waitFor('見える場所の目印が届く', async () =>
     (await tab.evaluate(`document.documentElement.getAttribute('data-rg-reads') || ''`))
       .includes('RGSENTINEL_VISIBLE'));
   await waitFor('印が付く', async () =>
@@ -583,8 +593,8 @@ test('除外する領域のテキストを、拡張が一度も読んでいな�
                        'RGSENTINEL_ARIAHIDDEN', 'RGSENTINEL_INERT',
                        'RGSENTINEL_HIDDEN', 'RGSENTINEL_UNTILFOUND'];
   const leaked = mustNotRead.filter(s => reads.includes(s));
-  assert.deepEqual(leaked, [], `除外領域なのに読まれた: ${leaked.join(', ')}`);
-  assert.ok(reads.includes('RGSENTINEL_VISIBLE'), '見える場所すら読まれていない＝計測が壊れている');
+  assert.deepEqual(leaked, [], `除外領域なのに辞書照合へ届いた: ${leaked.join(', ')}`);
+  assert.ok(reads.includes('RGSENTINEL_VISIBLE'), '見える場所すら届いていない＝計測が壊れている');
 
   // 除外領域の中身が1文字も変わっていないこと（読まないことと、壊さないことの両方）
   assert.deepEqual(
@@ -595,6 +605,36 @@ test('除外する領域のテキストを、拡張が一度も読んでいな�
                         document.querySelectorAll('#s-code .iiyaku-icon').length]`),
     ['RGSENTINEL_EDITABLE a repository draft', 'RGSENTINEL_TEXTAREA a commit message',
      'RGSENTINEL_INPUT a branch name', 0, 0]);
+
+  await tab.close();
+});
+
+/*
+ * 上の「0件」が、計測できていないだけではないことの裏取り。
+ *
+ * わざと3通りの取り出し方で除外領域の文字列を辞書照合へ渡し、そのすべてが
+ * 記録されることを見る。1つでも記録されなければ、その経路は計測の外にある。
+ */
+test('計測が、取り出し方を変えても取り逃がさない（わざと漏らす対照）', async t => {
+  const srv = await startTestServer(SENTINEL_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  t.after(async () => { chrome.kill(); await srv.close(); });
+
+  await chrome.cdp.send('Extensions.loadUnpacked', { path: stageExtensionWith(
+    { 'matcher-tap.js': 'tests/e2e/matcher-tap.js', 'leak-probe.js': 'tests/e2e/leak-probe.js' },
+    js => [...js.flatMap(f => f === 'src/matcher.js' ? [f, 'matcher-tap.js'] : [f]), 'leak-probe.js']) });
+  const tab = await openPage(chrome.cdp, PAGE);
+  await waitFor('わざとの漏れが動いた', async () =>
+    await tab.evaluate(`document.documentElement.getAttribute('data-rg-leak') === 'done'`));
+  await sleep(300);
+
+  const reads = (await tab.evaluate(`document.documentElement.getAttribute('data-rg-reads') || ''`))
+    .split(',').filter(Boolean);
+  // ① innerText ② Range.toString() ③ substringData()
+  const routes = { innerText: 'RGSENTINEL_EDITABLE', rangeToString: 'RGSENTINEL_CODE',
+                   substringData: 'RGSENTINEL_INERT' };
+  const missed = Object.entries(routes).filter(([, s]) => !reads.includes(s)).map(([k]) => k);
+  assert.deepEqual(missed, [], `この取り出し方は計測をすり抜ける: ${missed.join(', ')}`);
 
   await tab.close();
 });

@@ -162,12 +162,22 @@ check('content.js が、付けた印の有効性を isConnected だけで判断�
   /function usableGloss/.test(content) && !/prev\s*&&\s*prev\.isConnected/.test(content));
 
 /* ---------- テスト専用のものが配布物へ混ざっていないこと ---------- */
-// 計測用の prelude は同じ拡張の content script として読み込ませるが、
-// それは E2E が並べた一時ディレクトリの中だけの話。配布物には入れない。
-check('計測用の prelude が配布一覧に入っていない',
-  !PACKAGE_FILES.some(f => f.includes('prelude')));
-check('manifest が読み込む JS に prelude が入っていない',
-  !(cs.js ?? []).some(f => f.includes('prelude')));
+// 計測用の JS は同じ拡張の content script として読み込ませるが、それは E2E が
+// 並べた一時ディレクトリの中だけの話。配布物にも、正本の manifest にも入れない。
+{
+  const TEST_ONLY_JS = ['matcher-tap.js', 'leak-probe.js', 'no-checkvisibility.js'];
+  // 名前を並べた検査は、ファイルの名前が変わると黙って何も見なくなる。
+  // まず「その名前のものが実在する」ことを確かめてから、混入を見る。
+  for (const f of TEST_ONLY_JS) {
+    check(`テスト専用の tests/e2e/${f} が実在する`, existsSync(join(ROOT, 'tests/e2e', f)),
+      '名前が変わったなら、この一覧も直す');
+  }
+  const isTestOnly = f => f.startsWith('tests/') || TEST_ONLY_JS.some(t => f.endsWith(t));
+  check('テスト専用の JS が配布一覧に入っていない',
+    !PACKAGE_FILES.some(isTestOnly), PACKAGE_FILES.filter(isTestOnly).join(', '));
+  check('manifest が読み込む JS にテスト専用のものが入っていない',
+    !(cs.js ?? []).some(isTestOnly), (cs.js ?? []).filter(isTestOnly).join(', '));
+}
 
 /* ---------- 辞書 ---------- */
 const dict = readJson('locales/dict.json');

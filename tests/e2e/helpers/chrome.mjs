@@ -53,19 +53,6 @@ export function stageExtension() {
   return dir;
 }
 
-/* 計測用の変種。配布ファイルはそのままに、テスト専用の prelude を
-   **本体より先に**読み込ませる manifest へ差し替える。
-   触るのは並べた一時ディレクトリだけで、リポジトリの配布物は変えない。 */
-export function stageExtensionWithPrelude() {
-  const dir = stageExtension();
-  copyFileSync(join(ROOT, 'tests/e2e/prelude.js'), join(dir, 'prelude.js'));
-  const mfPath = join(dir, 'manifest.json');
-  const mf = JSON.parse(readFileSync(mfPath, 'utf8'));
-  mf.content_scripts[0].js = ['prelude.js', ...mf.content_scripts[0].js];
-  writeFileSync(mfPath, JSON.stringify(mf, null, 2) + '\n');
-  return dir;
-}
-
 /* 計測用の変種。配布ファイルはそのままに、テスト専用の JS を同じ拡張の
    content script として読み込ませる manifest へ差し替える。
    content script は「隔離された世界」で動くので、ページ側からは中を見られない。

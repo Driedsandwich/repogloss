@@ -10,8 +10,8 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { launchChrome, startTestServer, stageExtension, stageExtensionWithPrelude,
-         SENTINEL_PAGE, LIFECYCLE_PAGE, openPage, sleep, waitFor,
+import { launchChrome, startTestServer, stageExtension, stageExtensionWithPrelude, stageExtensionWith,
+         SENTINEL_PAGE, LIFECYCLE_PAGE, RETIRE_PAGE, openPage, sleep, waitFor,
          pressKey, collectTabOrder, tabUntil } from './helpers/chrome.mjs';
 
 const PAGE = 'https://github.com/octocat/Hello-World';
@@ -726,6 +726,247 @@ test('見えない直接テキストを避け、印を付け直せる', async t 
     const after = await count();
     assert.deepEqual([after.old, after.total], [1, 1], `リンクへ戻らない: ${JSON.stringify(after)}`);
     assert.equal(after.text, 'Add an ssh key', 'リンクの文字が変わっている');
+  });
+
+  await tab.close();
+});
+
+/*
+ * 印の片づけ（退役）。
+ *
+ * 片づけるときに「印の隣にあるもの」を見て自分が割った対だと推し量ると、
+ * ページ側が挿し込んだ節点を消す・選択範囲を壊す・印だけ外されると復帰できない、
+ * の3つが起きる（いずれも v1.8.5 で実測した）。注記した時点の記録だけを使う。
+ */
+test('印の片づけが、ページの持ち物と選択範囲を壊さない', async t => {
+  const srv = await startTestServer(RETIRE_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await chrome.cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(chrome.cdp, PAGE);
+  await waitFor('印が付く', async () =>
+    await tab.evaluate(`document.querySelectorAll('.iiyaku-icon').length > 0`));
+  await sleep(400);
+
+  const nIcons = async sel => await tab.evaluate(
+    `document.querySelectorAll(${JSON.stringify(sel)} + ' .iiyaku-icon').length`);
+  const nKey = async key => await tab.evaluate(
+    `document.querySelectorAll('.iiyaku-icon[data-iiyaku-key="' + ${JSON.stringify(key)} + '"]').length`);
+
+  let seq = 0;
+  /* 印を「説明として使えない」状態にし、同じ語を読める場所へ出す。
+     こうすると、その場所を隠さずに片づけだけを起こせる（選択範囲を見たいので、
+     元の文章は見えたままにしておく必要がある）。 */
+  async function forceRetire(hostSel, freshText) {
+    const id = 'fresh' + (++seq);
+    await tab.evaluate(`(() => {
+      const ic = document.querySelector(${JSON.stringify(hostSel)} + ' .iiyaku-icon');
+      // 入口として使えなくする＝説明として使えない。装飾扱いの印は自分では
+      // 止まれないので、その印が指している入口のほうを使えなくする。
+      window.__forced = null;
+      if (ic) {
+        const forId = ic.dataset.iiyakuFor;
+        const t = forId ? document.querySelector('[data-iiyaku-trigger="' + forId + '"]') : null;
+        window.__forced = t || ic;        // 元へ戻せるよう控える
+        window.__forced.tabIndex = -1;
+      }
+      const p = document.createElement('p'); p.id = ${JSON.stringify(id)};
+      p.textContent = ${JSON.stringify(freshText)};
+      document.getElementById('sink').append(p);
+    })(); true`);
+    await waitFor(`${id} へ付け直る`, async () => await nIcons('#' + id) === 1);
+    return id;
+  }
+
+  async function restoreFrom(freshId) {
+    await tab.evaluate(`(() => {
+      // 入口を元へ戻す。装飾扱いの印は入口が生きていないと付け直せない
+      if (window.__forced) { window.__forced.removeAttribute('tabindex'); window.__forced = null; }
+      document.getElementById(${JSON.stringify(freshId)}).remove();
+      history.pushState({}, '', '/octocat/Hello-World/r' + ${seq});
+      const u = document.createElement('p'); u.textContent = 'unrelated ' + ${seq};
+      document.getElementById('sink').append(u);
+    })(); true`);
+  }
+
+  await t.test('印だけを外されても、その語をもう一度説明できる', async () => {
+    assert.equal(await nIcons('#solo'), 1, '前提の印が無い');
+    // ページ側が印だけを取り去る。こちらの片づけを通らない経路。
+    await tab.evaluate(`document.querySelector('#solo .iiyaku-icon').remove(); true`);
+    await waitFor('元の場所へ付き直る', async () => await nIcons('#solo') === 1);
+    assert.equal(await nKey('revert'), 1, '同じ語の印が増えている');
+    // 監査が指定した経路（画面遷移＋全体走査）でも同じ結果になること
+    await tab.evaluate(`document.querySelector('#solo .iiyaku-icon').remove();
+      history.pushState({}, '', '/octocat/Hello-World/again');
+      const u = document.createElement('p'); u.textContent = 'unrelated';
+      document.getElementById('sink').append(u); true`);
+    await waitFor('画面遷移でも付き直る', async () => await nIcons('#solo') === 1);
+    assert.equal(await tab.evaluate(`document.getElementById('solo').textContent`),
+      'Undo it with a revert now.', '本文が変わっている');
+  });
+
+  await t.test('印の前へページ側が置いた節点を、消しも書き換えもしない', async () => {
+    await tab.evaluate(`(() => {
+      const ic = document.querySelector('#solo .iiyaku-icon');
+      const n = document.createTextNode(' [page-before]');
+      ic.parentNode.insertBefore(n, ic);
+      window.__before = n;
+    })(); true`);
+    const fresh = await forceRetire('#solo', 'A fresh revert appears.');
+    const r = await tab.evaluate(`({ connected: window.__before.isConnected,
+      value: window.__before.nodeValue,
+      inSolo: document.getElementById('solo').contains(window.__before),
+      text: document.getElementById('solo').textContent })`);
+    assert.equal(r.connected, true, 'ページが置いた節点が DOM から外れている');
+    assert.equal(r.value, ' [page-before]', 'ページが置いた節点の中身が書き換わっている');
+    assert.equal(r.inSolo, true, 'ページが置いた節点が別の場所へ移っている');
+    assert.equal(r.text, 'Undo it with a revert [page-before] now.', `本文が変わっている: ${r.text}`);
+    await restoreFrom(fresh);
+    await waitFor('元へ戻る', async () => await nIcons('#solo') === 1);
+  });
+
+  await t.test('印の後ろへページ側が置いた節点を、消しも書き換えもしない', async () => {
+    await tab.evaluate(`(() => {
+      const ic = document.querySelector('#solo .iiyaku-icon');
+      const n = document.createTextNode(' [page-after]');
+      ic.parentNode.insertBefore(n, ic.nextSibling);
+      window.__after = n;
+    })(); true`);
+    const fresh = await forceRetire('#solo', 'Another fresh revert shows.');
+    const r = await tab.evaluate(`({ connected: window.__after.isConnected,
+      value: window.__after.nodeValue,
+      inSolo: document.getElementById('solo').contains(window.__after) })`);
+    assert.equal(r.connected, true, 'ページが置いた節点が DOM から外れている（v1.8.5 の不具合）');
+    assert.equal(r.value, ' [page-after]', 'ページが置いた節点の中身が書き換わっている');
+    assert.equal(r.inSolo, true, 'ページが置いた節点が別の場所へ移っている');
+    await restoreFrom(fresh);
+    await waitFor('元へ戻る', async () => await nIcons('#solo') === 1);
+  });
+
+  await t.test('片づけても、利用者が選んでいる範囲が壊れない（3通り）', async () => {
+    // ① 印より後ろだけ ② 印を跨ぐ ③ 逆向き（focus が anchor より前）
+    const cases = [
+      { name: '後ろだけ', expr: `r.setStart(B, 1); r.setEnd(B, 8); sel.addRange(r);`, want: 'of the ' },
+      { name: '跨ぐ',     expr: `r.setStart(A, 18); r.setEnd(B, 4); sel.addRange(r);`, want: 'review of ' },
+      { name: '逆向き',   expr: `sel.setBaseAndExtent(B, 4, A, 18);`, want: 'review of ' }
+    ];
+    for (const c of cases) {
+      // 選択を作る。#selectable は見えたままにしておく（隠すと選択の意味が変わる）
+      const made = await tab.evaluate(`(() => {
+        const p = document.getElementById('selectable');
+        const A = p.firstChild, B = p.lastChild;
+        const sel = getSelection(); sel.removeAllRanges();
+        const r = document.createRange();
+        ${c.expr}
+        window.__selA = A; window.__selB = B;
+        return { text: sel.toString(), a: A.nodeValue, b: B.nodeValue,
+                 anchorIsB: sel.anchorNode === B };
+      })()`);
+      assert.equal(made.text, c.want, `[${c.name}] 前提の選択が作れていない: ${JSON.stringify(made)}`);
+
+      const fresh = await forceRetire('#selectable', 'Please leave a review soon.');
+      const after = await tab.evaluate(`(() => {
+        const sel = getSelection();
+        return { text: sel.toString(), count: sel.rangeCount,
+                 anchorAlive: sel.anchorNode ? sel.anchorNode.isConnected : false,
+                 focusAlive: sel.focusNode ? sel.focusNode.isConnected : false,
+                 sameA: window.__selA.isConnected, sameB: window.__selB.isConnected,
+                 reversed: sel.anchorNode === window.__selB,
+                 text2: document.getElementById('selectable').textContent };
+      })()`);
+      assert.equal(after.text, c.want, `[${c.name}] 選択していた文字が変わった: ${JSON.stringify(after)}`);
+      assert.equal(after.count, 1, `[${c.name}] 選択が消えた`);
+      assert.equal(after.sameA, true, `[${c.name}] 選択の端にあった節点が外された`);
+      assert.equal(after.sameB, true, `[${c.name}] 選択の端にあった節点が外された`);
+      assert.equal(after.anchorAlive, true, `[${c.name}] anchor が外れた`);
+      assert.equal(after.focusAlive, true, `[${c.name}] focus が外れた`);
+      assert.equal(after.text2, 'Ask for a careful review of the code.', `[${c.name}] 本文が変わった`);
+      if (c.name === '逆向き') assert.equal(after.reversed, true, '向きが入れ替わっている');
+      // 次の場合のために片づける（印を戻す）
+      await tab.evaluate(`getSelection().removeAllRanges(); true`);
+      await restoreFrom(fresh);
+      await waitFor('選択用の場所へ戻る', async () => await nIcons('#selectable') === 1);
+    }
+  });
+
+  await t.test('リンクの中の印でも、同じ片づけと付け直しができる', async () => {
+    assert.equal(await nIcons('#hosted'), 1, '前提の印が無い');
+    const decorative = await tab.evaluate(
+      `document.querySelector('#hosted .iiyaku-icon').getAttribute('aria-hidden')`);
+    assert.equal(decorative, 'true', 'リンクの中の印が装飾扱いになっていない');
+    const fresh = await forceRetire('#hosted', 'Show me another diff view.');
+    assert.equal(await nIcons('#hosted'), 0, 'リンクの中の印が片づいていない');
+    assert.equal(await tab.evaluate(`document.getElementById('hosted').textContent`),
+      'Open the diff', 'リンクの文字が変わっている');
+    await restoreFrom(fresh);
+    await waitFor('リンクへ戻る', async () => await nIcons('#hosted') === 1);
+    assert.equal(await nKey('diff'), 1);
+  });
+
+  await t.test('1つの節点に2つの用語があっても、片方だけを正しく戻せる', async () => {
+    const keys = async () => await tab.evaluate(
+      `[...document.querySelectorAll('#two .iiyaku-icon')].map(i => i.dataset.iiyakuKey).sort()`);
+    assert.deepEqual(await keys(), ['origin', 'remote'], '前提の印が2つない');
+    // 2つの印のあいだにある節点を控えておく。片方を片づけるときに、
+    // もう片方が使っている節点まで巻き込んで消してはいけない。
+    const mid = await tab.evaluate(`(() => {
+      const icons = [...document.querySelectorAll('#two .iiyaku-icon')];
+      window.__mid = icons[0].nextSibling;
+      return { type: window.__mid.nodeType, value: window.__mid.nodeValue };
+    })()`);
+    assert.equal(mid.type, 3, `印のあいだが文字の節点でない: ${JSON.stringify(mid)}`);
+
+    const fresh = await forceRetire('#two', 'Add a second remote now.');
+    assert.deepEqual(await keys(), ['origin'], '片方だけ片づける、ができていない');
+    const kept = await tab.evaluate(`({ connected: window.__mid.isConnected,
+      value: window.__mid.nodeValue })`);
+    assert.equal(kept.connected, true, 'もう片方の印が使っている節点まで消している');
+    assert.equal(kept.value, mid.value, 'もう片方の印が使っている節点の中身を書き換えている');
+    assert.equal(await tab.evaluate(`document.getElementById('two').textContent`),
+      'A remote and an origin differ.', '本文が変わっている');
+    await restoreFrom(fresh);
+    await waitFor('2つに戻る', async () => (await keys()).length === 2);
+    assert.deepEqual(await keys(), ['origin', 'remote']);
+    assert.equal(await tab.evaluate(`document.getElementById('two').textContent`),
+      'A remote and an origin differ.', '戻したあとに本文が変わっている');
+  });
+
+  await t.test('10往復しても、本文・節点の数・印の数が増えも減りもしない', async () => {
+    // 用語が末尾ちょうどで終わる形。ここで毎回割ると、空の節点が往復のたびに増える。
+    const snap = async () => await tab.evaluate(`(() => {
+      const el = document.getElementById('tail-end');
+      const kids = [...el.childNodes];
+      return { text: el.textContent, nodes: kids.length,
+               icons: el.querySelectorAll('.iiyaku-icon').length,
+               empties: kids.filter(n => n.nodeType === 3 && n.nodeValue === '').length };
+    })()`);
+    const first = await snap();
+    assert.equal(first.icons, 1, '前提の印が無い');
+    assert.equal(first.empties, 0, `最初から空の節点がある: ${JSON.stringify(first)}`);
+    for (let i = 0; i < 10; i++) {
+      const fresh = await forceRetire('#tail-end', `Check blame view number ${i}.`);
+      await restoreFrom(fresh);
+      await waitFor(`${i + 1} 回目に戻る`, async () => await nIcons('#tail-end') === 1);
+    }
+    const last = await snap();
+    assert.deepEqual(last, first, `10往復で形が変わった: ${JSON.stringify(first)} -> ${JSON.stringify(last)}`);
+    assert.equal(await nKey('blame'), 1, '同じ語の印が増えている');
+  });
+
+  await t.test('親ごと差し替えられても、新しい側に1つだけ付く（対照）', async () => {
+    assert.equal(await nIcons('#replaceable'), 1, '前提の印が無い');
+    // GitHub が一部を描き直す動き。印は親ごと消え、同じ文章の新しい要素が来る。
+    await tab.evaluate(`(() => {
+      const old = document.getElementById('replaceable');
+      const fresh = document.createElement('p');
+      fresh.id = 'replaceable';
+      fresh.textContent = 'Check the packages list.';
+      old.replaceWith(fresh);
+    })(); true`);
+    await waitFor('新しい側へ付く', async () => await nIcons('#replaceable') === 1);
+    assert.equal(await nKey('packages'), 1, '同じ語の印が増えている');
+    assert.equal(await tab.evaluate(`document.getElementById('replaceable').textContent`),
+      'Check the packages list.', '本文が変わっている');
   });
 
   await tab.close();

@@ -66,6 +66,26 @@ export function stageExtensionWithPrelude() {
   return dir;
 }
 
+/* 計測用の変種。配布ファイルはそのままに、テスト専用の JS を同じ拡張の
+   content script として読み込ませる manifest へ差し替える。
+   content script は「隔離された世界」で動くので、ページ側からは中を見られない。
+   同じ世界に入るには、この経路しかない。
+   触るのは並べた一時ディレクトリだけで、リポジトリの配布物は変えない。
+
+   extra … 置き先のファイル名 -> リポジトリ内のパス
+   order … 読み込み順を作り直す関数（既定はそのまま） */
+export function stageExtensionWith(extra = {}, order = js => js) {
+  const dir = stageExtension();
+  for (const [dest, src] of Object.entries(extra)) {
+    copyFileSync(join(ROOT, src), join(dir, dest));
+  }
+  const mfPath = join(dir, 'manifest.json');
+  const mf = JSON.parse(readFileSync(mfPath, 'utf8'));
+  mf.content_scripts[0].js = order(mf.content_scripts[0].js);
+  writeFileSync(mfPath, JSON.stringify(mf, null, 2) + '\n');
+  return dir;
+}
+
 function makeCert() {
   const dir = mkdtempSync(join(tmpdir(), 'repogloss-cert-'));
   const key = join(dir, 'key.pem');
@@ -257,6 +277,19 @@ export const LIFECYCLE_PAGE = `<!doctype html><html lang="en"><head><meta charse
   <!-- 印の付け直し。単独の印と、リンクの中の印の両方で往復させる -->
   <p id="life-plain">Do not reset it lightly.</p>
   <p><a href="#" id="life-link">Add an ssh key</a></p>
+  <div id="sink"></div>
+</body></html>`;
+
+/* 印の片づけと付け直し。ページ側が印の隣へ節点を挿す／印だけを外す／
+   親ごと差し替える、といった動きの中で、こちらが何を壊さないかを見る。 */
+export const RETIRE_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>retire</title></head><body>
+  <p id="solo">Undo it with a revert now.</p>
+  <p id="tail-end">Look at the blame</p>
+  <p><a href="#" id="hosted">Open the diff</a></p>
+  <p id="two">A remote and an origin differ.</p>
+  <p id="replaceable">Check the packages list.</p>
+  <p id="selectable">Ask for a careful review of the code.</p>
   <div id="sink"></div>
 </body></html>`;
 

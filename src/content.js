@@ -77,10 +77,15 @@
   ].join(',');
 
   const handled = new WeakSet();   // 処理済みのテキストノード（分割で生じた断片を含む）
-  // このページで印を付けた辞書キー -> 実際に挿入した印の要素。
-  // Set ではなく要素を持つのは、GitHub がサイドバー等を描き直すと印ごと
-  // 消えることがあり、「付けた」記録だけが残ると二度と付かなくなるため。
-  // 参照先が DOM から外れていたら、付け直しを許す。
+  // このページで印を付けた辞書キー -> そのとき自分が何を作ったかの記録。
+  //
+  // 印の要素だけを覚えるのでは足りない。片づけるときに「印の隣にあるもの」を見て
+  // 自分が割った対だと推し量ることになり、次の3つが起きる（いずれも実測で再現）:
+  //   - ページ側が印の隣へ挿し込んだ Text node を、自分のものと誤って消す
+  //   - その巻き添えで、利用者が選んでいた範囲が空になる
+  //   - ページ側が印だけを外した場合、隣をたどれず、その語が二度と説明されない
+  // だから注記した時点で「自分が割った節点」「自分が作った節点」を控えておき、
+  // 片づけるときはその記録だけを扱う。記録は辞書のキーの数（61）で頭打ちになる。
   const glossed = new Map();
   let triggerSeq = 0;
 
@@ -589,53 +594,76 @@
   //   - 単独の印なら、その印自身が Tab の順路に入る
   //   - 装飾扱いの印なら、対応する入口が生きていて Tab の順路に入る
   function usableGloss(key) {
-    const icon = glossed.get(key);
-    if (!icon || !icon.isConnected) return null;
+    const rec = glossed.get(key);
+    if (!rec) return null;
+    const icon = rec.icon;
+    if (!icon.isConnected) return null;
     if (!isVisibleOccurrence(icon.parentElement)) return null;
     const forId = icon.dataset.iiyakuFor;
     if (forId) {
       const trigger = document.querySelector(`[data-iiyaku-trigger="${forId}"]`);
-      return trigger && tabbable(trigger) ? icon : null;
+      return trigger && tabbable(trigger) ? rec : null;
     }
-    return tabbable(icon) ? icon : null;
+    return tabbable(icon) ? rec : null;
   }
 
   // 使えなくなった印を片づける。**元の語を、また注記できる状態へ戻す**ところまでやる。
   //
-  // 印を入れるとき splitText でテキストを2つに割り、両方を handled へ入れている。
+  // 印を入れるとき splitText でテキストを割り、両方を handled へ入れている。
   // 印だけ消すと、割れたテキストは handled に残ったままなので、その語は
   // そのページを開いている間ずっと説明されなくなる（隠した場所をあとで戻しても、
   // 画面遷移で全体を走査し直しても復活しない。実測で再現）。
   //
-  // だから、自分が割った2つを1つに戻し、handled から外して走査対象へ返す。
-  // 親全体へ normalize() は掛けない——ページ側が持っている Text node の同一性や
-  // 選択範囲を壊しうるので、触るのは自分が割った範囲だけにする。
+  // 割ったものを繋ぎ直しはしない。繋ぎ直すには2つの節点を1つにまとめる必要があり、
+  // 消える側に利用者の選択範囲やページ側の参照があると壊れる（実測: 選択していた
+  // 一文が空になった）。文字数は割っても変わらないので、割ったまま handled から
+  // 外して走査対象へ返せば足りる。空の節点が増え続けないよう、注記する側で
+  // 「用語が末尾ちょうどで終わるときは割らない」ようにしてある。
+  //
+  // 隣を見て自分の割った対を推し量ることはしない。ページ側は印の隣へ自由に
+  // 節点を挿し込めるし、印そのものを外すこともある。注記したときの記録だけを使う。
   function retireGloss(key) {
-    const icon = glossed.get(key);
-    if (!icon) return;
-    if (icon.isConnected) {
-      // その印について説明を出している最中なら、先に閉じる
-      if (tip && tipIcons.includes(icon)) hideTip();
-      const prev = icon.previousSibling;
-      const next = icon.nextSibling;
-      icon.remove();
-      const isText = n => n && n.nodeType === Node.TEXT_NODE;
-      if (isText(prev) && isText(next)) {
-        prev.appendData(next.nodeValue);   // 文字列は足し合わせるだけ。増減しない
-        next.remove();
-        handled.delete(prev);
-      } else {
-        // 片側しかテキストが無い形（行頭・行末など）でも、走査対象へは戻す
-        if (isText(prev)) handled.delete(prev);
-        if (isText(next)) handled.delete(next);
-      }
-    }
+    const rec = glossed.get(key);
+    if (!rec) return null;
     glossed.delete(key);
+    if (rec.icon.isConnected) {
+      // その印について説明を出している最中なら、先に閉じる
+      if (tip && tipIcons.includes(rec.icon)) hideTip();
+      rec.icon.remove();     // 外すのは自分が入れた <sup> だけ
+    }
+    // 印が既にページ側から外されていても、ここへ来る。記録があるので、
+    // 用語を含む節点を走査対象へ戻せる（隣をたどる必要がない）。
+    handled.delete(rec.termNode);
+    return rec;
+  }
+
+  // 自分の印が、この片づけを通らずに DOM から外れることがある。GitHub が一部を
+  // 描き直したときや、ページ側が要素を消したときである。放っておくと、記録した
+  // 節点が handled に残り、その語はページを開いているあいだ二度と説明されない
+  // （実測: 印を外して画面遷移しても付き直さなかった）。
+  //
+  // 記録は辞書のキーの数（61）で頭打ちなので、変更のたびに数え直しても軽い。
+  // 外れていた印を片づけたら、その場所をすぐ見直す（画面遷移を待たない）。
+  function recoverDetachedGlosses() {
+    let released = null;
+    for (const key of [...glossed.keys()]) {
+      const rec = glossed.get(key);
+      if (rec && !rec.icon.isConnected) (released ??= []).push(retireGloss(key));
+    }
+    if (!released) return 0;
+    let n = 0;
+    for (const rec of released) {
+      if (rec.termNode.isConnected) n += scanInner(rec.termNode);
+    }
+    return n;
   }
 
   /* ---------- 6. 注記 ---------- */
   // 1つのテキストノードに含まれる一致すべてへ注記する。
-  // 後ろの一致から順に分割すれば、まだ処理していない前方の位置がずれない。
+  //
+  // 前から順に処理する。一致ごとに「用語で終わる左側」と「その後ろ」に割り、
+  // 後ろを次の一致の作業対象にする。後ろから割ると、先に控えた節点があとの分割で
+  // さらに割られ、記録が実物とずれる（片づけのときに別の節点を戻してしまう）。
   function annotate(node) {
     if (handled.has(node)) return 0;
     const parent = node.parentNode;
@@ -656,16 +684,36 @@
     const placement = resolvePlacement(parent);
     if (placement.kind === 'skip') { handled.add(node); return 0; }
 
-    for (let i = hits.length - 1; i >= 0; i--) {
-      const tail = node.splitText(hits[i].end);
-      handled.add(tail);                                    // 断片を再処理しない
-      const icon = makeIcon(hits[i].key, hits[i].match, DICT[hits[i].key]);
-      parent.insertBefore(icon, tail);
+    let cur = node;        // いま扱っている節点（用語で終わる左側になる）
+    let consumed = 0;      // cur の先頭が、元の文字列の何文字目にあたるか
+    let added = 0;
+    for (const hit of hits) {
+      const at = hit.end - consumed;
+      // 用語が末尾ちょうどで終わるときは割らない。割ると空の節点が1つ増え、
+      // 片づけと付け直しを繰り返すたびに増え続ける（往復のたびに1つずつ）。
+      const tail = at < cur.length ? cur.splitText(at) : null;
+      if (tail) handled.add(tail);                          // 断片を再処理しない
+      const icon = makeIcon(hit.key, hit.match, DICT[hit.key]);
+      parent.insertBefore(icon, tail ?? cur.nextSibling);
       applyIconSemantics(icon, placement);                  // 入った場所を見てから決める
-      glossed.set(hits[i].key, icon);   // 実際に挿入できたものだけ記録する
+      handled.add(cur);
+      // 実際に挿入できたものだけ、作ったものと一緒に控える。
+      // termNode は用語を末尾に含む節点。片づけのとき、これを走査対象へ戻す。
+      // tailNode は自分が作った右側（作らなかったときは null）。控えるのは
+      // 「何を作ったか」を後から言えるようにするためで、DOM は動かさない。
+      glossed.set(hit.key, {
+        key: hit.key, term: hit.match, icon, parent,
+        termNode: cur, tailNode: tail, splitOffset: at,
+        placementKind: placement.kind,
+        trigger: placement.kind === 'hosted' ? placement.trigger : null
+      });
+      added++;
+      if (!tail) break;    // 後ろが無い＝これ以上の一致は入らない
+      cur = tail;
+      consumed = hit.end;
     }
     handled.add(node);
-    return hits.length;
+    return added;
   }
 
   /* ---------- 7. 走査 ---------- */
@@ -711,6 +759,13 @@
   let lastUrl = location.href;
   // 差し込みが一度に何十件も来るので、1回分の呼び出しでは測定結果を共有する。
   const observer = new MutationObserver(muts => withRenderCache(() => {
+    // 自分の印だけがページ側から外されることがある。記録した節点を handled へ
+    // 残したままにすると、その語は二度と説明されない。外れていたら片づけて、
+    // その場で見直す（画面遷移やノードの追加を待たない）。
+    let removals = false;
+    for (const mu of muts) if (mu.removedNodes.length) { removals = true; break; }
+    if (removals) recoverDetachedGlosses();
+
     // GitHub はページを読み直さずに画面を差し替えることがある。
     // 別のページに移ったら「印を付けた語」を数え直す。そうしないと、
     // 前の画面で出た語が新しい画面では一度も説明されないままになる。

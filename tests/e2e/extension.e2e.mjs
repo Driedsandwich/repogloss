@@ -557,6 +557,41 @@ test('見えない直接テキストを避け、印を付け直せる', async t 
     await tab.evaluate(`document.querySelectorAll('.iiyaku-icon').length > 0`));
   await sleep(400);
 
+  await t.test('要素自身が文字を持つ隠し方でも、後ろの読める語へ回す（4種）', async () => {
+    // 子ではなく host 自身が文字を持つ形。host は描画されたままなので、
+    // 祖先を見る判定だけでは落ちない（実測で確認した反例）。
+    const r = await tab.evaluate(`(() => {
+      const n = s => document.querySelectorAll(s + ' .iiyaku-icon').length;
+      return { cvDirect:   { hidden: n('#cvd'),     later: n('#after-cvd') },
+               hiddenAttr: { hidden: n('#hd'),      later: n('#after-hd') },
+               untilFound: { hidden: n('#huf'),     later: n('#after-huf') },
+               bigClip:    { hidden: n('#bigclip'), later: n('#after-bigclip') } };
+    })()`);
+    assert.deepEqual(r, {
+      cvDirect:   { hidden: 0, later: 1 },
+      hiddenAttr: { hidden: 0, later: 1 },
+      untilFound: { hidden: 0, later: 1 },
+      bigClip:    { hidden: 0, later: 1 }
+    }, `見えない側に印が付いた: ${JSON.stringify(r)}`);
+  });
+
+  await t.test('反例が本当に「見えない」ことをブラウザ自身に確かめる（対照）', async () => {
+    const r = await tab.evaluate(`(() => {
+      const opt = { opacityProperty: true, visibilityProperty: true };
+      const f = id => { const el = document.getElementById(id);
+        return { visible: el.checkVisibility(opt),
+                 cv: getComputedStyle(el).contentVisibility,
+                 boxed: el.offsetWidth > 0 || el.offsetHeight > 0 }; };
+      return { cvd: f('cvd'), huf: f('huf'), bigclip: f('bigclip') };
+    })()`);
+    // ここが崩れると、上の試験は何も確かめていないことになる
+    assert.equal(r.cvd.visible, true, 'content-visibility:hidden の host 自身が false＝別の理由で落ちている');
+    assert.equal(r.cvd.cv, 'hidden', 'contentVisibility が hidden になっていない');
+    assert.equal(r.huf.cv, 'hidden', 'hidden="until-found" が content-visibility:hidden になっていない');
+    assert.equal(r.bigclip.visible, true, 'clip が checkVisibility で落ちる＝この対照の前提が変わった');
+    assert.equal(r.bigclip.boxed, true, '大きな箱のはずが箱を持っていない');
+  });
+
   await t.test('隠した印は片づけ、戻したら同じ場所へ付け直す（単独の印）', async () => {
     const count = async () => await tab.evaluate(`(() => ({
       old: document.querySelectorAll('#life-plain .iiyaku-icon').length,

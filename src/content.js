@@ -50,6 +50,9 @@
     // 裏側など）。ここに注記すると、その語の「ページで最初の1回」を使い切ってしまい、
     // 後ろにある読める同じ語へ説明が付かなくなる。印自体も Tab で到達できない。
     '[inert]',
+    // hidden 属性が付いた領域。hidden="until-found" は要素自体が描画されたままなので、
+    // 可視性の判定だけでは落ちない（実測）。文字列を読む前にここで落とす。
+    '[hidden]',
     '.blob-code', '.js-file-line',
     '.react-code-lines', '.react-code-line-contents', '.react-blob-print-hide',
     '.cm-editor', '.CodeMirror', '.highlight', '.snippet-clipboard-content',
@@ -107,13 +110,49 @@
   // "Repository files navigation" に印が付いており、目に見える repository より先に
   // 「ページで最初の1回」を使い切っていた。クラス名は版ごとに変わる自動生成なので、
   // 名前ではなく形（1px 以下 ＋ clip）で判定する。
-  function isClipHidden(el) {
-    for (let n = el; n && n !== document.body; n = n.parentElement) {
-      if (n.offsetWidth > 1 || n.offsetHeight > 1) continue;
-      const cs = getComputedStyle(n);
-      if ((cs.clip && cs.clip !== 'auto') || (cs.clipPath && cs.clipPath !== 'none')) return true;
+  //
+  // 大きな箱へ全面の切り取りを掛ける書き方もある（実測で、この形の中の語に
+  // 印が付いていた）。1px という大きさだけを条件にすると取りこぼすので、
+  // 「全面を切り落とす指定」もあわせて見る。
+  const FULL_CLIP = /^rect\(0(?:px)?(?:,)?\s+0(?:px)?(?:,)?\s+0(?:px)?(?:,)?\s+0(?:px)?\)$/;
+  const FULL_CLIP_PATH = /^inset\(\s*50%\s*\)$/;
+
+  let clipCache = null;   // 走査1回のあいだだけ有効
+
+  function clipsAwayContent(n) {
+    if (clipCache) {
+      const hit = clipCache.get(n);
+      if (hit !== undefined) return hit;
     }
-    return false;
+    let v = false;
+    // 大きさの確認は安い。ここを先に見て、多くの要素で getComputedStyle を避ける。
+    const tiny = n.offsetWidth <= 1 && n.offsetHeight <= 1;
+    const cs = getComputedStyle(n);
+    const clip = cs.clip && cs.clip !== 'auto' ? cs.clip.replace(/\s+/g, ' ').trim() : '';
+    const path = cs.clipPath && cs.clipPath !== 'none' ? cs.clipPath.trim() : '';
+    if (clip || path) {
+      // 1px 四方まで潰したうえで切り取る書き方（読み上げ専用の定番）か、
+      // 大きさに関係なく全面を切り落とす書き方か。
+      v = tiny || FULL_CLIP.test(clip) || FULL_CLIP_PATH.test(path);
+    }
+    if (clipCache) clipCache.set(n, v);
+    return v;
+  }
+
+  // 祖先をたどった結果そのものを覚える。要素ごとの判定だけを覚えても、
+  // 候補が変わるたびに同じ祖先の連なりを何度も上りなおすことになる。
+  // 連なりの答えを覚えると、同じ枝の2件目からは1回で済む。
+  let clipChainCache = null;
+
+  function isClipHidden(el) {
+    if (!el || el === document.body) return false;
+    if (clipChainCache) {
+      const hit = clipChainCache.get(el);
+      if (hit !== undefined) return hit;
+    }
+    const v = clipsAwayContent(el) || isClipHidden(el.parentElement);
+    if (clipChainCache) clipChainCache.set(el, v);
+    return v;
   }
 
   function isVisibleOccurrence(el) {
@@ -130,6 +169,11 @@
       const cs = getComputedStyle(el);
       ok = !(cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0');
     }
+    // その要素自身が content-visibility:hidden のとき、**中身**は隠れているのに
+    // 要素自体は描画されているので checkVisibility は true を返す（実測）。
+    // 直接テキストを持つ場合はここで落とさないと、見えない語に印が付く。
+    // content-visibility:auto は落とさない（画面外というだけで永久に除外しないため）。
+    if (ok && getComputedStyle(el).contentVisibility === 'hidden') ok = false;
     // 箱をまったく持たないものも読めない。content-visibility:auto の画面外は
     // 箱を持つので、ここでは落ちない。
     if (ok && el.offsetWidth === 0 && el.offsetHeight === 0) ok = false;
@@ -607,11 +651,12 @@
   // 古い測定値で判定してしまう。
   function withRenderCache(fn) {
     const owner = renderCache === null;
-    if (owner) { renderCache = new WeakMap(); visibleCache = new WeakMap(); }
+    if (owner) { renderCache = new WeakMap(); visibleCache = new WeakMap();
+                 clipCache = new WeakMap(); clipChainCache = new WeakMap(); }
     try {
       return fn();
     } finally {
-      if (owner) { renderCache = null; visibleCache = null; }
+      if (owner) { renderCache = null; visibleCache = null; clipCache = null; clipChainCache = null; }
     }
   }
 

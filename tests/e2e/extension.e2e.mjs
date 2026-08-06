@@ -592,6 +592,22 @@ test('見えない直接テキストを避け、印を付け直せる', async t 
     assert.equal(r.bigclip.boxed, true, '大きな箱のはずが箱を持っていない');
   });
 
+  await t.test('箱を作らなくても、文字が見えていれば注記する（display:contents）', async () => {
+    const r = await tab.evaluate(`(() => {
+      const el = document.getElementById('dcd');
+      const range = document.createRange(); range.selectNodeContents(el);
+      return { icons: el.querySelectorAll('.iiyaku-icon').length,
+               offsetW: el.offsetWidth, offsetH: el.offsetHeight,
+               textRects: range.getClientRects().length,
+               cv: el.checkVisibility({ opacityProperty: true, visibilityProperty: true }) };
+    })()`);
+    // 箱は無く、ブラウザも「描画されていない」と答えるが、文字は見えている
+    assert.equal(r.offsetW, 0); assert.equal(r.offsetH, 0);
+    assert.equal(r.cv, false, 'display:contents で checkVisibility が true＝この対照の前提が変わった');
+    assert.ok(r.textRects > 0, '文字の範囲に矩形が無い＝この反例が成り立っていない');
+    assert.ok(r.icons > 0, `見えている文字なのに注記されない: ${JSON.stringify(r)}`);
+  });
+
   await t.test('隠した印は片づけ、戻したら同じ場所へ付け直す（単独の印）', async () => {
     const count = async () => await tab.evaluate(`(() => ({
       old: document.querySelectorAll('#life-plain .iiyaku-icon').length,

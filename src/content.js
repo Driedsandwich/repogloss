@@ -155,6 +155,22 @@
     return v;
   }
 
+  // display:contents は箱を作らない。可視性を判断できる最も近い先祖まで上がる。
+  function boxedAncestor(el) {
+    let n = el.parentElement;
+    while (n && getComputedStyle(n).display === 'contents') n = n.parentElement;
+    return n;
+  }
+
+  // 文字そのものが描かれているか。display:contents の要素は箱を持たないので
+  // offsetWidth / offsetHeight が 0 になるが、中の文字は普通に見えている。
+  // 要素の箱ではなく、文字の範囲で確かめる。
+  function hasRenderedText(el) {
+    const r = document.createRange();
+    r.selectNodeContents(el);
+    return r.getClientRects().length > 0;
+  }
+
   function isVisibleOccurrence(el) {
     if (!el || !el.isConnected) return false;
     if (visibleCache) {
@@ -162,21 +178,30 @@
       if (hit !== undefined) return hit;
     }
     let ok;
+    let cs = null;   // 必要になったときだけ1回だけ取る（レイアウトを起こすので高い）
     if (HAS_CHECK_VISIBILITY) {
       ok = el.checkVisibility(CHECK_VISIBILITY_OPTS);
+      // display:contents の要素は箱を作らないので、Chrome は「描画されていない」と
+      // 答える（実測で false）。しかし中の文字は普通に見えている（文字の範囲は
+      // 矩形を持つ）。ここで落とすと、見えている語を取りこぼす。
+      // 箱を持つ最も近い先祖の可視性で判断し、文字が実際に描かれていることも確かめる。
+      if (!ok && (cs = getComputedStyle(el)).display === 'contents') {
+        const host = boxedAncestor(el);
+        ok = !!host && host.checkVisibility(CHECK_VISIBILITY_OPTS) && hasRenderedText(el);
+      }
     } else {
       // 使えない環境では、せめて直接の親だけでも見る（v1.8.3 までの判定）
-      const cs = getComputedStyle(el);
+      cs = getComputedStyle(el);
       ok = !(cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0');
     }
     // その要素自身が content-visibility:hidden のとき、**中身**は隠れているのに
     // 要素自体は描画されているので checkVisibility は true を返す（実測）。
     // 直接テキストを持つ場合はここで落とさないと、見えない語に印が付く。
     // content-visibility:auto は落とさない（画面外というだけで永久に除外しないため）。
-    if (ok && getComputedStyle(el).contentVisibility === 'hidden') ok = false;
-    // 箱をまったく持たないものも読めない。content-visibility:auto の画面外は
-    // 箱を持つので、ここでは落ちない。
-    if (ok && el.offsetWidth === 0 && el.offsetHeight === 0) ok = false;
+    if (ok && (cs || (cs = getComputedStyle(el))).contentVisibility === 'hidden') ok = false;
+    // 箱をまったく持たないもの。ただし display:contents は箱を作らないだけで
+    // 文字は見えているので、文字の範囲で描かれているかを確かめる。
+    if (ok && el.offsetWidth === 0 && el.offsetHeight === 0) ok = hasRenderedText(el);
     if (ok && isClipHidden(el)) ok = false;
     if (visibleCache) visibleCache.set(el, ok);
     return ok;

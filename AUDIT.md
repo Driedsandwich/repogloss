@@ -12,10 +12,10 @@ RepoGloss は、GitHub の画面に出てくる英語のうち Git / GitHub 固�
 
 | 項目 | 値 |
 |---|---|
-| **監査対象版** | **v1.8.4**（`manifest.json` の version）|
-| **タグ** | **未作成。** v1.8.4 はまだ commit していない |
+| **監査対象タグ** | **`v1.8.4`** |
+| **対象コミット** | **`1ff48290c5b0da71349aada11584f3d435019bd2`**（PR #14 の merge commit） |
 | 直前の版 | `v1.8.3` = コミット `33b107856722ba713b45043e47307a464c50ea18`（**提出しない**） |
-| 現在の既定ブランチ | `main` |
+| 現在の既定ブランチ | `main`（先端はタグと同じか、提出記録の追記ぶんだけ先） |
 | main とタグの差分 | **配布する13ファイルは差分ゼロ。** 違うのは `STORE_LISTING.md`（提出物の記録）と、このファイルおよび `docs/audit/`（監査用の資料）だけ |
 | Manifest | v1.8.4 / Manifest V3 |
 | Chrome API 権限 | `storage` のみ |
@@ -28,22 +28,35 @@ RepoGloss は、GitHub の画面に出てくる英語のうち Git / GitHub 固�
 差分は次のコマンドで確認できます。
 
 ```sh
-git diff --name-only v1.8.3 main
-# v1.8.3 との差分。配布13ファイルのうち src/content.js・src/matcher.js・styles.css・
-# README.md・DESIGN.md・PRIVACY.md・manifest.json が変わっている（第5回監査への対応）
+git diff --name-only v1.8.4 main
+# → STORE_LISTING.md と AUDIT.md（提出物の記録）のみ。配布13ファイルは出てこない
+
+git diff --name-only v1.8.3 v1.8.4
+# → 第5回監査への対応。配布13ファイルのうち src/content.js・src/matcher.js・
+#    styles.css・README.md・DESIGN.md・PRIVACY.md・manifest.json が変わっている
 ```
 
-### 1-1. 提出物
-
-**まだ作っていない。** v1.8.4 は commit していないため CI を走らせておらず、提出候補の成果物は存在しない。
+### 1-1. 提出物（まだ提出していない）
 
 | 項目 | 値 |
 |---|---|
-| ZIP | CI の成果物 `repogloss-store-zip`（`release-zip` ジョブ） |
-| SHA-256 | **未確定**（CI 未実行） |
-| 生成条件 | **`main` への push で、`verify` `e2e` `e2e-windows` `hash-compare` がすべて成功したときだけ**作られる。PR では作られない |
+| ZIP | `repogloss-1.8.4.zip`・**75,980 バイト**・**13ファイル** |
+| **SHA-256** | **`8abc340d23e352bf2c14972f67cb0c17113ec414de5255a6b786b51153d0fdda`** |
+| 中身の合算ハッシュ | `acc967366d0120fe9643a80b5aaae5386cf75944de53435dbf272b46653347a3` |
+| 出どころ | **CI が生成した artifact `repogloss-store-zip`**（run [`31076712703`](https://github.com/Driedsandwich/repogloss/actions/runs/31076712703) の `release-zip` ジョブ）。手元でビルドしたものは使っていない |
+| 生成条件 | **`main` への push で、`verify` `e2e` `e2e-windows` `hash-compare` がすべて成功したときだけ**作られる。PR では作られない（下記 §4-2 で実測） |
 
-参考: 直前の v1.8.3 の提出候補は `e76c9245…`（69,230 バイト・13ファイル）だったが、**第5回監査の指摘により提出しない**。
+**入手方法**: 上記 run の Artifacts から取得できる（保存期間30日）。
+
+```sh
+gh run download 31076712703 -R Driedsandwich/repogloss -n repogloss-store-zip
+```
+
+**照合済み**: ダウンロードして計算した SHA-256 が CI のログと一致し、展開した13ファイルは**タグ `v1.8.4` の中身と1バイトも違わない**。対照として v1.8.3 と比べると7ファイルで相違が出る。
+
+**別環境でも同じものができた**: 手元（macOS・Node 22.22.3）と CI（Linux・Node 22.23.1）で ZIP の SHA-256 が一致した。zlib はどちらも 1.3.1。**Node の patch 版が違っても同じになる**ことは実測できたが、zlib の版が変わった場合は未確認。
+
+参考: 直前の v1.8.3 の提出候補は `e76c9245…` だったが、**第5回監査の指摘により提出しない**。
 
 **この ZIP は誰でも再現できます。** 日時を 1980-01-01 に固定し、並び順を配布一覧の順に固定してあるため、同じコミットからは1バイト違わない同じものができます。
 
@@ -159,25 +172,26 @@ v1.8.2 と v1.8.3 で、**注記される語の集合は3ページとも完全�
 | `npm run package:stage` / `:verify` | 0 | 13ファイル一致 |
 | `npm run package:zip` / `:verify-zip` | 0 | 13ファイル・69,230バイト・`e76c9245…` |
 
-### 4-2. CI（8ジョブすべて success）
+### 4-2. CI（run [`31076712703`](https://github.com/Driedsandwich/repogloss/actions/runs/31076712703) / headSha `1ff4829`・**8ジョブすべて success**）
 
 | job | 中身 |
 |---|---|
-| `verify` | 構文検査・単体テスト・構成と文書の整合 |
-| `e2e` | ubuntu で、配布ファイルだけを拡張として読み込んで実行 |
-| `e2e-windows` | **windows-latest で 32件全成功** |
+| `verify` | 構文検査・単体テスト・構成と文書の整合（119項目） |
+| `e2e` | ubuntu で、配布ファイルだけを拡張として読み込んで実行（35件） |
+| `e2e-windows` | **windows-latest で 35件全成功** |
 | `package-hash` × 3 OS | 各 OS で配布物の合算ハッシュを出し、artifact として持ち出す |
 | `hash-compare` | 3件そろい、3つとも同じ値であることを**機械的に**確認（割れると落ちる） |
-| `release-zip` | 提出用 ZIP を生成・検査し、artifact として持ち出す |
+| `release-zip` | 提出用 ZIP を生成・検査し、artifact として持ち出す。**必須4ジョブへ依存し、`main` への push でだけ動く** |
 
-**Windows のゲートが本当に働くことを実測しました。** 前回「ジョブの成功表示だけでは step の成功を証明しない」と指摘された点です。使い捨ての PR で **Windows でだけ落ちる assertion** を1つ入れたところ:
+**ゲートが本当に働くことを、3つとも実測しました。** 「緑に見えること」と「実際に止まること」は別なので、赤くなる側を必ず確かめています。
 
-| | `e2e-windows` | 他7ジョブ | run 全体の結論 |
-|---|---|---|---|
-| わざと壊した検証用 PR | **failure** | success | **failure** |
-| 対照（無傷の PR #11） | success | success | **success** |
+| 確かめたこと | 方法 | 結果 |
+|---|---|---|
+| Windows E2E の失敗が CI を落とす | 使い捨て PR に Windows だけ落ちる assertion を1つ | `e2e-windows` **failure**・run 全体 **failure**（対照の無傷 PR は success） |
+| 必須ジョブが落ちたら提出候補が出ない | 使い捨てブランチで `release-zip` の対象ブランチを一時的に付け替え、**同じブランチで対照→破壊** | 無傷: `release-zip` **success**・成果物あり／`e2e-windows` を落とすと **skipped**・`repogloss-store-zip` **なし** |
+| PR からは提出候補が出ない | PR #14 の run と、変更前の PR #11 の run を比較 | #14: `release-zip` **skipped**・成果物は `package-hash-*` 3件のみ／#11（変更前）: `repogloss-store-zip` **あり** |
 
-確認後、その PR は閉じてブランチをローカル・リモート両方から削除しました。現在のコードに痕跡はありません。
+いずれも確認後、検証用の PR とブランチはローカル・リモート両方から削除しました。**現在のコードと workflow に痕跡はありません**（`if` の条件は `refs/heads/main` に戻っています）。
 
 ### 4-3. テストに判別力があることの確認
 

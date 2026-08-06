@@ -414,6 +414,83 @@ test('拡張として読み込んだ状態で動く', async t => {
     assert.deepEqual(r, { tipHasJa: true, toggleHasJa: true, square: true, drawn: true, tipBox: true });
   });
 
+  /* ---------- 見えていない場所が「最初の1回」を使い切らない ---------- */
+
+  await t.test('見えていない場所には印を付けず、後ろの読める語へ付ける（4種）', async () => {
+    // 隠れている側に付くと、その語はページのどこでも説明されなくなる。
+    // 祖先の opacity と content-visibility は、子の computed 値には出ないので、
+    // 直接の親だけを見る判定では見抜けない（実測: 子は箱も持つ）。
+    const r = await tab.evaluate(`(() => {
+      const n = sel => document.querySelectorAll(sel + ' .iiyaku-icon').length;
+      return {
+        inert:   { hidden: n('#inert-box'), later: n('#after-inert') },
+        opacity: { hidden: n('#op-host'),   later: n('#after-op') },
+        cvHidden:{ hidden: n('#cv-host'),   later: n('#after-cv') },
+        clip:    { hidden: n('#clip-box'),  later: n('#after-clip') }
+      };
+    })()`);
+    assert.deepEqual(r, {
+      inert:    { hidden: 0, later: 1 },
+      opacity:  { hidden: 0, later: 1 },
+      cvHidden: { hidden: 0, later: 1 },
+      clip:     { hidden: 0, later: 1 }
+    }, `隠れている側に印が付いた: ${JSON.stringify(r)}`);
+  });
+
+  await t.test('反例が本当に「見えない」ことをブラウザ自身に確かめる（対照）', async () => {
+    // fixture が反例になっていることの裏取り。ここが崩れると上の試験は無意味になる。
+    const r = await tab.evaluate(`(() => {
+      const opt = { opacityProperty: true, visibilityProperty: true };
+      const f = id => { const el = document.getElementById(id);
+        return { visible: el.checkVisibility(opt), rects: el.getClientRects().length }; };
+      // content-visibility:hidden が隠すのは「中身」なので、host 自身ではなく
+      // 語が入っている子要素で測る。host 自身は描画されたままである。
+      return { op: f('op-p'), cv: f('cv-p'), clip: f('clip-box'),
+               cvHostItself: f('cv-host').visible,
+               inertHit: !!document.getElementById('inert-box').closest('[inert]') };
+    })()`);
+    assert.equal(r.op.visible, false, 'opacity:0 が見えている扱いになっている');
+    assert.equal(r.cv.visible, false, 'content-visibility:hidden の中身が見えている扱いになっている');
+    assert.equal(r.cvHostItself, true, 'host 自身は描画されたまま＝子で測る必要があることの確認');
+    assert.ok(r.cv.rects > 0, '中身に箱が無い＝箱の検査で落ちてしまい反例にならない');
+    assert.equal(r.inertHit, true, 'inert が効いていない');
+    // clip は checkVisibility では見抜けない。だから形（1px＋clip）で判定している
+    assert.equal(r.clip.visible, true, 'clip が checkVisibility で落ちる＝この対照の前提が変わった');
+    assert.ok(r.clip.rects > 0, 'clip 要素に箱が無い＝箱の検査で落ちてしまい反例にならない');
+  });
+
+  await t.test('見えなくなった古い印は、後から現れた読める語を妨げない', async () => {
+    // DOM に残っていること（isConnected）は、説明として使えることを意味しない。
+    const before = await tab.evaluate(`(() => {
+      const n = k => document.querySelectorAll('.iiyaku-icon[data-iiyaku-key="' + k + '"]').length;
+      return { reset: n('reset'), sshKey: n('ssh key') };
+    })()`);
+    assert.deepEqual(before, { reset: 1, sshKey: 1 }, '前提の印が付いていない');
+
+    await tab.evaluate(`(() => {
+      document.getElementById('stale-a').style.display = 'none';   // reset を隠す
+      document.getElementById('stale-b').style.opacity = '0';      // ssh key を隠す
+      const a = document.createElement('p'); a.id = 'new-reset';
+      a.textContent = 'A fresh reset appears here.';
+      const b = document.createElement('p'); b.id = 'new-sshkey';
+      b.textContent = 'A fresh ssh key appears here.';
+      document.getElementById('sink').append(a, b);
+    })(); true`);
+    await waitFor('隠れた語が、新しく現れた読める場所へ付き直る', async () =>
+      await tab.evaluate(`document.querySelectorAll('#new-reset .iiyaku-icon').length === 1
+                       && document.querySelectorAll('#new-sshkey .iiyaku-icon').length === 1`));
+
+    const after = await tab.evaluate(`(() => {
+      const n = k => document.querySelectorAll('.iiyaku-icon[data-iiyaku-key="' + k + '"]').length;
+      return { oldReset: document.querySelectorAll('#stale-a .iiyaku-icon').length,
+               oldSshKey: document.querySelectorAll('#stale-b .iiyaku-icon').length,
+               totalReset: n('reset'), totalSshKey: n('ssh key') };
+    })()`);
+    // 古い印は片づける。残すと同じ語の印が画面に2つあることになる。
+    assert.deepEqual(after, { oldReset: 0, oldSshKey: 0, totalReset: 1, totalSshKey: 1 },
+      `古い印が残っているか、同じ語の印が増えている: ${JSON.stringify(after)}`);
+  });
+
   await t.test('コード表示部分には印が付かない', async () => {
     assert.equal(await tab.evaluate(`document.querySelectorAll('#code .iiyaku-icon').length`), 0);
   });

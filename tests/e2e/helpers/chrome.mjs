@@ -158,6 +158,28 @@ const REPO_PAGE = `<!doctype html><html lang="en" data-color-mode="light">
   <!-- ⑬ コード表示 -->
   <pre id="code"><code>git push --force origin main</code></pre>
 
+  <!-- ⑮ 見えていない場所。ここに印を付けると、その語の「ページで最初の1回」を
+       使い切ってしまい、後ろにある読める同じ語へ説明が付かなくなる。
+       いずれも「隠れている側は0個・後ろの本文が1個」になるのが正しい。 -->
+  <div inert id="inert-box"><p>Notes about actions here.</p></div>
+  <p id="after-inert">Later visible actions paragraph.</p>
+
+  <div id="op-host" style="opacity:0"><p id="op-p">Run the checks now.</p></div>
+  <p id="after-op">Later visible checks paragraph.</p>
+
+  <div id="cv-host" style="content-visibility:hidden"><p id="cv-p">Read the readme first.</p></div>
+  <p id="after-cv">Later visible readme paragraph.</p>
+
+  <!-- 読み上げ専用テキストの定番の書き方（1px 四方＋clip）。GitHub も使っている -->
+  <span id="clip-box" style="position:absolute;width:1px;height:1px;overflow:hidden;
+        clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap">this repository navigation</span>
+  <p id="after-clip">Later visible repository paragraph.</p>
+
+  <!-- ⑯ 後から隠される印（古い印が後続を抑止しないかの確認に使う） -->
+  <p id="stale-a">Do not reset it lightly.</p>
+  <p id="stale-b">Add an ssh key first.</p>
+  <div id="sink"></div>
+
   <!-- ⑭ 画面の外にある印。実際に Tab を押し続けて到達する（focus() を呼ばない）。
        ここへ止まるとブラウザが自動でスクロールするので、説明が消えないことを確かめる。 -->
   <div style="height:1800px"></div>

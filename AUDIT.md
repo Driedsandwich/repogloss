@@ -1,4 +1,4 @@
-# 監査のための資料（第5回監査用）
+# 監査のための資料（第6回監査用）
 
 このファイルは、外部監査を受けるための入口です。**このリポジトリだけを読めば監査に必要な情報が揃う**ようにしてあります。
 
@@ -12,34 +12,38 @@ RepoGloss は、GitHub の画面に出てくる英語のうち Git / GitHub 固�
 
 | 項目 | 値 |
 |---|---|
-| **監査対象タグ** | **`v1.8.3`** |
-| **対象コミット** | **`33b107856722ba713b45043e47307a464c50ea18`** |
+| **監査対象版** | **v1.8.4**（`manifest.json` の version）|
+| **タグ** | **未作成。** v1.8.4 はまだ commit していない |
+| 直前の版 | `v1.8.3` = コミット `33b107856722ba713b45043e47307a464c50ea18`（**提出しない**） |
 | 現在の既定ブランチ | `main` |
 | main とタグの差分 | **配布する13ファイルは差分ゼロ。** 違うのは `STORE_LISTING.md`（提出物の記録）と、このファイルおよび `docs/audit/`（監査用の資料）だけ |
-| Manifest | v1.8.3 / Manifest V3 |
+| Manifest | v1.8.4 / Manifest V3 |
 | Chrome API 権限 | `storage` のみ |
 | サイトアクセス | `https://github.com/*` |
 | `host_permissions` | 宣言なし |
 | 実行されるコード | [`src/matcher.js`](src/matcher.js) と [`src/content.js`](src/content.js) の2本（同梱のみ・リモートコードなし） |
 | 外部依存パッケージ | **なし**（`package.json` は検証用の scripts だけ。ZIP 生成も Node 標準の `zlib` で自作） |
-| ストア公開中の版 | **v1.7.1**（v1.8.0〜v1.8.3 はいずれも未提出） |
+| ストア公開中の版 | **v1.7.1**（v1.8.0〜v1.8.4 はいずれも未提出） |
 
 差分は次のコマンドで確認できます。
 
 ```sh
 git diff --name-only v1.8.3 main
-# → STORE_LISTING.md / AUDIT.md / docs/audit/... のみ。配布13ファイルは出てこない
+# v1.8.3 との差分。配布13ファイルのうち src/content.js・src/matcher.js・styles.css・
+# README.md・DESIGN.md・PRIVACY.md・manifest.json が変わっている（第5回監査への対応）
 ```
 
-### 1-1. 提出物（まだ提出していない）
+### 1-1. 提出物
+
+**まだ作っていない。** v1.8.4 は commit していないため CI を走らせておらず、提出候補の成果物は存在しない。
 
 | 項目 | 値 |
 |---|---|
-| ZIP | `repogloss-1.8.3.zip`・**69,230 バイト**・**13ファイル** |
-| **SHA-256** | **`e76c924522339941fd6397c66302446d13046e92f0687a26d1ca068ba338f4fa`** |
-| 中身の合算ハッシュ | `66a08bea5e89dbfca77c0998757630565bffe06deee8d55dd704abbb7c348c3c` |
-| 出どころ | **CI が生成した artifact `repogloss-store-zip`**（`release-zip` ジョブ）。手元でビルドしたものは使っていない |
-| 3 OS の配布物合算ハッシュ | **`f076ac6de81e53c4d6d6656fa927babfd5cb0433e92d46ec202d75564d575245`**（Windows / Ubuntu / macOS の3つとも同一） |
+| ZIP | CI の成果物 `repogloss-store-zip`（`release-zip` ジョブ） |
+| SHA-256 | **未確定**（CI 未実行） |
+| 生成条件 | **`main` への push で、`verify` `e2e` `e2e-windows` `hash-compare` がすべて成功したときだけ**作られる。PR では作られない |
+
+参考: 直前の v1.8.3 の提出候補は `e76c9245…`（69,230 バイト・13ファイル）だったが、**第5回監査の指摘により提出しない**。
 
 **この ZIP は誰でも再現できます。** 日時を 1980-01-01 に固定し、並び順を配布一覧の順に固定してあるため、同じコミットからは1バイト違わない同じものができます。
 
@@ -57,7 +61,24 @@ gh run download <run-id> -R Driedsandwich/repogloss -n repogloss-store-zip
 
 ---
 
-## 2. 今回（v1.8.3）で直したこと
+## 2. 今回（v1.8.4）で直したこと
+
+第5回監査の指摘 **P1 4件・P2 4件**への対応。詳細と証拠は [`docs/audit/v1.8.4-changes.md`](docs/audit/v1.8.4-changes.md)。
+
+| ID | 内容 | 主な変更箇所 |
+|---|---|---|
+| RG-5-01 | 除外する領域（編集中・フォーム・コード）の文字列を、除外を決める**前に**読んでいた | [`src/content.js`](src/content.js) `isTarget` の順序 |
+| RG-5-02 | 祖先の `opacity:0` / `content-visibility:hidden` / `inert` の中に注記し、その語の「最初の1回」を使い切っていた | `isVisibleOccurrence` |
+| RG-5-03 | 見えなくなった古い印が、後から現れた読める同じ語を抑止していた | `usableGloss` / `retireGloss` |
+| RG-5-04 | Limited Use 準拠の明言が無く、「個人情報を読まない」が実態より強かった | [`PRIVACY.md`](PRIVACY.md) / [`STORE_LISTING.md`](STORE_LISTING.md) |
+| RG-5-05 | 綴りを機械生成し、`securities` `cis` `gits` 等の別語まで拾っていた | [`src/matcher.js`](src/matcher.js) `EXTRA_FORMS` |
+| RG-5-06 | `release-zip` が Windows E2E と OS 間比較に依存せず、PR でも提出候補名の成果物を作っていた | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
+| RG-5-07 | README・DESIGN・CSS のコメントに旧版・旧説明が残っていた | 各文書＋[`scripts/verify.mjs`](scripts/verify.mjs) |
+| RG-5-08 | 1px＋`clip` の読み上げ専用領域を拾っていた（**GitHub 実画面でも発生していた**） | `isClipHidden` |
+
+**RG-5-08 は監査が「実画面での発生は未確認」としていたが、こちらで実測したところ実際に起きていた。** `prc-src-InternalVisuallyHidden-…` の中の "Repository files navigation" に印が付き、目に見える `repository` より先に「最初の1回」を使い切っていた（2ページで各1件）。直したあと、注記される語の集合は変わらず、見えない領域の中の印は 2 → 0 になった。
+
+### 2-0. 直前（v1.8.3）で直したこと
 
 第4回監査の指摘 **P1 5件・P2 3件**への対応です。詳細と証拠は [`docs/audit/v1.8.3-changes.md`](docs/audit/v1.8.3-changes.md) にあります。
 
@@ -133,8 +154,8 @@ v1.8.2 と v1.8.3 で、**注記される語の集合は3ページとも完全�
 
 | command | exit | 結果 |
 |---|---:|---|
-| `npm test` | 0 | 単体 **34件**全成功 / 構成 **107項目**・不一致0（辞書61語・version 1.8.3） |
-| `npm run test:e2e` | 0 | **32件**全成功（拡張として実際に読み込み・実キー送信） |
+| `npm test` | 0 | 単体 **35件**全成功 / 構成 **119項目**・不一致0（辞書61語・version 1.8.4） |
+| `npm run test:e2e` | 0 | **35件**全成功（拡張として実際に読み込み・実キー送信） |
 | `npm run package:stage` / `:verify` | 0 | 13ファイル一致 |
 | `npm run package:zip` / `:verify-zip` | 0 | 13ファイル・69,230バイト・`e76c9245…` |
 
@@ -263,10 +284,13 @@ web_accessible_resources:    差分なし（locales/dict.json のみ）
 | 1 | **実スクリーンリーダー（NVDA / VoiceOver）未確認** | 環境がない。DOM とキーボードの E2E は実施しているが、実際の読み上げとは別物として扱い、成功扱いにしない |
 | 2 | **Windows 実機の目視未確認** | CI で windows-latest の E2E は通っているが、**字形やレイアウトの見た目は確認していない**。CI の成功と目視確認は別のものとして区別する |
 | 3 | **200% / 400% ズーム、高コントラスト系テーマ未確認** | 同上 |
-| 4 | **`MutationObserver` が `characterData` を見ない** | 実害が再現していないため据え置き（前回監査の方針どおり）。テキストノードの中身だけが差し替わる更新は追わない |
+| 4 | **`MutationObserver` が属性の変化だけでは再走査しない** | 見張っているのはノードの追加と URL の変化。要素が `display:none` や `inert` へ**変わっただけ**では、その場では追随しない。ただし**そのあと新しいノードが追加されれば、そこで使えなくなった古い印は片づけて付け直す**（3-2-3 の `usableGloss`）。第5回監査が必須とした「不可視化のあとに可視の候補が現れた場合」は直してある。属性変化だけの即時追従は、費用に見合わないため見送る |
+| 4-b | **テキストノードの中身だけが差し替わる更新を追わない**（`characterData`） | 実害が再現していないため据え置き（前回監査の方針どおり） |
 | 5 | **Developer Dashboard の実文言未読** | 提出者のログインが必要な画面。§5 のとおり転記欄を用意した |
 | 6 | 実サイト計測は macOS の headless Chrome 151・幅1600px・4ページのみ | 他の画面幅やログイン状態では結果が変わりうる |
 | 7 | ZIP の検査は自作の読み書き実装に依存 | 緩和として、Python の `zipfile` と `unzip -t`（いずれも無関係な実装）でも読めることを確認している |
+| 8 | **ZIP のバイト再現性は、確認した Node/zlib の版でのみ実測** | deflate の出力は zlib の版に依存しうる。将来の任意の版で同一とは主張しない。作った版は成果物の `*.zip.json`（`environment.node` / `environment.zlib`）へ記録している |
+| 9 | **1px＋`clip` 以外の視覚非表示は網羅していない** | 実サイトで確認できた形（1px 四方＋`clip`／`clip-path`）だけを狭く判定している。正規の小さな UI を巻き込まないことを優先した。「視覚的に隠された領域をすべて除外する」とは主張しない |
 
 ---
 
@@ -278,7 +302,8 @@ web_accessible_resources:    差分なし（locales/dict.json のみ）
 | 2 | 12件 | 全件が実在。対応して v1.8.1 へ（v1.8.0 は提出見送り） | v1.8.0 |
 | 3 | 6件 | 全件が実在。対応して v1.8.2 へ（v1.8.1 は提出見送り） | v1.8.1 |
 | 4 | 8件 | 全件が実在。対応して v1.8.3 へ（v1.8.2 は提出見送り） | v1.8.2 |
-| **合計** | **41件** | **41件連続で、事実と違う指摘は0件** | |
+| 5 | 8件 | 全件が実在。対応して v1.8.4 へ（v1.8.3 は提出見送り） | v1.8.3 |
+| **合計** | **49件** | **49件連続で、事実と違う指摘は0件** | |
 
 第4回の指摘のうち1件（RG-4-07）は、**該当が11件ではなく12件**でした。辞書で `s` で終わるキーを数え直すと `request changes` も該当し、`request changeses` が作られていました。指摘そのものは正しく、影響範囲がわずかに広かったものです。
 
@@ -288,6 +313,9 @@ web_accessible_resources:    差分なし（locales/dict.json のみ）
 
 ## 9. 監査で特に見てほしいところ
 
+0. **「その語が読めるか」の判定に穴がないか**（3-2-3 / `isVisibleOccurrence`）。`checkVisibility` に任せた部分と、自分で形を見ている部分（1px＋`clip`）の切り分けは妥当か。正規の小さな UI を巻き込む恐れはないか。
+0-b. **`usableGloss` の判定と、古い印を取り除く処理**。本文を壊す経路や、同じキーの印が2つ残る経路が無いか。
+0-c. **`EXTRA_FORMS` に残した30語の綴り**。GitHub の画面に実在しない形や、普通の英単語と衝突する形が混ざっていないか。
 1. **§3 の不変条件に穴がないか。** とくに「先祖から推し量らない」を徹底できているか、`resolvePlacement` の祖先たどりに抜けがないか。
 2. **roving を全廃した判断の副作用。** GitHub 以外の画面構成や、将来 GitHub が変わった場合に、説明が届かなくなる語が出ないか。実サイト4ページでの「0件」という測定で十分か。
 3. **E2E の oracle が本当に独立か。** テストが本番の判定式を言い換えているだけになっていないか。

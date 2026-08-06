@@ -2,7 +2,7 @@
 
 GitHub のページで、Git / GitHub 固有の英単語の右に小さな ⓘ を付ける Chrome 拡張です。ⓘ にカーソルを乗せると日本語の説明が出ます。英語表示はそのまま残ります。
 
-![Version](https://img.shields.io/badge/version-1.8.3-blue)
+![Version](https://img.shields.io/badge/version-1.8.4-blue)
 ![License](https://img.shields.io/badge/license-MIT-lightgrey)
 ![Manifest](https://img.shields.io/badge/manifest-v3-green)
 
@@ -41,7 +41,7 @@ GitHub のページで、Git / GitHub 固有の英単語の右に小さな ⓘ �
 
 ## インストール
 
-**[Chrome ウェブストアで公開しています](https://chromewebstore.google.com/detail/ihkkhkleamggokepaelapoiabgmpljnn)**。ストアに出ているのは v1.7.1（2026-08-03 公開）で、この版 v1.8.2 はまだ提出していません。
+**[Chrome ウェブストアで公開しています](https://chromewebstore.google.com/detail/ihkkhkleamggokepaelapoiabgmpljnn)**。ストアに出ているのは v1.7.1（2026-08-03 公開）で、この版 v1.8.4 はまだ提出していません。
 
 <details>
 <summary>ソースから手動で読み込む場合</summary>
@@ -72,7 +72,7 @@ npm run test:e2e                   # 拡張として実際に読み込んで動�
 
 `npm run test:e2e` は、配布するファイルだけを並べて Chrome へ**拡張として読み込ませ**、印の表示・キーボード操作・ON/OFF・タブ間の設定同期を確認します。Chrome が無い環境では失敗します。
 
-同じ検証を GitHub Actions でも実行しています（[`.github/workflows/ci.yml`](./.github/workflows/ci.yml)）。CI は読み取り権限だけで、公開や配布は行いません。
+同じ検証を GitHub Actions でも実行しています（[`.github/workflows/ci.yml`](./.github/workflows/ci.yml)）。CI の権限は読み取りだけ（`contents: read`）で、コミット・push・Release の公開・ストアへの提出はしません。ただし、**検証を通した提出用 ZIP を workflow の成果物（artifact）として作ります**。作るのは `main` への push のときだけで、必須の検査がすべて成功した場合に限ります。
 
 用語の判定は [`src/matcher.js`](./src/matcher.js) に分けてあり、ブラウザと Node の両方から同じコードを呼びます。テストが確かめているのは、この判定部分と、リポジトリの構成・文書の整合です。画面上の見え方は含みません。
 
@@ -122,6 +122,7 @@ This extension is not affiliated with, endorsed by, or sponsored by GitHub, Inc.
 
 | Version | 内容 |
 |---|---|
+| 1.8.4 | **見えていない場所に説明を付けてしまい、その語がページのどこでも説明されなくなる問題を直した。** 祖先が `opacity:0` や `content-visibility:hidden` の中、`inert` の中、読み上げ専用の1px領域（GitHub も使っている）に印が入っていた。いずれも子の見た目や箱の有無では見分けられないため、ブラウザの `checkVisibility` と形の判定を使うようにした。**いったん隠された印が、後から現れた読める同じ語を邪魔しないようにした**（DOM に残っているだけでは「説明済み」と見なさない）。**除外する領域の文字列を、除外を決める前に読み取らないようにした**（編集中の内容・フォーム・コードは、書き換えないだけでなく読み取りもしない）。`security` を `securities`、`ci` を `cis` のように、意味の違う普通の英単語まで拾っていたのをやめ、受け付ける綴りを明示した表に変えた。CI は、必要な検査がすべて通った `main` への push のときだけ提出用 ZIP を作るようにした |
 | 1.8.3 | **説明の入口を「構造から推し量る」のをやめ、実際に到達できるものだけに限った。** 描画されていない先祖（`display:contents` のリンクやボタン、`visibility:hidden` の中身）を入口として扱っていたのを直した。矢印キーで移動する部品も、**構造が整っているだけで実際には動かない**ものがあるため、`tabindex="-1"` の項目は入口にしない（実サイトで測り、注記される語は1つも減らないことを確認）。`actions` を `actionses` のように二重に複数形にしていたのを直した。ストアのデータ申告を公式の定義に合わせ、「ウェブサイトのコンテンツを端末内で使う」ことを開示する形へ改めた（動作は変えていない）。Windows のテストが失敗しても CI が緑になっていたのを直し、提出用 ZIP の作成と検査を CI に移した |
 | 1.8.2 | **キーボードで本当に到達できるかの判定を、ブラウザの実際の挙動に合わせた。** 隠れている入力欄、`display:none` や `visibility:hidden` の要素、無効化された領域の中のボタン、空の `tabindex`、`details` の外や2番目にある `summary` を、説明の入口として使わなくなった。ファイルツリーのような矢印キーで移動する部品も、実際に移動できる形になっているときだけ入口として扱う。**画面の外にある印へキーボードで移ったとき、説明が出ないことがあったのを直した**（フォーカス移動に伴う自動スクロールで消えていた。いまは位置を追従し、画面から出たときだけ閉じる）。そのほか、`branchs` のような誤った綴りを拾わないようにした |
 | 1.8.1 | **編集している場所には印を付けないようにした。** コメント欄など書き換えられる領域を、走査の対象から外している。**キーボードで読めない説明が出ないようにした。** リンクやボタンの中の印は、その要素にフォーカスしたときに説明を出しているが、`label` や無効化されたボタンのようにキーボードで止まれない場所では印を付けず、同じ語の次の出現で説明する。**1つのリンクに複数の用語があるときは、まとめて表示するようにした**（以前は最初の1件しか読めなかった）。そのほか、狭い画面や拡大表示で吹き出しが画面の外へ出ないようにし、ページ側が使っている`aria-describedby` を壊さないようにした |

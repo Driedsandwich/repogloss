@@ -6,6 +6,13 @@
 
 ## 日本語
 
+### 0. Chrome ウェブストアのユーザーデータポリシーへの準拠
+
+**RepoGloss によるユーザーデータの利用は、Chrome Web Store User Data Policy（Limited Use 要件を含む）に従います。** データは本拡張の単一目的（GitHub の英語用語に日本語の説明を表示すること）の提供にのみ使い、販売、広告、与信判断、目的外利用、第三者への移転、開発者や人による閲覧には使用しません。
+
+- Limited Use: <https://developer.chrome.com/docs/webstore/program-policies/limited-use/>
+- User Data FAQ: <https://developer.chrome.com/docs/webstore/program-policies/user-data-faq/>
+
 ### 1. 取り扱うデータの一覧
 
 「取り扱う（handle）」には、集める・送る・**使う**・共有する、のすべてが含まれます。端末の中だけで処理し、どこへも送らない場合でも、**使っていること自体は開示が必要**です。そのため、以下では動作を5つに分けて書きます。
@@ -13,10 +20,18 @@
 | データ | 処理（使う） | 端末内に保存 | 外部へ送信 | 第三者と共有 | 開発者が閲覧 |
 |---|---|---|---|---|---|
 | GitHub のページ上に**表示されている文章** | **する**（同梱辞書との照合） | しない | しない | しない | しない |
+| 開いている GitHub ページの**URL** | **する**（画面が切り替わったことの検知にだけ使う） | しない | しない | しない | しない |
 | ON / OFF の設定（真偽値 `iiyakuEnabled` ひとつ） | する | **する**（`chrome.storage.local`） | しない | しない | しない |
-| 閲覧履歴・アカウント情報・入力内容・Cookie・認証情報 | しない | しない | しない | しない | しない |
+| Cookie・認証情報・入力欄やフォームの中身・編集中の文章 | **しない**（走査の前に除外します） | しない | しない | しない | しない |
 
 外部のサーバーとの通信は一切行いません（翻訳API・解析サービス・広告のいずれも使っていません）。
+
+> **「個人情報は読み取らない」とは書きません。**
+> 本拡張は、表示されている文章を広く走査します。そこに氏名・ユーザー名・メールアドレス・Issue や Pull Request のコメントが含まれていれば、**その文字列も一時的な照合の対象になります**。
+>
+> 正確には次のとおりです。**それらを個人情報として抽出・識別・保存・送信・共有・人手で閲覧することはありません。** 文章は端末の中で辞書と照らし合わせるためだけに一瞬使われ、その場で捨てられます。
+>
+> 一方、**入力欄・フォーム・編集中の領域・コード表示は、文字列を取り出す前に除外**します。「書き換えない」だけでなく「読み取らない」という意味です（`src/content.js` の `isTarget` が、除外を決めてからでないと文字列に触れない作りになっており、その順序は自動検査で固定しています）。
 
 ### 2. 表示されている文章の扱い（くわしく）
 
@@ -31,6 +46,16 @@
 読み取りの範囲は `github.com` に限られます。他のサイトでは動作しません（`manifest.json` の `content_scripts.matches` が `https://github.com/*` のみのため）。
 
 > **お願い**: 本拡張は「表示されている文章」を区別なく走査します。private リポジトリのページでも動作しますが、内容は端末の外へ出ません。それでも取り扱いに配慮が必要な画面では、右下のトグルで OFF にしてご利用ください。
+
+### 2-2. 開いているページの URL の扱い
+
+GitHub は、ページを読み直さずに画面だけを差し替えることがあります（リポジトリのタブを切り替えたときなど）。それを見つけるために、**開いている GitHub ページの URL を読み取り、直前の値と一致するかだけを比べます。**
+
+- 用途: 画面が切り替わったことの検知だけです。切り替わったら、新しい画面をもう一度走査します。
+- **保存しません。** 端末内のメモリで直前の値と比べるだけで、`chrome.storage` にもどこにも残しません。
+- **外部送信も第三者提供もしません。** 開発者が閲覧することもありません。
+- 対象は `github.com` を開いている間だけです。他のサイトでは拡張自体が動きません。
+- 閲覧履歴を読む権限（`tabs` / `history`）は要求していません。読めるのは「いま自分が動いているページ自身の URL」だけです。
 
 ### 3. 保存するもの
 
@@ -68,6 +93,13 @@ GitHub リポジトリの Issue でお願いします。脆弱性の報告のみ
 
 ## English
 
+### 0. Compliance with the Chrome Web Store User Data Policy
+
+**RepoGloss's use of user data will adhere to the Chrome Web Store User Data Policy, including the Limited Use requirements.** User data is used only to provide the extension's single purpose — showing Japanese explanations for English Git/GitHub terms — and is not sold, used for advertising or creditworthiness, used for any unrelated purpose, transferred to third parties, or viewed by the developer or any human.
+
+- Limited Use: <https://developer.chrome.com/docs/webstore/program-policies/limited-use/>
+- User Data FAQ: <https://developer.chrome.com/docs/webstore/program-policies/user-data-faq/>
+
 ### 1. What data is handled
 
 "Handling" user data covers collecting, transmitting, **using**, and sharing it. Processing that happens entirely on the user's own device, and is never transmitted anywhere, still counts as *use* and is disclosed here. The table separates the five actions.
@@ -75,10 +107,18 @@ GitHub リポジトリの Issue でお願いします。脆弱性の報告のみ
 | Data | Processed (used) | Stored on device | Transmitted off device | Shared with third parties | Viewed by the developer |
 |---|---|---|---|---|---|
 | **Text displayed on** GitHub pages | **Yes** (matched against the bundled dictionary) | No | No | No | No |
+| **URL** of the GitHub page being viewed | **Yes** (compared with the previous value to detect in-page navigation) | No | No | No | No |
 | On/off setting (a single boolean, `iiyakuEnabled`) | Yes | **Yes** (`chrome.storage.local`) | No | No | No |
-| Browsing history, account info, form input, cookies, credentials | No | No | No | No | No |
+| Cookies, credentials, form fields, editable content | **No** (excluded before any text is read) | No | No | No | No |
 
 No network requests are made to any external server (no translation API, no analytics, no ads).
+
+> **We do not claim that personal information is "never read".**
+> The extension scans displayed text broadly. If a page shows a name, username, email address, or an issue/PR comment, **those strings are also part of the transient matching.**
+>
+> Precisely: **such content is never extracted as personal information, identified, stored, transmitted, shared, or viewed by a human.** Text is used for a moment, in the browser, only to compare against the bundled dictionary, and is then discarded.
+>
+> Separately, **form fields, editable regions, and code views are excluded before their text is read at all** — not merely left unmodified. `isTarget` in `src/content.js` cannot touch a text value until the exclusion check has passed, and that ordering is enforced by an automated check.
 
 ### 2. Displayed text, in detail
 
@@ -91,6 +131,15 @@ While a `github.com` page is open, the extension **reads and uses the text displ
 - Editable regions (`contenteditable`, form fields, code views) are neither read nor modified.
 
 Reading is limited to `github.com`. The extension does not run on any other site.
+
+### 2-2. The page URL
+
+GitHub often swaps the view without reloading the page. To notice that, the extension **reads the URL of the page it is running on and compares it with the previous value.**
+
+- Purpose: detecting in-page navigation, so the new view can be scanned. Nothing else.
+- **Not stored.** The comparison happens in memory; nothing is written to `chrome.storage` or anywhere else.
+- **Not transmitted, not shared, never viewed by the developer.**
+- Only while a `github.com` page is open. No `tabs` or `history` permission is requested, so only the extension's own page URL is visible to it.
 
 ### 3. What we store
 

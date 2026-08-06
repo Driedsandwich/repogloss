@@ -46,6 +46,10 @@
   const SKIP = [
     'pre', 'code', 'textarea', 'input', 'select', 'script', 'style', 'svg',
     EDITABLE,
+    // inert の中は、見えていても操作も読み上げもできない（開いていないダイアログの
+    // 裏側など）。ここに注記すると、その語の「ページで最初の1回」を使い切ってしまい、
+    // 後ろにある読める同じ語へ説明が付かなくなる。印自体も Tab で到達できない。
+    '[inert]',
     '.blob-code', '.js-file-line',
     '.react-code-lines', '.react-code-line-contents', '.react-blob-print-hide',
     '.cm-editor', '.CodeMirror', '.highlight', '.snippet-clipboard-content',
@@ -77,20 +81,81 @@
   const glossed = new Map();
   let triggerSeq = 0;
 
+  // その語が「実際に読める場所」に出ているか。
+  //
+  // 直接の親だけを見ていては足りない。opacity と content-visibility は、
+  // 祖先に掛かっていても子の computed 値は変わらないため、子を見ても分からない。
+  // 実測（Chrome 151）: 祖先が opacity:0 でも content-visibility:hidden でも、
+  // 子は rects=1・offsetWidth=1264 を返す。箱の有無では判別できない。
+  //
+  // checkVisibility は祖先までまとめて見てくれる。ただし contentVisibilityAuto は
+  // 渡さない——渡すと content-visibility:auto の画面外要素まで false になり、
+  // 長いページの下のほうが永久に注記されなくなる（実測で確認）。
+  // 古い Chrome では引数名が違うので、両方の綴りを一緒に渡す（知らない項目は無視される）。
+  const CHECK_VISIBILITY_OPTS = {
+    opacityProperty: true, visibilityProperty: true,     // 現行の綴り
+    checkOpacity: true, checkVisibilityCSS: true         // 古い綴り
+  };
+  const HAS_CHECK_VISIBILITY = typeof Element.prototype.checkVisibility === 'function';
+
+  let visibleCache = null;   // 走査1回のあいだだけ有効
+
+  // 読み上げ専用テキストの定番の書き方: 1px 四方まで潰し、clip で中身を隠す。
+  // checkVisibility はこれを不可視と見なさない（実測で true が返る）。
+  //
+  // GitHub も使っている。実測では `prc-src-InternalVisuallyHidden-…` の中の
+  // "Repository files navigation" に印が付いており、目に見える repository より先に
+  // 「ページで最初の1回」を使い切っていた。クラス名は版ごとに変わる自動生成なので、
+  // 名前ではなく形（1px 以下 ＋ clip）で判定する。
+  // 大きさの確認は安いので先に置き、getComputedStyle はそこを通ったものだけで呼ぶ。
+  function isClipHidden(el) {
+    for (let n = el; n && n !== document.body; n = n.parentElement) {
+      if (n.offsetWidth > 1 || n.offsetHeight > 1) continue;
+      const cs = getComputedStyle(n);
+      if ((cs.clip && cs.clip !== 'auto') || (cs.clipPath && cs.clipPath !== 'none')) return true;
+    }
+    return false;
+  }
+
+  function isVisibleOccurrence(el) {
+    if (!el || !el.isConnected) return false;
+    if (visibleCache) {
+      const hit = visibleCache.get(el);
+      if (hit !== undefined) return hit;
+    }
+    let ok;
+    if (HAS_CHECK_VISIBILITY) {
+      ok = el.checkVisibility(CHECK_VISIBILITY_OPTS);
+    } else {
+      // 使えない環境では、せめて直接の親だけでも見る（v1.8.3 までの判定）
+      const cs = getComputedStyle(el);
+      ok = !(cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0');
+    }
+    // 箱をまったく持たないものも読めない。content-visibility:auto の画面外は
+    // 箱を持つので、ここでは落ちない。
+    if (ok && el.offsetWidth === 0 && el.offsetHeight === 0) ok = false;
+    if (ok && isClipHidden(el)) ok = false;
+    if (visibleCache) visibleCache.set(el, ok);
+    return ok;
+  }
+
+  // 走査してよい場所かを、**テキストの中身に触れる前に**決める。
+  // 編集中の内容・フォーム・コード・aria-hidden・inert は、書き換えないだけでなく
+  // 値を読み取りもしない。「変えない」と「読まない」は別のことなので、
+  // 判定の順序そのものを約束にする（順序が戻っていないかは verify.mjs が検査する）。
   function isTarget(node) {
-    const v = node.nodeValue;
-    if (!v || !v.trim()) return false;
     if (handled.has(node)) return false;
     const el = node.parentElement;
     if (!el) return false;
     if (el.closest(SKIP)) return false;
-    // 辞書に当たらないノードで getComputedStyle を呼ばないよう、正規表現を先に通す。
+
+    // ---- ここから下でだけ、テキストの文字列に触れる ----
+    const v = node.nodeValue;
+    if (!v || !v.trim()) return false;
+    // 辞書に当たらないノードで可視性の計算をしないよう、正規表現を先に通す。
     // 逆順にすると全テキストノードでレイアウト計算が走り、ページが重くなる。
     if (!matcher.test(v)) return false;
-    const cs = getComputedStyle(el);
-    if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return false;
-    if (el.offsetWidth === 0 && el.offsetHeight === 0) return false;
-    return true;
+    return isVisibleOccurrence(el);
   }
 
   /* ---------- 3. 入口（trigger）の解決 ---------- */
@@ -445,6 +510,41 @@
     window.addEventListener('resize', onViewportChange);
   }
 
+  /* ---------- 5-2. 付けた印が、まだ説明として使えるか ---------- */
+  // DOM に残っていること（isConnected）は「使える」ことを意味しない。
+  // 祖先が display:none や opacity:0 になっても、inert の中へ移されても、
+  // isConnected は true のままである。それを説明済みの証拠にすると、
+  // 後から現れた**読める同じ語**へ説明が付かなくなる（実測で再現）。
+  //
+  // 使えると言えるのは、次をすべて満たすときだけ:
+  //   - DOM にあり、その場所が実際に見えている
+  //   - 単独の印なら、その印自身が Tab の順路に入る
+  //   - 装飾扱いの印なら、対応する入口が生きていて Tab の順路に入る
+  function usableGloss(key) {
+    const icon = glossed.get(key);
+    if (!icon || !icon.isConnected) return null;
+    if (!isVisibleOccurrence(icon.parentElement)) return null;
+    const forId = icon.dataset.iiyakuFor;
+    if (forId) {
+      const trigger = document.querySelector(`[data-iiyaku-trigger="${forId}"]`);
+      return trigger && tabbable(trigger) ? icon : null;
+    }
+    return tabbable(icon) ? icon : null;
+  }
+
+  // 使えなくなった印を片づける。本文の文字は触らない（印は <sup> 1つで、
+  // 中に文字を持たないため、取り除いても文章は壊れない）。
+  function retireGloss(key) {
+    const icon = glossed.get(key);
+    if (!icon) return;
+    if (icon.isConnected) {
+      // その印について説明を出している最中なら、先に閉じる
+      if (tip && tipIcons.includes(icon)) hideTip();
+      icon.remove();
+    }
+    glossed.delete(key);
+  }
+
   /* ---------- 6. 注記 ---------- */
   // 1つのテキストノードに含まれる一致すべてへ注記する。
   // 後ろの一致から順に分割すれば、まだ処理していない前方の位置がずれない。
@@ -455,12 +555,12 @@
 
     // 同じ語はページで最初の1回だけ。説明は一度読めば足りるうえ、
     // git の解説ページのような文書では印が数百個になり本文が読めなくなる。
-    // ただし前に付けた印が DOM から消えていたら、付け直す。
-    const hits = matcher.findHits(node.nodeValue, key => {
-      const prev = glossed.get(key);
-      return !!(prev && prev.isConnected);
-    });
+    // ただし前に付けた印が「もう説明として使えない」なら、付け直す。
+    const hits = matcher.findHits(node.nodeValue, key => usableGloss(key) !== null);
     if (hits.length === 0) { handled.add(node); return 0; }
+    // 付け直すと決まったキーについて、使えなくなった古い印を取り除く。
+    // 残しておくと、同じ語の印が画面に2つあることになる。
+    for (const h of hits) retireGloss(h.key);
 
     // 入れる場所の扱いは、印を入れると決まってから調べる。
     // closest() は祖先をたどるので、一致の有無に関わらず全候補で呼ぶと重い
@@ -488,11 +588,11 @@
   // 古い測定値で判定してしまう。
   function withRenderCache(fn) {
     const owner = renderCache === null;
-    if (owner) renderCache = new WeakMap();
+    if (owner) { renderCache = new WeakMap(); visibleCache = new WeakMap(); }
     try {
       return fn();
     } finally {
-      if (owner) renderCache = null;
+      if (owner) { renderCache = null; visibleCache = null; }
     }
   }
 

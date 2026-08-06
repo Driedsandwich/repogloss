@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { createMatcher, norm, formsOf, ALREADY_PLURAL, SINGULAR_ENDING_IN_S } = require('../src/matcher.js');
+const { createMatcher, norm, EXTRA_FORMS } = require('../src/matcher.js');
 const DICT = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'locales', 'dict.json'), 'utf8'));
 const m = createMatcher(DICT);
 
@@ -114,54 +114,76 @@ test('説明文は空でなく、キー自身をそのまま返すだけの項�
   }
 });
 
-test('綴りの誤った複数形は拾わない', () => {
-  // 以前は語末へ一律に (?:e?s)? を足していたため、これらも候補になっていた
-  for (const wrong of ['branchs', 'repositorys', 'pushs', 'mergs']) {
-    assert.equal(firstKey(wrong), null, `${wrong} を拾っている`);
+
+// 監査が挙げた、受け付けてはいけない綴り。意味の違う普通の英単語や、
+// 存在しない語形が混ざっている。
+const NEGATIVE = [
+  // 一般語と衝突するもの（普通の文章に出うる）
+  'securities', 'cis', 'gits', 'mains', 'watchings', 'visibilities',
+  'origins', 'resets', 'syncs', 'watches', 'blames', 'approves', 'pulls', 'fetches',
+  // 既に複数形のキーを、さらに複数形にした形
+  'actionses', 'checkses', 'contributorses', 'forkses', 'issueses', 'packageses',
+  'projectses', 'releaseses', 'starses', 'tagses', 'request changeses',
+  // 綴りの間違った複数形
+  'branchs', 'repositorys'
+];
+
+// 受け付け続けなければいけない綴り（GitHub の画面や Git の文書に実際に出る）
+const POSITIVE = [
+  ['repositories', 'repository'], ['branches', 'branch'], ['commits', 'commit'],
+  ['pull requests', 'pull request'], ['force pushes', 'force push'],
+  ['squash merges', 'squash merge'], ['ssh keys', 'ssh key'],
+  ['workflow runs', 'workflow run'], ['reviews', 'review'], ['tokens', 'token'],
+  ['milestones', 'milestone'], ['labels', 'label'], ['webhooks', 'webhook'],
+  ['artifacts', 'artifact'], ['topics', 'topic'], ['workflows', 'workflow']
+];
+
+test('受け付けてはいけない綴りを、1つも拾わない', () => {
+  const caught = NEGATIVE.filter(w => firstKey(w) !== null)
+    .map(w => `${w} -> ${firstKey(w)}`);
+  assert.deepEqual(caught, [], `拾ってしまう綴り: ${caught.join(', ')}`);
+  assert.ok(NEGATIVE.length >= 25, `検査対象が少なすぎる: ${NEGATIVE.length}`);
+});
+
+test('CI/CD の複数形は、CI/CD としては受け付けない', () => {
+  // 綴り ci/cds は表に無いので、キー ci/cd へは結び付かない。
+  assert.equal(m.lookupKey('ci/cds'), null, 'ci/cds が綴りとして受け付けられている');
+  // ただし "/" は単語の区切りなので、"CI/CDs" という文字列の中の "CI" には当たる。
+  // そこに CI という語が実際にある以上、これは誤りではない。実際の挙動を固定しておく。
+  assert.deepEqual(m.findHits('ci/cds').map(h => [h.key, h.match]), [['ci', 'ci']]);
+  // 正しい綴りの CI/CD は、これまでどおり ci/cd として当たる（対照）
+  assert.equal(firstKey('CI/CD'), 'ci/cd');
+});
+
+test('必要な複数形は受け付ける', () => {
+  for (const [form, key] of POSITIVE) {
+    assert.equal(firstKey(form), key, `${form} が ${key} にならない`);
   }
 });
 
-test('既に複数形のキーを、さらに複数形にしない', () => {
-  // actions -> actionses のような綴りは英語に存在しない。
-  // 辞書側の分類から機械的に作るので、キーが増えても列挙し直さなくてよい。
-  const over = [...ALREADY_PLURAL].map(k => k + 'es');
-  assert.equal(over.length, 12, `検査対象が想定と違う: ${over.length}件`);
-  for (const wrong of over) {
-    assert.equal(firstKey(wrong), null, `${wrong} を拾っている`);
-  }
-  // 監査が挙げた綴りが、確かにこの検査に含まれている（対照）
-  for (const w of ['actionses', 'checkses', 'contributorses', 'forkses', 'insightses',
-                   'issueses', 'packageses', 'projectses', 'releaseses', 'starses', 'tagses']) {
-    assert.ok(over.includes(w), `${w} が検査から漏れている`);
-  }
-  // 監査の一覧に無かったぶん。s で終わるキーを列挙し直して見つけた
-  assert.ok(over.includes('request changeses'), '複合語のキーが検査から漏れている');
+test('綴りは生成せず、明示した表だけを受け付ける', () => {
+  // 表に無い綴りが混ざっていないこと＝生成が復活していないことの担保
+  const allowed = new Set(m.keys);
+  for (const [key, forms] of Object.entries(EXTRA_FORMS)) for (const f of forms) allowed.add(norm(f));
+  const unexpected = [...m.surfaces.keys()].filter(s => !allowed.has(s));
+  assert.deepEqual(unexpected, [], `表に無い綴りが受け付けられている: ${unexpected.join(', ')}`);
 });
 
-test('既に複数形のキー自身は、これまでどおり当たる', () => {
-  for (const k of ALREADY_PLURAL) {
-    assert.equal(firstKey(k), k, `${k} が当たらない`);
-    assert.deepEqual(formsOf(k), [k], `${k} に別の綴りが作られている`);
+test('1つの綴りが2つのキーへ割り当たらない（衝突検査）', () => {
+  const seen = new Map();
+  const collisions = [];
+  for (const k of m.keys) seen.set(k, k);
+  for (const [key, forms] of Object.entries(EXTRA_FORMS)) {
+    for (const f of forms) {
+      const n = norm(f);
+      if (seen.has(n) && seen.get(n) !== key) collisions.push(`${n}: ${seen.get(n)} と ${key}`);
+      seen.set(n, key);
+    }
   }
+  assert.deepEqual(collisions, [], `綴りの衝突: ${collisions.join(' / ')}`);
 });
 
-test('s で終わるキーは、すべて単複のどちらかに分類されている', () => {
-  // 辞書に s で終わるキーが増えたとき、分類し忘れをここで止める。
-  // 「語末が s なら複数形」と機械で決めない（status のような単数があるため）。
-  const unclassified = m.keys.filter(k => k.endsWith('s')
-    && !ALREADY_PLURAL.has(k) && !SINGULAR_ENDING_IN_S.has(k));
-  assert.deepEqual(unclassified, [], `単複を分類していないキー: ${unclassified.join(', ')}`);
-  // 分類表に、辞書へ存在しないキーが残っていないか（消したキーの取り残し）
-  const stale = [...ALREADY_PLURAL, ...SINGULAR_ENDING_IN_S].filter(k => !(k in DICT));
-  assert.deepEqual(stale, [], `辞書に無いキーが分類表に残っている: ${stale.join(', ')}`);
-});
-
-test('正しい複数形は今までどおり当たる', () => {
-  const pairs = [['branches', 'branch'], ['repositories', 'repository'], ['commits', 'commit'],
-                 ['pull requests', 'pull request'], ['force pushes', 'force push'],
-                 ['squash merges', 'squash merge'], ['ssh keys', 'ssh key'],
-                 ['workflow runs', 'workflow run'], ['reviews', 'review'], ['tokens', 'token']];
-  for (const [plural, key] of pairs) {
-    assert.equal(firstKey(plural), key, `${plural} が ${key} にならない`);
-  }
+test('追加の綴りの定義に、辞書へ無いキーが残っていない', () => {
+  const stale = Object.keys(EXTRA_FORMS).filter(k => !(k in DICT));
+  assert.deepEqual(stale, [], `辞書に無いキーが定義に残っている: ${stale.join(', ')}`);
 });

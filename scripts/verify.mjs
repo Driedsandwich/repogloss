@@ -116,6 +116,39 @@ const content = read('src/content.js');
 check('content.js が編集可能な領域を走査対象から外している',
   /contenteditable\]:not\(\[contenteditable="false"\]\)/.test(content));
 check('content.js が入力欄も走査対象から外している', /'textarea', 'input', 'select'/.test(content));
+check('content.js が inert の中も走査対象から外している', /'\[inert\]'/.test(content));
+
+/* ---------- 除外を決める前に、テキストの中身を読まないこと ---------- */
+// 「書き換えない」と「読み取らない」は別のこと。除外対象（編集領域・フォーム・
+// コード・aria-hidden・inert）の文字列は、除外が決まる前に取り出してはいけない。
+// 順序が将来戻されると、公開しているプライバシーの説明と食い違うので、
+// ここで機械的に止める。
+{
+  const m = content.match(/function isTarget\(node\)\s*\{([\s\S]*?)\n  \}/);
+  check('content.js に isTarget がある', !!m);
+  if (m) {
+    const body = m[1];
+    const skipAt = body.indexOf('closest(SKIP)');
+    const valueAt = Math.min(
+      ...['node.nodeValue', 'node.data', 'node.textContent', 'node.wholeText']
+        .map(t => { const i = body.indexOf(t); return i === -1 ? Infinity : i; })
+    );
+    check('isTarget が SKIP 判定より前にテキストの値を読んでいない',
+      skipAt !== -1 && skipAt < valueAt,
+      `SKIP の位置=${skipAt} / 値を読む位置=${valueAt === Infinity ? 'なし' : valueAt}`);
+  }
+}
+
+/* ---------- 可視性の判定が祖先まで見ているか ---------- */
+check('content.js が checkVisibility で祖先まで可視性を見ている',
+  /checkVisibility\(/.test(content) && /opacityProperty/.test(content));
+// contentVisibilityAuto を true で渡すと、画面外の content-visibility:auto まで
+// 不可視扱いになり、長いページの下が永久に注記されなくなる（実測）。
+// 判定はコメントを除いた本体で行う（説明文で名前に触れることはあるため）
+check('content.js が contentVisibilityAuto を渡していない',
+  !/contentVisibilityAuto/.test(stripComments(content)));
+check('content.js が、付けた印の有効性を isConnected だけで判断していない',
+  /function usableGloss/.test(content) && !/prev\s*&&\s*prev\.isConnected/.test(content));
 
 /* ---------- 辞書 ---------- */
 const dict = readJson('locales/dict.json');
@@ -145,6 +178,35 @@ check(`README のバッジが manifest の version と一致する（${manifest.
 check(`README の変更履歴に ${manifest.version} の行がある`, readme.includes(`| ${manifest.version} |`));
 check(`STORE_LISTING が今回の提出版 ${manifest.version} を指している`, store.includes(manifest.version),
   'ストア掲載メモに現在のバージョンが出てこない');
+
+// 「この版 vX.Y.Z」のような現在版の言い切りが、manifest と食い違ったまま残らないようにする。
+// v1.8.3 では manifest が 1.8.3 なのに README が「この版 v1.8.2」と書いていた。
+// 「manifest の版がどこかに在る」という検査では、この取り残しを見つけられない。
+{
+  const stale = [...readme.matchAll(/この版\s*v?(\d+\.\d+\.\d+)/g)]
+    .map(mm => mm[1]).filter(v => v !== manifest.version);
+  check('README の「この版 …」が manifest の版と一致する', stale.length === 0,
+    `古い版の記載: ${stale.join(', ')}`);
+}
+
+// Limited Use への準拠を明言する文が、公開されるプライバシーポリシーに在ること。
+// 公式ポリシーが、拡張のサイトかプライバシーポリシーへ置くことを求めている。
+{
+  const privacy = read('PRIVACY.md');
+  check('PRIVACY.md に Limited Use 準拠の明言がある（日本語）',
+    /Chrome Web Store User Data Policy/.test(privacy) && /Limited Use/.test(privacy));
+  check('PRIVACY.md に Limited Use 準拠の明言がある（英語）',
+    /adhere to the Chrome Web Store User Data Policy/.test(privacy));
+  check('PRIVACY.md が公式ポリシーへのリンクを持つ',
+    privacy.includes('developer.chrome.com/docs/webstore/program-policies/limited-use'));
+  // 走査は広いので、「個人情報を読み取らない」という言い切りは事実と合わない
+  check('PRIVACY.md に、個人情報を一切読まないという言い切りが無い',
+    !/(氏名・メール・ID のいずれも読み取らず|個人的な通信内容は一切読)/.test(privacy));
+}
+
+// CI が提出用 ZIP を作ることを、README が伏せていないこと
+check('README が CI の成果物（提出用 ZIP）について書いている',
+  /artifact/.test(readme) && /提出用 ZIP/.test(readme));
 
 /* ---------- 権限の説明が文書間でそろっているか ---------- */
 // 「storage のみ」と書くと、github.com のページ本文を読むことが伝わらない。

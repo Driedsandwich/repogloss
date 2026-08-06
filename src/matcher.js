@@ -19,37 +19,71 @@
   // 複数形にならないので、綴りの変わる形も候補に並べておく。
   // 綴りの決まりに沿った複数形だけを作る。以前は語末に (?:e?s)? を足していたが、
   // それだと branchs や repositorys のような誤った綴りまで拾っていた。
-  function pluralsOf(key) {
-    if (/[^aeiou]y$/.test(key)) return [key, key.slice(0, -1) + 'ies'];  // repository -> repositories
-    if (/(s|x|z|ch|sh)$/.test(key)) return [key, key + 'es'];            // branch -> branches
-    return [key, key + 's'];                                             // commit -> commits
-  }
-
-  // 辞書のキーには、既に複数形のもの（Actions・Issues・Tags …）が混ざっている。
-  // それらへ複数形の規則をもう一度かけると actionses・checkses のような
-  // 存在しない綴りを受け付けてしまう（外部監査が実測で指摘）。
+  // 受け付ける綴り（surface form）を、綴りの規則から**生成しない**。
   //
-  // 語末が s かどうかで機械的に決めてはいけない。status・access のように
-  // s で終わる単数形があるため、s を見ただけでは単複を判別できない。
-  // だから推測せず、ここに列挙する。ここに無いキーは単数として扱う。
-  // 列挙漏れは tests/matcher.test.js が機械的に検出する
-  // （辞書に s で終わるキーが増えたのに、どちらにも分類されていなければ落ちる）。
-  const ALREADY_PLURAL = new Set([
-    'actions', 'checks', 'contributors', 'forks', 'insights', 'issues',
-    'packages', 'projects', 'releases', 'request changes', 'stars', 'tags'
-  ]);
+  // 以前は全キーへ英語の複数形規則を一律に掛けていた。そのせいで
+  // security -> securities（金融商品）、ci -> cis、git -> gits、main -> mains
+  // のような、意味の違う普通の英単語まで一致していた（外部監査が実測で指摘）。
+  // 普通の文章に出た "securities" へ GitHub Security の説明が付いてしまう。
+  //
+  // 生成をやめ、実際に必要な形だけをここに書く。判断の基準は2つ。
+  //   1. GitHub の画面か Git の文書に、その複数形が実際に出るか
+  //   2. 無関係な意味の普通の英単語と衝突しないか
+  // 2を満たさないものは、たとえ文法的に正しくても入れない
+  // （approves / blames / origins / resets / syncs / watches / pulls / fetches など）。
+  //
+  // 表示用のキー（辞書の見出し）と、ここで受け付ける綴りは別物として扱う。
+  const EXTRA_FORMS = {
+    artifact: ['artifacts'],                     // Actions の成果物一覧
+    branch: ['branches'],
+    clone: ['clones'],                           // Insights > Traffic の「Clones」
+    collaborator: ['collaborators'],
+    commit: ['commits'],
+    conflict: ['conflicts'],
+    diff: ['diffs'],
+    'draft pull request': ['draft pull requests'],
+    'draft release': ['draft releases'],
+    'force push': ['force pushes'],
+    label: ['labels'],                           // Issues の Labels
+    license: ['licenses'],
+    merge: ['merges'],
+    milestone: ['milestones'],                   // Issues の Milestones
+    'pull request': ['pull requests'],           // 画面上でいちばん目立つ複数形
+    push: ['pushes'],
+    readme: ['readmes'],
+    rebase: ['rebases'],
+    remote: ['remotes'],                         // git remote -v の説明で複数形になる
+    repository: ['repositories'],
+    revert: ['reverts'],
+    review: ['reviews'],
+    'squash merge': ['squash merges'],
+    'ssh key': ['ssh keys'],                     // Settings > SSH keys
+    token: ['tokens'],
+    topic: ['topics'],                           // リポジトリの Topics
+    webhook: ['webhooks'],                       // Settings > Webhooks
+    wiki: ['wikis'],
+    workflow: ['workflows'],
+    'workflow run': ['workflow runs']
+  };
 
-  // s で終わるが単数のキー。今の辞書には無いが、分類の枠は残しておく
-  // （空にしておくと「まだ誰も判定していない」と区別が付かないため）。
-  const SINGULAR_ENDING_IN_S = new Set([]);
-
-  // matcher が受け付ける綴り（surface forms）。表示用のキーとは別物として扱う。
-  function formsOf(key) {
-    return ALREADY_PLURAL.has(key) ? [key] : pluralsOf(key);
+  // 綴り -> 辞書のキー。辞書のキー自身が最優先で、追加の綴りでは上書きしない
+  // （fork と forks のように、単数形と複数形が別々のキーとして辞書にあるため）。
+  function buildSurfaceMap(keys) {
+    const map = new Map();
+    for (const k of keys) map.set(k, k);
+    for (const [key, forms] of Object.entries(EXTRA_FORMS)) {
+      if (!keys.includes(key)) continue;            // 辞書から消えたキーの取り残し
+      for (const f of forms) {
+        const n = norm(f);
+        if (map.has(n)) continue;                   // キー自身とぶつかるものは足さない
+        map.set(n, key);
+      }
+    }
+    return map;
   }
 
-  function buildPattern(keys) {
-    return [...new Set(keys.flatMap(formsOf))]
+  function buildPattern(surfaces) {
+    return [...surfaces]
       .sort((a, b) => b.length - a.length)
       .map(k => esc(k).replace(/ /g, '\\s+'))
       .join('|');
@@ -58,22 +92,17 @@
   function createMatcher(dict) {
     const keys = Object.keys(dict);
     if (keys.length === 0) return null;
-    const pattern = buildPattern(keys);
-    // 複数形は buildPattern が綴りの決まりに沿って作るので、ここでは足さない。
+    const surfaces = buildSurfaceMap(keys);
+    const pattern = buildPattern(surfaces.keys());
     // GitHub の画面は "Pull requests" のように複数形で出る語が多いので、
-    // 複数形そのものを候補に入れておかないと最も目立つタブで当たらない。
+    // 必要な複数形は EXTRA_FORMS に明示して候補へ入れてある。
     const scanRe = new RegExp(`\\b(?:${pattern})\\b`, 'gi');
     const testRe = new RegExp(`\\b(?:${pattern})\\b`, 'i');
 
-    // 複数形で一致した語は、そのままでは辞書に無い。単数形へ戻して引き直し、
-    // 辞書のキーを返す。"Pull requests" と "pull request" は同じキーになる。
+    // 一致した綴りから辞書のキーを引く。綴りの推測（語尾の s を落とす等）はしない。
+    // 表に無い綴りは、たとえ辞書のキーに似ていても採らない。
     function lookupKey(word) {
-      const n = norm(word);
-      if (dict[n]) return n;
-      if (n.endsWith('ies') && dict[n.slice(0, -3) + 'y']) return n.slice(0, -3) + 'y';  // repositories -> repository
-      if (n.endsWith('es') && dict[n.slice(0, -2)]) return n.slice(0, -2);   // branches -> branch
-      if (n.endsWith('s') && dict[n.slice(0, -1)]) return n.slice(0, -1);    // commits  -> commit
-      return null;
+      return surfaces.get(norm(word)) || null;
     }
 
     // text の中の一致を前から順に返す。同じキーは1つ目だけ残す（説明は一度読めば足りる）。
@@ -97,6 +126,7 @@
     return {
       keys,
       pattern,
+      surfaces,        // 綴り -> キー（テストが衝突と網羅を検査する）
       lookupKey,
       findHits,
       // 辞書に当たらないテキストで重い処理へ進まないための足切り。状態を持たない方を使う。
@@ -104,6 +134,5 @@
     };
   }
 
-  return { esc, norm, pluralsOf, formsOf, buildPattern, createMatcher,
-           ALREADY_PLURAL, SINGULAR_ENDING_IN_S };
+  return { esc, norm, buildPattern, buildSurfaceMap, createMatcher, EXTRA_FORMS };
 });

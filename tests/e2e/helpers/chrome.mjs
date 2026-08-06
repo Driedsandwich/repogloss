@@ -318,6 +318,23 @@ export const VISIBILITY_PAGE = `<!doctype html><html lang="en"><head><meta chars
         clip:rect(0 0 0 0);white-space:nowrap">Open insights now.</span>
   <p id="primer-later">Later visible insights paragraph.</p>
 
+  <!-- ⑨-b 面積は0だが座標が0でない legacy clip。決まった書き方の照合では取りこぼす -->
+  <div id="clip-nonzero" style="position:absolute;clip:rect(5px,5px,5px,5px)">Make a commit here.</div>
+  <p id="nonzero-later">Later visible commit paragraph.</p>
+  <div id="clip-fixed2" style="position:fixed;clip:rect(10px,8px,10px,3px)">Do a merge here.</div>
+  <p id="fixed2-later">Later visible merge paragraph.</p>
+
+  <!-- ⑨-c clip-path の inset は 50% 以外にも面積0になる書き方がある -->
+  <div id="clip-inset100" style="clip-path:inset(100%)">Set the origin here.</div>
+  <p id="inset100-later">Later visible origin paragraph.</p>
+
+  <!-- ⑨-d 面積が残る書き方は、見えているので除外してはいけない -->
+  <div id="clip-positive" style="position:absolute;clip:rect(0px,200px,40px,0px)">Add a remote here.</div>
+  <div id="clip-inset10" style="clip-path:inset(10%)">Check the blame view.</div>
+
+  <!-- ⑨-e display:contents 自身の clip-path。箱が無いので効かない（見えている） -->
+  <span id="dc-clip" style="display:contents;clip-path:inset(50%)">Undo with a revert.</span>
+
   <!-- ⑪ 一度描かれてから中身を飛ばす形。ここが本命の反例で、
        Range は**古い矩形を返し続ける**（実測: 隠す前も後も 1 個）。
        つまり「文字に矩形があるか」では見抜けず、先祖を名指しで見るしかない。

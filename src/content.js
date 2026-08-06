@@ -141,9 +141,45 @@
   // 位置を見ずに「全面の切り取り」とみなすと、読める文章のほうを除外してしまう
   // （実測: position:static・幅1264px の要素にある語へ印が付かなかった）。
   // clip-path は position に関係なく効くので、こちらは位置を問わない。
-  const FULL_CLIP = /^rect\(0(?:px)?(?:,)?\s+0(?:px)?(?:,)?\s+0(?:px)?(?:,)?\s+0(?:px)?\)$/;
-  const FULL_CLIP_PATH = /^inset\(\s*50%\s*\)$/;
+  // 決まった書き方だけを文字列で照合するのはやめる。`rect(0 0 0 0)` と
+  // `inset(50%)` だけを見ていたため、**面積は 0 なのに座標が 0 でない**書き方を
+  // 取りこぼしていた（実測: `rect(5px,5px,5px,5px)` と `inset(100%)` の中の語に
+  // 印が付き、後ろの読める同じ語が説明されなくなった）。値として解いて面積で決める。
   const CLIP_POSITIONS = ['absolute', 'fixed'];   // legacy clip が効く配置
+
+  // clip: rect(top, right, bottom, left)。comma でも空白でも書ける。
+  // 面積が 0 になるのは right <= left か bottom <= top のとき。
+  // auto が混ざっていたら、その辺は決められないので「全面非表示」と断定しない。
+  function rectClipsAll(v) {
+    const m = /^rect\((.+)\)$/.exec(v);
+    if (!m) return false;
+    const parts = m[1].split(/\s*,\s*|\s+/).filter(Boolean);
+    if (parts.length !== 4) return false;
+    if (parts.some(p => p === 'auto')) return false;
+    const n = parts.map(p => parseFloat(p));
+    if (n.some(x => !Number.isFinite(x))) return false;
+    const [top, right, bottom, left] = n;
+    return right <= left || bottom <= top;
+  }
+
+  // clip-path: inset(...)。1〜4値を上右下左へ展開する。
+  // 縦か横の合計が 100% 以上なら中身は残らない。
+  // 長さと百分率が混ざると箱の大きさ抜きには決められないので、断定しない
+  // （round … の角丸指定は面積に関係しないので落とす）。
+  function insetClipsAll(v) {
+    const m = /^inset\(([^)]*)\)$/.exec(v);
+    if (!m) return false;
+    const parts = m[1].split(/\s+round\s+/)[0].trim().split(/\s+/).filter(Boolean);
+    if (parts.length < 1 || parts.length > 4) return false;
+    if (!parts.every(p => /^-?\d*\.?\d+%$/.test(p))) return false;
+    const p = parts.map(x => parseFloat(x));
+    const [top, right, bottom, left] =
+      p.length === 1 ? [p[0], p[0], p[0], p[0]]
+      : p.length === 2 ? [p[0], p[1], p[0], p[1]]
+      : p.length === 3 ? [p[0], p[1], p[2], p[1]]
+      : p;
+    return (top + bottom) >= 100 || (left + right) >= 100;
+  }
 
   let clipCache = null;   // 走査1回のあいだだけ有効
 
@@ -156,13 +192,20 @@
     // 大きさの確認は安い。ここを先に見て、多くの要素で getComputedStyle を避ける。
     const tiny = n.offsetWidth <= 1 && n.offsetHeight <= 1;
     const cs = getComputedStyle(n);
+    // display:contents の要素は箱を作らないので、clip も clip-path も**効かない**。
+    // 通常の箱と同じに扱うと、見えている文章のほうを落とす（実測: 当たり判定でも
+    // 文字に指が当たるのに、印が後ろの文章へ回っていた）。箱を持つ先祖は別に見る。
+    if (cs.display === 'contents') {
+      if (clipCache) clipCache.set(n, false);
+      return false;
+    }
     const clip = CLIP_POSITIONS.includes(cs.position) && cs.clip && cs.clip !== 'auto'
       ? cs.clip.replace(/\s+/g, ' ').trim() : '';
     const path = cs.clipPath && cs.clipPath !== 'none' ? cs.clipPath.trim() : '';
     if (clip || path) {
       // 1px 四方まで潰したうえで切り取る書き方（読み上げ専用の定番）か、
-      // 大きさに関係なく全面を切り落とす書き方か。
-      v = tiny || FULL_CLIP.test(clip) || FULL_CLIP_PATH.test(path);
+      // 大きさに関係なく面積が 0 になる書き方か。
+      v = tiny || rectClipsAll(clip) || insetClipsAll(path);
     }
     if (clipCache) clipCache.set(n, v);
     return v;

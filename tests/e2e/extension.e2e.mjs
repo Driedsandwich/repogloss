@@ -945,6 +945,66 @@ test('箱を持たない文字と、切り取りの判定', async t => {
     }, `切り取りの判定が実際の見え方と合っていない: ${JSON.stringify(r)}`);
   });
 
+  await t.test('面積で判定する — 座標が0でなくても、面積が0なら隠れている（5種）', async () => {
+    // 決まった書き方だけを文字列で照合していたときは、ここを取りこぼしていた。
+    const r = await tab.evaluate(`(() => {
+      const n = id => document.getElementById(id).querySelectorAll('.iiyaku-icon').length;
+      return {
+        // 面積0（座標は0でない）→ 隠れている側 0・後ろ 1
+        rectNonZero: { there: n('clip-nonzero'),  later: n('nonzero-later') },
+        rectFixed:   { there: n('clip-fixed2'),   later: n('fixed2-later') },
+        inset100:    { there: n('clip-inset100'), later: n('inset100-later') },
+        // 面積が残る → 見えているので注記する
+        rectPositive: n('clip-positive'),
+        inset10:      n('clip-inset10'),
+        // display:contents 自身の clip-path は箱が無いので効かない
+        contentsClip: n('dc-clip')
+      };
+    })()`);
+    assert.deepEqual(r, {
+      rectNonZero: { there: 0, later: 1 },   // rect(5px,5px,5px,5px)
+      rectFixed:   { there: 0, later: 1 },   // rect(10px,8px,10px,3px)
+      inset100:    { there: 0, later: 1 },   // inset(100%)
+      rectPositive: 1,                        // rect(0,200px,40px,0) は面積が残る
+      inset10: 1,                             // inset(10%) も残る
+      contentsClip: 1                         // 箱が無いので clip-path は効かない
+    }, `面積の判定が実際の見え方と合っていない: ${JSON.stringify(r)}`);
+  });
+
+  await t.test('面積0の切り取りが本当に見えないことを、当たり判定で確かめる（対照）', async () => {
+    // 当たり判定は「文字が描かれている場所」で見る。要素の箱の左端で測ると、
+    // display:contents には箱が無く、部分的な切り取りでは余白側を突いてしまう。
+    const r = await tab.evaluate(`(() => {
+      const at = id => { const el = document.getElementById(id);
+        const g = document.createRange(); g.selectNodeContents(el);
+        let b = g.getBoundingClientRect();
+        // 文字の場所が画面に入るまでスクロールしてから測る
+        window.scrollBy(0, b.top - 200); b = g.getBoundingClientRect();
+        const hit = document.elementFromPoint(b.left + Math.min(4, b.width/2), b.top + b.height/2);
+        // 祖先が返ってきたときに「当たった」と数えてはいけない。全面を切り取ると
+        // body が返るので、el.contains(hit) だけで見る（display:contents の要素は
+        // 箱が無くても elementFromPoint に自分が返る。実測で確認した）。
+        return { self: !!hit && (hit === el || el.contains(hit)),
+                 onScreen: b.top >= 0 && b.bottom <= document.documentElement.clientHeight && b.width > 0,
+                 clip: getComputedStyle(el).clip, clipPath: getComputedStyle(el).clipPath }; };
+      return { nonzero: at('clip-nonzero'), positive: at('clip-positive'),
+               inset100: at('clip-inset100'), contentsClip: at('dc-clip') };
+    })()`);
+    for (const [k, v] of Object.entries(r)) {
+      assert.equal(v.onScreen, true, `${k} の文字を画面の中で測れていない: ${JSON.stringify(v)}`);
+    }
+    // 面積0のものには指が当たらない（＝本当に見えていない）
+    assert.equal(r.nonzero.self, false, `rect(5px,5px,5px,5px) に当たる＝反例になっていない（${r.nonzero.clip}）`);
+    assert.equal(r.inset100.self, false, `inset(100%) に当たる＝反例になっていない（${r.inset100.clipPath}）`);
+    // 面積が残るものには当たる（＝見えている）
+    assert.equal(r.positive.self, true, `面積の残る rect に当たらない（${r.positive.clip}）`);
+    // display:contents 自身の clip-path は効かない＝文字は見えている
+    assert.equal(r.contentsClip.self, true,
+      `display:contents 自身の clip-path が効いている＝この判定の前提が変わった（${r.contentsClip.clipPath}）`);
+    // inset(10%) は当たり判定に入れない。部分的な切り取りなので、文字が余白側に
+    // 掛かるかは要素の幅次第で、こちらが主張しているのは「全面ではない」ことだけ。
+  });
+
   await t.test('切り取りが実際に効いているかを、当たり判定で確かめる（対照）', async () => {
     // 「clip は絶対配置にしか効かない」を、こちらの式の言い換えではなく
     // ブラウザの振る舞いで見る。切り取られた領域は指も当たらない。

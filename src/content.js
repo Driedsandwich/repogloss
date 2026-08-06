@@ -144,37 +144,16 @@
   // tabindex="" や空白だけの指定、details の2番目の summary、
   // details の外に置かれた summary も、正しく -1 になる。
   // tabIndex の読み取りはレイアウトを起こさないので、こちらを先に見る。
+  //
+  // tabIndex が負のものは入口にしない。矢印キーで移動する部品（roving tabindex）は
+  // tabindex="-1" のまま到達できることがあるが、それが成り立つのは keydown を
+  // 受けて focus() を動かす実装がある場合だけで、role と容器と 0/-1 の並びからは
+  // 判定できない。v1.8.2 は構造だけで認めており、handler の無い部品を
+  // 到達可能と誤判定していた（外部監査が反例で実証）。
+  // 実サイト計測: GitHub 4ページで、この推定に依存していた注記は0件だった
+  // （ファイル一覧の readme も、入口側の tabIndex=0 の項目に付いている）。
   function tabbable(el) {
     return !!el && el.tabIndex >= 0 && canHoldFocus(el);
-  }
-
-  // 矢印キーで移動する複合ウィジェット（roving tabindex）。
-  // 「role があって tabindex が付いている」だけでは、到達できる証明にならない。
-  // 実際に辿り着くには、対応する容器の中にいて、その中に Tab で入れる同種の
-  // 項目が最低1つ必要。単独で置かれた treeitem には誰も到達できない。
-  const COMPOSITE_OF = {
-    treeitem: ['tree'],
-    option: ['listbox'],
-    tab: ['tablist'],
-    menuitem: ['menu', 'menubar'],
-    menuitemcheckbox: ['menu', 'menubar'],
-    menuitemradio: ['menu', 'menubar'],
-    radio: ['radiogroup']
-  };
-
-  function rovingEntry(el) {
-    const role = el.getAttribute('role');
-    const wanted = COMPOSITE_OF[role];
-    if (!wanted) return null;
-    if (el.tabIndex !== -1) return null;   // 0 以上なら上の tabbable が拾う
-    if (!canHoldFocus(el)) return null;
-    const composite = el.closest(wanted.map(r => `[role="${r}"]`).join(','));
-    if (!composite) return null;
-    // 同じ容器の中に、Tab で入れる同種の項目があるか
-    for (const peer of composite.querySelectorAll(`[role="${role}"]`)) {
-      if (peer !== el && peer.tabIndex === 0 && canHoldFocus(peer)) return el;
-    }
-    return null;
   }
 
   function resolveTrigger(host) {
@@ -185,8 +164,7 @@
       const c = host.control;
       return c && tabbable(c) ? c : null;
     }
-    if (tabbable(host)) return host;
-    return rovingEntry(host);
+    return tabbable(host) ? host : null;
   }
 
   // 印を入れようとしている場所から、扱いを決める。

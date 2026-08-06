@@ -118,11 +118,16 @@ check('content.js が編集可能な領域を走査対象から外している',
 check('content.js が入力欄も走査対象から外している', /'textarea', 'input', 'select'/.test(content));
 check('content.js が inert の中も走査対象から外している', /'\[inert\]'/.test(content));
 
-/* ---------- 除外を決める前に、テキストの中身を読まないこと ---------- */
+/* ---------- 除外を決める前に、テキストの中身を読まないこと（補助の検査） ---------- */
 // 「書き換えない」と「読み取らない」は別のこと。除外対象（編集領域・フォーム・
-// コード・aria-hidden・inert）の文字列は、除外が決まる前に取り出してはいけない。
-// 順序が将来戻されると、公開しているプライバシーの説明と食い違うので、
-// ここで機械的に止める。
+// コード・aria-hidden・inert・hidden）の文字列は、除外が決まる前に取り出してはいけない。
+//
+// ⚠️ これは**補助**にすぎない。見ているのは isTarget の中の文字位置だけなので、
+// 別名の変数・補助関数・bracket 記法・分割代入などを使えば迂回できる。
+// **本命の担保は tests/e2e の「除外する領域のテキストを、拡張が一度も読んでいない」**
+// で、同じ拡張の content script として計測用の prelude を先に読み込ませ、
+// 隔離された世界の中で実際に読まれた回数を数えている。
+// ここは、単純な後戻りを早く止めるためのものである。
 {
   const m = content.match(/function isTarget\(node\)\s*\{([\s\S]*?)\n  \}/);
   check('content.js に isTarget がある', !!m);
@@ -149,6 +154,14 @@ check('content.js が contentVisibilityAuto を渡していない',
   !/contentVisibilityAuto/.test(stripComments(content)));
 check('content.js が、付けた印の有効性を isConnected だけで判断していない',
   /function usableGloss/.test(content) && !/prev\s*&&\s*prev\.isConnected/.test(content));
+
+/* ---------- テスト専用のものが配布物へ混ざっていないこと ---------- */
+// 計測用の prelude は同じ拡張の content script として読み込ませるが、
+// それは E2E が並べた一時ディレクトリの中だけの話。配布物には入れない。
+check('計測用の prelude が配布一覧に入っていない',
+  !PACKAGE_FILES.some(f => f.includes('prelude')));
+check('manifest が読み込む JS に prelude が入っていない',
+  !(cs.js ?? []).some(f => f.includes('prelude')));
 
 /* ---------- 辞書 ---------- */
 const dict = readJson('locales/dict.json');
@@ -207,6 +220,34 @@ check(`STORE_LISTING が今回の提出版 ${manifest.version} を指してい�
 // CI が提出用 ZIP を作ることを、README が伏せていないこと
 check('README が CI の成果物（提出用 ZIP）について書いている',
   /artifact/.test(readme) && /提出用 ZIP/.test(readme));
+
+/* ---------- 監査資料が、現在の版を指しているか ---------- */
+// 版を上げたのに監査資料が前の版のままだと、監査側が別のものを読む。
+// commit SHA や CI run ID は commit 後にしか決まらないので、ここでは
+// 「版」と「準備段階の言い切り」だけを見る。
+{
+  const audit = read('AUDIT.md');
+  const v = manifest.version;
+  check(`AUDIT.md が現在の版 ${v} を指している`, audit.includes(v),
+    'AUDIT.md に現在のバージョンが出てこない');
+  // 再現手順が古い版を checkout していないか
+  const co = [...audit.matchAll(/git checkout (v\d+\.\d+\.\d+)/g)].map(m => m[1]);
+  const staleCo = co.filter(t => t !== `v${v}`);
+  check('AUDIT.md の再現手順が現在の版を checkout している', staleCo.length === 0,
+    `古い版: ${staleCo.join(', ')}`);
+  // 変更記録に、準備段階の言い切りが残っていないか
+  const changes = existsSync(join(ROOT, `docs/audit/v${v}-changes.md`))
+    ? read(`docs/audit/v${v}-changes.md`) : '';
+  check(`docs/audit/v${v}-changes.md がある`, changes.length > 0);
+  // 見るのは冒頭の「いまどういう状態か」を書く部分だけ。
+  // 後ろの本文では、過去の版の記述を直した経緯として同じ言葉を引用することがある
+  // （実際に誤検出した）。状態の宣言と、経緯の説明を区別する。
+  const head = changes.split('\n---')[0];
+  const prep = ['まだ commit していない', 'タグも成果物も無い']
+    .filter(w => head.includes(w));
+  check('変更記録の冒頭に、準備段階の言い切りが残っていない', prep.length === 0,
+    `残っている表現: ${prep.join(' / ')}`);
+}
 
 /* ---------- 権限の説明が文書間でそろっているか ---------- */
 // 「storage のみ」と書くと、github.com のページ本文を読むことが伝わらない。

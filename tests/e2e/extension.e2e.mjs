@@ -10,7 +10,8 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { launchChrome, startTestServer, stageExtension, openPage, sleep, waitFor,
+import { launchChrome, startTestServer, stageExtension, stageExtensionWithPrelude,
+         SENTINEL_PAGE, LIFECYCLE_PAGE, openPage, sleep, waitFor,
          pressKey, collectTabOrder, tabUntil } from './helpers/chrome.mjs';
 
 const PAGE = 'https://github.com/octocat/Hello-World';
@@ -442,7 +443,8 @@ test('拡張として読み込んだ状態で動く', async t => {
     const r = await tab.evaluate(`(() => {
       const opt = { opacityProperty: true, visibilityProperty: true };
       const f = id => { const el = document.getElementById(id);
-        return { visible: el.checkVisibility(opt), rects: el.getClientRects().length }; };
+        return { visible: el.checkVisibility(opt), rects: el.getClientRects().length,
+                 boxed: el.offsetWidth > 0 || el.offsetHeight > 0 }; };
       // content-visibility:hidden が隠すのは「中身」なので、host 自身ではなく
       // 語が入っている子要素で測る。host 自身は描画されたままである。
       return { op: f('op-p'), cv: f('cv-p'), clip: f('clip-box'),
@@ -452,11 +454,14 @@ test('拡張として読み込んだ状態で動く', async t => {
     assert.equal(r.op.visible, false, 'opacity:0 が見えている扱いになっている');
     assert.equal(r.cv.visible, false, 'content-visibility:hidden の中身が見えている扱いになっている');
     assert.equal(r.cvHostItself, true, 'host 自身は描画されたまま＝子で測る必要があることの確認');
-    assert.ok(r.cv.rects > 0, '中身に箱が無い＝箱の検査で落ちてしまい反例にならない');
+    // こちらが使っている箱の検査（offsetWidth / offsetHeight）では落ちない。
+    // だから checkVisibility が要る、という関係を固定しておく。
+    // なお getClientRects() は文脈によって 0 を返すことがあり、当てにできない。
+    assert.equal(r.cv.boxed, true, 'offsetWidth も 0＝箱の検査だけで落ちてしまい反例にならない');
     assert.equal(r.inertHit, true, 'inert が効いていない');
     // clip は checkVisibility では見抜けない。だから形（1px＋clip）で判定している
     assert.equal(r.clip.visible, true, 'clip が checkVisibility で落ちる＝この対照の前提が変わった');
-    assert.ok(r.clip.rects > 0, 'clip 要素に箱が無い＝箱の検査で落ちてしまい反例にならない');
+    assert.equal(r.clip.boxed, true, 'clip 要素の箱が 0＝箱の検査で落ちてしまい反例にならない');
   });
 
   await t.test('見えなくなった古い印は、後から現れた読める語を妨げない', async () => {
@@ -533,6 +538,194 @@ test('拡張として読み込んだ状態で動く', async t => {
       return keys.filter((k, i) => keys.indexOf(k) !== i);
     })()`);
     assert.deepEqual(dupes, []);
+  });
+
+  await tab.close();
+});
+
+/*
+ * 除外領域のテキストを、拡張が一度でも読んでいないか。
+ *
+ * content script は隔離された世界で動くため、ページ側から getter を差し替えても
+ * 拡張の読み取りは見えない。そこで、同じ拡張の content script として本体より先に
+ * 計測用の prelude を読み込ませ、同じ世界の中で取り出し口を計装する。
+ * 使うのは並べた一時ディレクトリの manifest だけで、配布物は変えない。
+ *
+ * 「順序が正しいか」を静的に見る検査（scripts/verify.mjs）は、別名の変数・
+ * 補助関数・bracket 記法などで迂回できる。こちらが本命の担保で、静的検査は
+ * 単純な後戻りを早く止めるための補助にすぎない。
+ */
+test('除外する領域のテキストを、拡張が一度も読んでいない（隔離世界で計測）', async t => {
+  const srv = await startTestServer(SENTINEL_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  t.after(async () => { chrome.kill(); await srv.close(); });
+
+  const loaded = await chrome.cdp.send('Extensions.loadUnpacked', { path: stageExtensionWithPrelude() });
+  assert.match(loaded.id, /^[a-p]{32}$/, `拡張IDが返らない: ${JSON.stringify(loaded)}`);
+  const tab = await openPage(chrome.cdp, PAGE);
+
+  // 計装が効いていること自体を先に確かめる（効いていなければ「0件」は無意味）
+  await waitFor('計測用の prelude が動いている', async () =>
+    await tab.evaluate(`document.documentElement.getAttribute('data-rg-prelude') === 'ready'`));
+  // 見える場所の目印は必ず読まれる＝計測が生きていることの対照
+  await waitFor('見える場所の目印が読まれる', async () =>
+    (await tab.evaluate(`document.documentElement.getAttribute('data-rg-reads') || ''`))
+      .includes('RGSENTINEL_VISIBLE'));
+  await waitFor('印が付く', async () =>
+    await tab.evaluate(`document.querySelectorAll('.iiyaku-icon').length > 0`));
+  await sleep(600);
+
+  const reads = (await tab.evaluate(`document.documentElement.getAttribute('data-rg-reads') || ''`))
+    .split(',').filter(Boolean);
+
+  const mustNotRead = ['RGSENTINEL_EDITABLE', 'RGSENTINEL_TEXTAREA', 'RGSENTINEL_INPUT',
+                       'RGSENTINEL_SELECT', 'RGSENTINEL_CODE', 'RGSENTINEL_BLOB',
+                       'RGSENTINEL_ARIAHIDDEN', 'RGSENTINEL_INERT',
+                       'RGSENTINEL_HIDDEN', 'RGSENTINEL_UNTILFOUND'];
+  const leaked = mustNotRead.filter(s => reads.includes(s));
+  assert.deepEqual(leaked, [], `除外領域なのに読まれた: ${leaked.join(', ')}`);
+  assert.ok(reads.includes('RGSENTINEL_VISIBLE'), '見える場所すら読まれていない＝計測が壊れている');
+
+  // 除外領域の中身が1文字も変わっていないこと（読まないことと、壊さないことの両方）
+  assert.deepEqual(
+    await tab.evaluate(`[document.getElementById('s-editable').textContent,
+                        document.getElementById('s-textarea').value,
+                        document.getElementById('s-input').value,
+                        document.querySelectorAll('#s-editable .iiyaku-icon').length,
+                        document.querySelectorAll('#s-code .iiyaku-icon').length]`),
+    ['RGSENTINEL_EDITABLE a repository draft', 'RGSENTINEL_TEXTAREA a commit message',
+     'RGSENTINEL_INPUT a branch name', 0, 0]);
+
+  await tab.close();
+});
+
+/*
+ * 見えない場所の「直接テキスト」と、印の付け直し。
+ * 語が重ならないよう、専用のページを使う（同じ語はページで1回しか注記しないため）。
+ */
+test('見えない直接テキストを避け、印を付け直せる', async t => {
+  const srv = await startTestServer(LIFECYCLE_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await chrome.cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(chrome.cdp, PAGE);
+  await waitFor('印が付く', async () =>
+    await tab.evaluate(`document.querySelectorAll('.iiyaku-icon').length > 0`));
+  await sleep(400);
+
+  await t.test('要素自身が文字を持つ隠し方でも、後ろの読める語へ回す（4種）', async () => {
+    // 子ではなく host 自身が文字を持つ形。host は描画されたままなので、
+    // 祖先を見る判定だけでは落ちない（実測で確認した反例）。
+    const r = await tab.evaluate(`(() => {
+      const n = s => document.querySelectorAll(s + ' .iiyaku-icon').length;
+      return { cvDirect:   { hidden: n('#cvd'),     later: n('#after-cvd') },
+               hiddenAttr: { hidden: n('#hd'),      later: n('#after-hd') },
+               untilFound: { hidden: n('#huf'),     later: n('#after-huf') },
+               bigClip:    { hidden: n('#bigclip'), later: n('#after-bigclip') } };
+    })()`);
+    assert.deepEqual(r, {
+      cvDirect:   { hidden: 0, later: 1 },
+      hiddenAttr: { hidden: 0, later: 1 },
+      untilFound: { hidden: 0, later: 1 },
+      bigClip:    { hidden: 0, later: 1 }
+    }, `見えない側に印が付いた: ${JSON.stringify(r)}`);
+  });
+
+  await t.test('反例が本当に「見えない」ことをブラウザ自身に確かめる（対照）', async () => {
+    const r = await tab.evaluate(`(() => {
+      const opt = { opacityProperty: true, visibilityProperty: true };
+      const f = id => { const el = document.getElementById(id);
+        return { visible: el.checkVisibility(opt),
+                 cv: getComputedStyle(el).contentVisibility,
+                 boxed: el.offsetWidth > 0 || el.offsetHeight > 0 }; };
+      return { cvd: f('cvd'), huf: f('huf'), bigclip: f('bigclip') };
+    })()`);
+    // ここが崩れると、上の試験は何も確かめていないことになる
+    assert.equal(r.cvd.visible, true, 'content-visibility:hidden の host 自身が false＝別の理由で落ちている');
+    assert.equal(r.cvd.cv, 'hidden', 'contentVisibility が hidden になっていない');
+    assert.equal(r.huf.cv, 'hidden', 'hidden="until-found" が content-visibility:hidden になっていない');
+    assert.equal(r.bigclip.visible, true, 'clip が checkVisibility で落ちる＝この対照の前提が変わった');
+    assert.equal(r.bigclip.boxed, true, '大きな箱のはずが箱を持っていない');
+  });
+
+  await t.test('箱を作らなくても、文字が見えていれば注記する（display:contents）', async () => {
+    const r = await tab.evaluate(`(() => {
+      const el = document.getElementById('dcd');
+      const range = document.createRange(); range.selectNodeContents(el);
+      return { icons: el.querySelectorAll('.iiyaku-icon').length,
+               offsetW: el.offsetWidth, offsetH: el.offsetHeight,
+               textRects: range.getClientRects().length,
+               cv: el.checkVisibility({ opacityProperty: true, visibilityProperty: true }) };
+    })()`);
+    // 箱は無く、ブラウザも「描画されていない」と答えるが、文字は見えている
+    assert.equal(r.offsetW, 0); assert.equal(r.offsetH, 0);
+    assert.equal(r.cv, false, 'display:contents で checkVisibility が true＝この対照の前提が変わった');
+    assert.ok(r.textRects > 0, '文字の範囲に矩形が無い＝この反例が成り立っていない');
+    assert.ok(r.icons > 0, `見えている文字なのに注記されない: ${JSON.stringify(r)}`);
+  });
+
+  await t.test('隠した印は片づけ、戻したら同じ場所へ付け直す（単独の印）', async () => {
+    const count = async () => await tab.evaluate(`(() => ({
+      old: document.querySelectorAll('#life-plain .iiyaku-icon').length,
+      fresh: document.querySelectorAll('#fresh-reset .iiyaku-icon').length,
+      total: document.querySelectorAll('.iiyaku-icon[data-iiyaku-key="reset"]').length,
+      text: document.getElementById('life-plain').textContent
+    }))()`);
+    const initial = await count();
+    assert.deepEqual([initial.old, initial.fresh, initial.total], [1, 0, 1], '前提が崩れている');
+
+    // ① 古い場所を隠し、読める場所に同じ語を出す
+    await tab.evaluate(`(() => { document.getElementById('life-plain').style.display = 'none';
+      const p = document.createElement('p'); p.id = 'fresh-reset';
+      p.textContent = 'A fresh reset appears.'; document.getElementById('sink').append(p); })(); true`);
+    await waitFor('読める側へ付け直る', async () => (await count()).fresh === 1);
+    const moved = await count();
+    assert.deepEqual([moved.old, moved.fresh, moved.total], [0, 1, 1], `移っていない: ${JSON.stringify(moved)}`);
+
+    // ② 読める場所を消し、古い場所を戻す。画面遷移も起こす
+    await tab.evaluate(`(() => { document.getElementById('fresh-reset').remove();
+      document.getElementById('life-plain').style.display = '';
+      history.pushState({}, '', '/octocat/Hello-World/other');
+      const u = document.createElement('p'); u.textContent = 'unrelated';
+      document.getElementById('sink').append(u); })(); true`);
+    await waitFor('元の場所へ戻る', async () => (await count()).old === 1);
+    const back = await count();
+    assert.deepEqual([back.old, back.fresh, back.total], [1, 0, 1], `戻っていない: ${JSON.stringify(back)}`);
+    assert.equal(back.text, 'Do not reset it lightly.', '本文が変わっている');
+
+    // ③ 同じ要素を外して戻す（Text node の同一性が変わらない経路）
+    await tab.evaluate(`(() => { const el = document.getElementById('life-plain');
+      const parent = el.parentNode; el.remove(); parent.appendChild(el); })(); true`);
+    await waitFor('外して戻しても付く', async () => (await count()).old === 1);
+    const again = await count();
+    assert.deepEqual([again.old, again.total], [1, 1], `外して戻すと消える: ${JSON.stringify(again)}`);
+    assert.equal(again.text, 'Do not reset it lightly.', '本文が変わっている');
+  });
+
+  await t.test('リンクの中の印でも同じ往復ができる', async () => {
+    const count = async () => await tab.evaluate(`(() => ({
+      old: document.querySelectorAll('#life-link .iiyaku-icon').length,
+      total: document.querySelectorAll('.iiyaku-icon[data-iiyaku-key="ssh key"]').length,
+      text: document.getElementById('life-link').textContent
+    }))()`);
+    const before = await count();
+    assert.deepEqual([before.old, before.total], [1, 1], '前提が崩れている');
+    await tab.evaluate(`(() => { document.getElementById('life-link').style.display = 'none';
+      const p = document.createElement('p'); p.id = 'fresh-ssh';
+      p.textContent = 'Add another ssh key.'; document.getElementById('sink').append(p); })(); true`);
+    await waitFor('読める側へ付け直る', async () =>
+      await tab.evaluate(`document.querySelectorAll('#fresh-ssh .iiyaku-icon').length === 1`));
+    // 付け直しが起きるのは「走査が走ったとき」（画面遷移か、ノードの追加）。
+    // 属性を変えただけでは走査は起きない——これは既知の制約として残している。
+    await tab.evaluate(`(() => { document.getElementById('fresh-ssh').remove();
+      document.getElementById('life-link').style.display = '';
+      history.pushState({}, '', '/octocat/Hello-World/again');
+      const u = document.createElement('p'); u.textContent = 'unrelated 2';
+      document.getElementById('sink').append(u); })(); true`);
+    await waitFor('リンクへ戻る', async () => (await count()).old === 1);
+    const after = await count();
+    assert.deepEqual([after.old, after.total], [1, 1], `リンクへ戻らない: ${JSON.stringify(after)}`);
+    assert.equal(after.text, 'Add an ssh key', 'リンクの文字が変わっている');
   });
 
   await tab.close();

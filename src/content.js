@@ -50,6 +50,9 @@
     // 裏側など）。ここに注記すると、その語の「ページで最初の1回」を使い切ってしまい、
     // 後ろにある読める同じ語へ説明が付かなくなる。印自体も Tab で到達できない。
     '[inert]',
+    // hidden 属性が付いた領域。hidden="until-found" は要素自体が描画されたままなので、
+    // 可視性の判定だけでは落ちない（実測）。文字列を読む前にここで落とす。
+    '[hidden]',
     '.blob-code', '.js-file-line',
     '.react-code-lines', '.react-code-line-contents', '.react-blob-print-hide',
     '.cm-editor', '.CodeMirror', '.highlight', '.snippet-clipboard-content',
@@ -107,14 +110,65 @@
   // "Repository files navigation" に印が付いており、目に見える repository より先に
   // 「ページで最初の1回」を使い切っていた。クラス名は版ごとに変わる自動生成なので、
   // 名前ではなく形（1px 以下 ＋ clip）で判定する。
-  // 大きさの確認は安いので先に置き、getComputedStyle はそこを通ったものだけで呼ぶ。
-  function isClipHidden(el) {
-    for (let n = el; n && n !== document.body; n = n.parentElement) {
-      if (n.offsetWidth > 1 || n.offsetHeight > 1) continue;
-      const cs = getComputedStyle(n);
-      if ((cs.clip && cs.clip !== 'auto') || (cs.clipPath && cs.clipPath !== 'none')) return true;
+  //
+  // 大きな箱へ全面の切り取りを掛ける書き方もある（実測で、この形の中の語に
+  // 印が付いていた）。1px という大きさだけを条件にすると取りこぼすので、
+  // 「全面を切り落とす指定」もあわせて見る。
+  const FULL_CLIP = /^rect\(0(?:px)?(?:,)?\s+0(?:px)?(?:,)?\s+0(?:px)?(?:,)?\s+0(?:px)?\)$/;
+  const FULL_CLIP_PATH = /^inset\(\s*50%\s*\)$/;
+
+  let clipCache = null;   // 走査1回のあいだだけ有効
+
+  function clipsAwayContent(n) {
+    if (clipCache) {
+      const hit = clipCache.get(n);
+      if (hit !== undefined) return hit;
     }
-    return false;
+    let v = false;
+    // 大きさの確認は安い。ここを先に見て、多くの要素で getComputedStyle を避ける。
+    const tiny = n.offsetWidth <= 1 && n.offsetHeight <= 1;
+    const cs = getComputedStyle(n);
+    const clip = cs.clip && cs.clip !== 'auto' ? cs.clip.replace(/\s+/g, ' ').trim() : '';
+    const path = cs.clipPath && cs.clipPath !== 'none' ? cs.clipPath.trim() : '';
+    if (clip || path) {
+      // 1px 四方まで潰したうえで切り取る書き方（読み上げ専用の定番）か、
+      // 大きさに関係なく全面を切り落とす書き方か。
+      v = tiny || FULL_CLIP.test(clip) || FULL_CLIP_PATH.test(path);
+    }
+    if (clipCache) clipCache.set(n, v);
+    return v;
+  }
+
+  // 祖先をたどった結果そのものを覚える。要素ごとの判定だけを覚えても、
+  // 候補が変わるたびに同じ祖先の連なりを何度も上りなおすことになる。
+  // 連なりの答えを覚えると、同じ枝の2件目からは1回で済む。
+  let clipChainCache = null;
+
+  function isClipHidden(el) {
+    if (!el || el === document.body) return false;
+    if (clipChainCache) {
+      const hit = clipChainCache.get(el);
+      if (hit !== undefined) return hit;
+    }
+    const v = clipsAwayContent(el) || isClipHidden(el.parentElement);
+    if (clipChainCache) clipChainCache.set(el, v);
+    return v;
+  }
+
+  // display:contents は箱を作らない。可視性を判断できる最も近い先祖まで上がる。
+  function boxedAncestor(el) {
+    let n = el.parentElement;
+    while (n && getComputedStyle(n).display === 'contents') n = n.parentElement;
+    return n;
+  }
+
+  // 文字そのものが描かれているか。display:contents の要素は箱を持たないので
+  // offsetWidth / offsetHeight が 0 になるが、中の文字は普通に見えている。
+  // 要素の箱ではなく、文字の範囲で確かめる。
+  function hasRenderedText(el) {
+    const r = document.createRange();
+    r.selectNodeContents(el);
+    return r.getClientRects().length > 0;
   }
 
   function isVisibleOccurrence(el) {
@@ -124,16 +178,30 @@
       if (hit !== undefined) return hit;
     }
     let ok;
+    let cs = null;   // 必要になったときだけ1回だけ取る（レイアウトを起こすので高い）
     if (HAS_CHECK_VISIBILITY) {
       ok = el.checkVisibility(CHECK_VISIBILITY_OPTS);
+      // display:contents の要素は箱を作らないので、Chrome は「描画されていない」と
+      // 答える（実測で false）。しかし中の文字は普通に見えている（文字の範囲は
+      // 矩形を持つ）。ここで落とすと、見えている語を取りこぼす。
+      // 箱を持つ最も近い先祖の可視性で判断し、文字が実際に描かれていることも確かめる。
+      if (!ok && (cs = getComputedStyle(el)).display === 'contents') {
+        const host = boxedAncestor(el);
+        ok = !!host && host.checkVisibility(CHECK_VISIBILITY_OPTS) && hasRenderedText(el);
+      }
     } else {
       // 使えない環境では、せめて直接の親だけでも見る（v1.8.3 までの判定）
-      const cs = getComputedStyle(el);
+      cs = getComputedStyle(el);
       ok = !(cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0');
     }
-    // 箱をまったく持たないものも読めない。content-visibility:auto の画面外は
-    // 箱を持つので、ここでは落ちない。
-    if (ok && el.offsetWidth === 0 && el.offsetHeight === 0) ok = false;
+    // その要素自身が content-visibility:hidden のとき、**中身**は隠れているのに
+    // 要素自体は描画されているので checkVisibility は true を返す（実測）。
+    // 直接テキストを持つ場合はここで落とさないと、見えない語に印が付く。
+    // content-visibility:auto は落とさない（画面外というだけで永久に除外しないため）。
+    if (ok && (cs || (cs = getComputedStyle(el))).contentVisibility === 'hidden') ok = false;
+    // 箱をまったく持たないもの。ただし display:contents は箱を作らないだけで
+    // 文字は見えているので、文字の範囲で描かれているかを確かめる。
+    if (ok && el.offsetWidth === 0 && el.offsetHeight === 0) ok = hasRenderedText(el);
     if (ok && isClipHidden(el)) ok = false;
     if (visibleCache) visibleCache.set(el, ok);
     return ok;
@@ -532,15 +600,35 @@
     return tabbable(icon) ? icon : null;
   }
 
-  // 使えなくなった印を片づける。本文の文字は触らない（印は <sup> 1つで、
-  // 中に文字を持たないため、取り除いても文章は壊れない）。
+  // 使えなくなった印を片づける。**元の語を、また注記できる状態へ戻す**ところまでやる。
+  //
+  // 印を入れるとき splitText でテキストを2つに割り、両方を handled へ入れている。
+  // 印だけ消すと、割れたテキストは handled に残ったままなので、その語は
+  // そのページを開いている間ずっと説明されなくなる（隠した場所をあとで戻しても、
+  // 画面遷移で全体を走査し直しても復活しない。実測で再現）。
+  //
+  // だから、自分が割った2つを1つに戻し、handled から外して走査対象へ返す。
+  // 親全体へ normalize() は掛けない——ページ側が持っている Text node の同一性や
+  // 選択範囲を壊しうるので、触るのは自分が割った範囲だけにする。
   function retireGloss(key) {
     const icon = glossed.get(key);
     if (!icon) return;
     if (icon.isConnected) {
       // その印について説明を出している最中なら、先に閉じる
       if (tip && tipIcons.includes(icon)) hideTip();
+      const prev = icon.previousSibling;
+      const next = icon.nextSibling;
       icon.remove();
+      const isText = n => n && n.nodeType === Node.TEXT_NODE;
+      if (isText(prev) && isText(next)) {
+        prev.appendData(next.nodeValue);   // 文字列は足し合わせるだけ。増減しない
+        next.remove();
+        handled.delete(prev);
+      } else {
+        // 片側しかテキストが無い形（行頭・行末など）でも、走査対象へは戻す
+        if (isText(prev)) handled.delete(prev);
+        if (isText(next)) handled.delete(next);
+      }
     }
     glossed.delete(key);
   }
@@ -588,11 +676,12 @@
   // 古い測定値で判定してしまう。
   function withRenderCache(fn) {
     const owner = renderCache === null;
-    if (owner) { renderCache = new WeakMap(); visibleCache = new WeakMap(); }
+    if (owner) { renderCache = new WeakMap(); visibleCache = new WeakMap();
+                 clipCache = new WeakMap(); clipChainCache = new WeakMap(); }
     try {
       return fn();
     } finally {
-      if (owner) { renderCache = null; visibleCache = null; }
+      if (owner) { renderCache = null; visibleCache = null; clipCache = null; clipChainCache = null; }
     }
   }
 
@@ -633,9 +722,10 @@
       //
       // ここで glossed を空にしてはいけない。GitHub はヘッダーやサイドバーを
       // 画面遷移をまたいで保持するので、そこに付いた印が残ったまま数え直すと、
-      // 新しい本文に同じ語がもう一度付いて重複する。判定は「いま画面に印が
-      // 生きているか」（isConnected）だけで足りる。消えた語は自然に付け直され、
-      // 残っている語は二重に付かない。
+      // 新しい本文に同じ語がもう一度付いて重複する。判定は「いま画面に、
+      // 説明として使える印があるか」（usableGloss）で行う。DOM に残っている
+      // だけでは足りない——隠れた印を「説明済み」と見なすと、後から現れた
+      // 読める同じ語に説明が付かなくなる。使えなくなった印は片づけて付け直す。
       scan(document.body);
     }
     for (const mu of muts) {

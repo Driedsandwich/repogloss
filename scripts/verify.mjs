@@ -116,6 +116,28 @@ const content = read('src/content.js');
 check('content.js が編集可能な領域を走査対象から外している',
   /contenteditable\]:not\(\[contenteditable="false"\]\)/.test(content));
 check('content.js が入力欄も走査対象から外している', /'textarea', 'input', 'select'/.test(content));
+check('content.js が inert の中も走査対象から外している', /'\[inert\]'/.test(content));
+
+/* ---------- 除外を決める前に、テキストの中身を読まないこと ---------- */
+// 「書き換えない」と「読み取らない」は別のこと。除外対象（編集領域・フォーム・
+// コード・aria-hidden・inert）の文字列は、除外が決まる前に取り出してはいけない。
+// 順序が将来戻されると、公開しているプライバシーの説明と食い違うので、
+// ここで機械的に止める。
+{
+  const m = content.match(/function isTarget\(node\)\s*\{([\s\S]*?)\n  \}/);
+  check('content.js に isTarget がある', !!m);
+  if (m) {
+    const body = m[1];
+    const skipAt = body.indexOf('closest(SKIP)');
+    const valueAt = Math.min(
+      ...['node.nodeValue', 'node.data', 'node.textContent', 'node.wholeText']
+        .map(t => { const i = body.indexOf(t); return i === -1 ? Infinity : i; })
+    );
+    check('isTarget が SKIP 判定より前にテキストの値を読んでいない',
+      skipAt !== -1 && skipAt < valueAt,
+      `SKIP の位置=${skipAt} / 値を読む位置=${valueAt === Infinity ? 'なし' : valueAt}`);
+  }
+}
 
 /* ---------- 辞書 ---------- */
 const dict = readJson('locales/dict.json');

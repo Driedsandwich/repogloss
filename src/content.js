@@ -46,6 +46,10 @@
   const SKIP = [
     'pre', 'code', 'textarea', 'input', 'select', 'script', 'style', 'svg',
     EDITABLE,
+    // inert の中は、見えていても操作も読み上げもできない（開いていないダイアログの
+    // 裏側など）。ここに注記すると、その語の「ページで最初の1回」を使い切ってしまい、
+    // 後ろにある読める同じ語へ説明が付かなくなる。印自体も Tab で到達できない。
+    '[inert]',
     '.blob-code', '.js-file-line',
     '.react-code-lines', '.react-code-line-contents', '.react-blob-print-hide',
     '.cm-editor', '.CodeMirror', '.highlight', '.snippet-clipboard-content',
@@ -77,14 +81,20 @@
   const glossed = new Map();
   let triggerSeq = 0;
 
+  // 走査してよい場所かを、**テキストの中身に触れる前に**決める。
+  // 編集中の内容・フォーム・コード・aria-hidden・inert は、書き換えないだけでなく
+  // 値を読み取りもしない。「変えない」と「読まない」は別のことなので、
+  // 判定の順序そのものを約束にする（順序が戻っていないかは verify.mjs が検査する）。
   function isTarget(node) {
-    const v = node.nodeValue;
-    if (!v || !v.trim()) return false;
     if (handled.has(node)) return false;
     const el = node.parentElement;
     if (!el) return false;
     if (el.closest(SKIP)) return false;
-    // 辞書に当たらないノードで getComputedStyle を呼ばないよう、正規表現を先に通す。
+
+    // ---- ここから下でだけ、テキストの文字列に触れる ----
+    const v = node.nodeValue;
+    if (!v || !v.trim()) return false;
+    // 辞書に当たらないノードで可視性の計算をしないよう、正規表現を先に通す。
     // 逆順にすると全テキストノードでレイアウト計算が走り、ページが重くなる。
     if (!matcher.test(v)) return false;
     const cs = getComputedStyle(el);
@@ -455,7 +465,7 @@
 
     // 同じ語はページで最初の1回だけ。説明は一度読めば足りるうえ、
     // git の解説ページのような文書では印が数百個になり本文が読めなくなる。
-    // ただし前に付けた印が DOM から消えていたら、付け直す。
+    // ただし前に付けた印が「もう説明として使えない」なら、付け直す。
     const hits = matcher.findHits(node.nodeValue, key => {
       const prev = glossed.get(key);
       return !!(prev && prev.isConnected);

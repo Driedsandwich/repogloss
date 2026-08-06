@@ -12,10 +12,11 @@ RepoGloss は、GitHub の画面に出てくる英語のうち Git / GitHub 固�
 
 | 項目 | 値 |
 |---|---|
-| **監査対象** | **v1.8.6 候補（作業ツリー）。まだ commit も tag もしていない** |
+| **監査対象タグ** | **`v1.8.6`** |
+| **対象コミット** | **`3848b89a9cdc7df62dc2eaff8c4ae4b6e6e18086`**（PR #16 の merge commit） |
 | 直前の版 | `v1.8.5` = コミット `e96c113ee73b998b83a635bd99edd1c536a8b420`（**提出しない**） |
-| 基点コミット | `9893f3606380d25edaf2372d986420f18a834c15`（`main`。ここからの差分が今回の変更） |
-| 現在の既定ブランチ | `main` |
+| 現在の既定ブランチ | `main`（タグ `v1.8.6` と同じコミット） |
+| main とタグの差分 | **配布する13ファイルは差分ゼロ。** 違うのは `STORE_LISTING.md`（提出物の記録）と、このファイル（監査用の資料）だけ |
 | Manifest | v1.8.6 / Manifest V3 |
 | **最低の Chrome** | **105**（`minimum_chrome_version`。v1.8.6 で追加） |
 | Chrome API 権限 | `storage` のみ |
@@ -36,23 +37,39 @@ git diff --name-only v1.8.5            # 作業ツリーと、直前の版との
 
 **まだ commit していないので、タグも提出候補の ZIP もありません。** 監査は作業ツリーの内容に対して行ってください。
 
-### 1-1. 提出物（まだ作っていない）
-
-**v1.8.6 の提出候補 ZIP は、この時点では存在しません。** commit・push・tag を行っていないため、CI が動いておらず、CI が作る `repogloss-store-zip` もありません。
+### 1-1. 提出物（まだ提出していない）
 
 | 項目 | 値 |
 |---|---|
-| ZIP | **未作成** |
-| SHA-256 | **未確定**（CI の `release-zip` が出した artifact を採用する） |
-| 生成条件 | **`main` への push で、`verify` `e2e` `e2e-windows` `hash-compare` がすべて成功したときだけ**作られる。PR では作られない（v1.8.3 と v1.8.4 の対応時に、必須ジョブをわざと落として skipped になること・PR では artifact が出ないことを実測済み） |
+| ZIP | `repogloss-1.8.6.zip`・**86,123 バイト**・**13ファイル** |
+| **SHA-256** | **`6603ca7a2f7653f3786b197b4058bfc45c354a8c5692dcdd5e3cf2455018ba35`** |
+| 中身の合算ハッシュ | `18464c772767c5d04c1bb484ffe8ae1d774de1ca5d74bd1ec131b5a086252709` |
+| 出どころ | **CI が生成した artifact `repogloss-store-zip`**（run [`31110318795`](https://github.com/Driedsandwich/repogloss/actions/runs/31110318795) の `release-zip` ジョブ）。手元でビルドしたものは使っていない |
+| 生成条件 | **`main` への push で、`verify` `e2e` `e2e-windows` `hash-compare` がすべて成功したときだけ**作られる。PR では作られない（§4-2 で実測） |
 
-参考: 直前の v1.8.5 の提出候補は `c8bdbe3d5c140b68525d3d9a851647edec7384a0449aa6d6903c5400e15d9d29`（80,004 バイト・13ファイル）でしたが、**第7回監査の指摘により提出しません**。タグ `v1.8.5` とその ZIP は保存したまま、動かしていません。
-
-**ZIP は誰でも再現できます。** 日時を 1980-01-01 に固定し、並び順を配布一覧の順に固定してあるため、同じ内容からは1バイト違わない同じものができます（v1.8.5 では、手元の macOS / Node 22.22.3 と CI の Linux / Node 22.23.1 で SHA-256 が一致することを実測。zlib はどちらも 1.3.1）。
+**入手方法**: 上記 run の Artifacts から取得できる（保存期間30日）。
 
 ```sh
-npm run package:zip -- --allow-uncommitted   # commit 前に試す場合。名前に UNCOMMITTED が入る
-npm run package:verify-zip                   # 中身と身元の記録を検査する
+gh run download 31110318795 -R Driedsandwich/repogloss -n repogloss-store-zip
+```
+
+**照合済み**（2026-08-06 実測）:
+
+- ダウンロードして計算した SHA-256 が、CI のログの値と一致する
+- 展開した13ファイルが、**タグ `v1.8.6` の中身と1バイトも違わない**（13/13 一致）
+- 対照として `v1.8.5` と比べると、**5ファイルで相違が出る**（`manifest.json` / `src/content.js` / `README.md` / `DESIGN.md` / `PRIVACY.md`）。差が出ない比較ではないことの確認
+- ダウンロードした成果物を**別の機械で** `npm run package:verify-zip -- --release` に掛けて合格する。対照として身元の記録の `workflowRunId` を1か所書き換えると落ちる
+
+**別環境でも同じものができた**: 手元（macOS・Node 22.22.3・zlib 1.3.1）と CI（Linux・Node 22.23.1・zlib 1.3.1-e00f703）で、**ZIP の SHA-256 が完全に一致**した。zlib の patch 表記が違っても同じになることは、今回はじめて実測できた。
+
+参考: 直前の v1.8.5 の提出候補は `c8bdbe3d…` だったが、**第7回監査の指摘により提出しない**。タグ `v1.8.5` とその ZIP は保存したまま動かしていない（退避先で SHA が変わっていないことも確認済み）。
+
+**この ZIP は誰でも再現できます。** 日時を 1980-01-01 に固定し、並び順を配布一覧の順に固定してあるため、同じコミットからは1バイト違わない同じものができます。
+
+```sh
+git checkout v1.8.6
+npm run package:zip          # → ZIP_SHA256 6603ca7a... が出る
+npm run package:verify-zip   # → 中身が13ファイルと一致することを検査
 ```
 
 ---
@@ -161,7 +178,23 @@ v1.8.2 と v1.8.3 で、**注記される語の集合は3ページとも完全�
 
 単体テストの内訳: 用語判定 `tests/matcher.test.js`／配布物 `tests/package.test.js`／**身元の記録 `tests/provenance.test.js`（新設・28件）**。
 
-### 4-2. CI（PR の run [`31109709399`](https://github.com/Driedsandwich/repogloss/actions/runs/31109709399)・**必須7ジョブすべて success**）
+### 4-2. CI
+
+#### 4-2-0. `main` の run [`31110318795`](https://github.com/Driedsandwich/repogloss/actions/runs/31110318795)（タグ `v1.8.6` と同じ内容・**8ジョブすべて success**）
+
+提出候補を作るのはこの run です。**`release-zip` が実際に成果物を作る側の経路**を、ここではじめて確かめました（PR では `skipped` までしか見られない）。
+
+| 見たこと | 結果 |
+|---|---|
+| `release-zip` が動く | **success**（必須4ジョブがすべて成功した `main` への push） |
+| 成果物が出る | `repogloss-store-zip`（86,507 バイト。中身は ZIP と身元 JSON の2つ） |
+| その中の ZIP | `repogloss-1.8.6.zip`・86,123 バイト・13ファイル・`6603ca7a…` |
+| CI 内での `--release` 検査 | **合格**（v1.8.6 で入れた、CI 由来であることまで見るモード） |
+| 手元での再検査 | ダウンロードして `--release` に掛け、**別の機械でも合格**。身元の記録を1か所書き換えると落ちることも確認 |
+
+**対照**: 同じ内容の PR（#16）の run では `release-zip` は `skipped` で、artifact は `package-hash-*` の3件だけ、`repogloss-store-zip` は出ていません。**同じコードで、`main` への push のときだけ出る**ことを両側から見たことになります。
+
+#### 4-2-1. PR #16 の run [`31109709399`](https://github.com/Driedsandwich/repogloss/actions/runs/31109709399)・**必須7ジョブすべて success**）
 
 | job | 結果 |
 |---|---|

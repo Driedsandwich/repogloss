@@ -291,11 +291,21 @@ npm run package:verify-zip -- --release   # 提出候補として、身元の記
 
 `--release` を付けると、身元の記録が「CI の、この repository の、`main` への push から出たもの」であることまで見る（v1.8.6 で追加）。手元で作ったものはここで落ちる。CI の `release-zip` はこのモードで検査している。
 
+#### 8-2-2. v1.8.6 の提出物（2026-08-06 実測）
+
 | 項目 | 値 |
 |---|---|
-| ZIP | **未作成**（`repogloss-1.8.6.zip` になる予定） |
-| SHA-256 | **未確定** |
+| ZIP | `repogloss-1.8.6.zip`（84.10 KiB＝86,123 バイト・13ファイル） |
+| **SHA-256** | **`6603ca7a2f7653f3786b197b4058bfc45c354a8c5692dcdd5e3cf2455018ba35`** |
+| 中身の合算ハッシュ | `18464c772767c5d04c1bb484ffe8ae1d774de1ca5d74bd1ec131b5a086252709` |
+| 出どころ | CI の run [`31110318795`](https://github.com/Driedsandwich/repogloss/actions/runs/31110318795) の `release-zip` ジョブ（artifact `repogloss-store-zip`） |
+| 対象コミット | `3848b89a9cdc7df62dc2eaff8c4ae4b6e6e18086`（タグ `v1.8.6`） |
+| 置き場所 | 掲載用素材フォルダの直下（`repogloss-1.8.5.zip` は `_superseded/` へ退避済み） |
 | 変更点 | `manifest.json`（version・`minimum_chrome_version`）／`src/content.js`／`README.md`／`DESIGN.md`／`PRIVACY.md` の5ファイル。辞書・`src/matcher.js`・`styles.css`・アイコン・`LICENSE` は無変更 |
+
+**照合済み**: ダウンロードした成果物の SHA-256 が CI のログと一致し、展開した13ファイルがタグ `v1.8.6` と1バイトも違わない（対照の `v1.8.5` とは5ファイルで相違）。別の機械で `--release` 検査にも合格する。手元（macOS）と CI（Linux）で ZIP の SHA-256 が完全に一致した。
+
+**⚠️ 提出は外部監査に合格してから。** この時点では入稿していない。
 
 **掲載文で差し替えが要る箇所（v1.8.6）**: 動作環境に「Chrome 105 以降」を書く。データ申告は §3-4 のとおり、確定1件・要確認4件のまま提出時に人が判断する。
 

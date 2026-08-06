@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { createMatcher, norm } = require('../src/matcher.js');
+const { createMatcher, norm, formsOf, ALREADY_PLURAL, SINGULAR_ENDING_IN_S } = require('../src/matcher.js');
 const DICT = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'locales', 'dict.json'), 'utf8'));
 const m = createMatcher(DICT);
 
@@ -119,6 +119,41 @@ test('綴りの誤った複数形は拾わない', () => {
   for (const wrong of ['branchs', 'repositorys', 'pushs', 'mergs']) {
     assert.equal(firstKey(wrong), null, `${wrong} を拾っている`);
   }
+});
+
+test('既に複数形のキーを、さらに複数形にしない', () => {
+  // actions -> actionses のような綴りは英語に存在しない。
+  // 辞書側の分類から機械的に作るので、キーが増えても列挙し直さなくてよい。
+  const over = [...ALREADY_PLURAL].map(k => k + 'es');
+  assert.equal(over.length, 12, `検査対象が想定と違う: ${over.length}件`);
+  for (const wrong of over) {
+    assert.equal(firstKey(wrong), null, `${wrong} を拾っている`);
+  }
+  // 監査が挙げた綴りが、確かにこの検査に含まれている（対照）
+  for (const w of ['actionses', 'checkses', 'contributorses', 'forkses', 'insightses',
+                   'issueses', 'packageses', 'projectses', 'releaseses', 'starses', 'tagses']) {
+    assert.ok(over.includes(w), `${w} が検査から漏れている`);
+  }
+  // 監査の一覧に無かったぶん。s で終わるキーを列挙し直して見つけた
+  assert.ok(over.includes('request changeses'), '複合語のキーが検査から漏れている');
+});
+
+test('既に複数形のキー自身は、これまでどおり当たる', () => {
+  for (const k of ALREADY_PLURAL) {
+    assert.equal(firstKey(k), k, `${k} が当たらない`);
+    assert.deepEqual(formsOf(k), [k], `${k} に別の綴りが作られている`);
+  }
+});
+
+test('s で終わるキーは、すべて単複のどちらかに分類されている', () => {
+  // 辞書に s で終わるキーが増えたとき、分類し忘れをここで止める。
+  // 「語末が s なら複数形」と機械で決めない（status のような単数があるため）。
+  const unclassified = m.keys.filter(k => k.endsWith('s')
+    && !ALREADY_PLURAL.has(k) && !SINGULAR_ENDING_IN_S.has(k));
+  assert.deepEqual(unclassified, [], `単複を分類していないキー: ${unclassified.join(', ')}`);
+  // 分類表に、辞書へ存在しないキーが残っていないか（消したキーの取り残し）
+  const stale = [...ALREADY_PLURAL, ...SINGULAR_ENDING_IN_S].filter(k => !(k in DICT));
+  assert.deepEqual(stale, [], `辞書に無いキーが分類表に残っている: ${stale.join(', ')}`);
 });
 
 test('正しい複数形は今までどおり当たる', () => {

@@ -25,9 +25,31 @@
     return [key, key + 's'];                                             // commit -> commits
   }
 
+  // 辞書のキーには、既に複数形のもの（Actions・Issues・Tags …）が混ざっている。
+  // それらへ複数形の規則をもう一度かけると actionses・checkses のような
+  // 存在しない綴りを受け付けてしまう（外部監査が実測で指摘）。
+  //
+  // 語末が s かどうかで機械的に決めてはいけない。status・access のように
+  // s で終わる単数形があるため、s を見ただけでは単複を判別できない。
+  // だから推測せず、ここに列挙する。ここに無いキーは単数として扱う。
+  // 列挙漏れは tests/matcher.test.js が機械的に検出する
+  // （辞書に s で終わるキーが増えたのに、どちらにも分類されていなければ落ちる）。
+  const ALREADY_PLURAL = new Set([
+    'actions', 'checks', 'contributors', 'forks', 'insights', 'issues',
+    'packages', 'projects', 'releases', 'request changes', 'stars', 'tags'
+  ]);
+
+  // s で終わるが単数のキー。今の辞書には無いが、分類の枠は残しておく
+  // （空にしておくと「まだ誰も判定していない」と区別が付かないため）。
+  const SINGULAR_ENDING_IN_S = new Set([]);
+
+  // matcher が受け付ける綴り（surface forms）。表示用のキーとは別物として扱う。
+  function formsOf(key) {
+    return ALREADY_PLURAL.has(key) ? [key] : pluralsOf(key);
+  }
+
   function buildPattern(keys) {
-    return keys
-      .flatMap(pluralsOf)
+    return [...new Set(keys.flatMap(formsOf))]
       .sort((a, b) => b.length - a.length)
       .map(k => esc(k).replace(/ /g, '\\s+'))
       .join('|');
@@ -82,5 +104,6 @@
     };
   }
 
-  return { esc, norm, pluralsOf, buildPattern, createMatcher };
+  return { esc, norm, pluralsOf, formsOf, buildPattern, createMatcher,
+           ALREADY_PLURAL, SINGULAR_ENDING_IN_S };
 });

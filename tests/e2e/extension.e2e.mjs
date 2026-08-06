@@ -11,7 +11,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { launchChrome, startTestServer, stageExtension, openPage, sleep, waitFor,
-         pressKey, collectTabOrder } from './helpers/chrome.mjs';
+         pressKey, collectTabOrder, tabUntil } from './helpers/chrome.mjs';
 
 const PAGE = 'https://github.com/octocat/Hello-World';
 
@@ -80,24 +80,27 @@ test('拡張として読み込んだ状態で動く', async t => {
     assert.equal(await tab.evaluate(`document.getElementById('inp-wrap').getAttribute('data-iiyaku-trigger')`), id);
   });
 
-  await t.test('到達できない場所には印を付けない（境界12件）', async () => {
+  await t.test('到達できない場所には印を付けない（境界18件）', async () => {
     // label（対応する入力欄なし）／role だけ／disabled／隠れた入力欄／display:none／
     // visibility:hidden／空の tabindex／空白だけの tabindex／details の外の summary／
-    // details の2番目の summary／無効な fieldset の中／入口の無い矢印ウィジェット
+    // details の2番目の summary／無効な fieldset の中／入口の無い矢印ウィジェット／
+    // 矢印で動く部品の -1 の項目／実装の無い部品の -1 の項目／
+    // display:contents のリンクとボタン／visibility:hidden の先祖（子は可視）
     const ids = ['lab-none', 'role-only', 'btn-disabled', 'lab-hidden', 'lab-dnone', 'lab-vhidden',
                  'ti-empty', 'ti-space', 'orphan-summary', 'sum-second', 'btn-in-fs',
-                 'broken-item', 'orphan-item'];
+                 'broken-item', 'orphan-item',
+                 'tree-target', 'nh-target', 'dc-link', 'dc-btn', 'vh-host'];
     const counts = await tab.evaluate(`${JSON.stringify(ids)}
       .map(id => document.getElementById(id).querySelectorAll('.iiyaku-icon').length)`);
     assert.deepEqual(counts, ids.map(() => 0), `印が付いた場所: ${ids.filter((_, i) => counts[i] > 0)}`);
   });
 
-  await t.test('到達できる入口には印を付ける（境界5件）', async () => {
+  await t.test('到達できる入口には印を付ける（境界6件）', async () => {
     // label→入力欄／label が包む入力欄／無効な fieldset でも最初の legend の中は例外／
-    // details の最初の summary／矢印ウィジェットの Tab 入口
+    // details の最初の summary／矢印ウィジェットの Tab 入口（実装の有無によらず 0 は入口）
     const map = await tab.evaluate(`(() => {
       const pairs = { 'lab-for': 'inp-for', 'lab-wrap': 'inp-wrap', 'btn-legend': 'btn-legend',
-                      'sum-first': 'sum-first', 'tree-entry': 'tree-entry' };
+                      'sum-first': 'sum-first', 'tree-entry': 'tree-entry', 'nh-entry': 'nh-entry' };
       const out = {};
       for (const [host, expected] of Object.entries(pairs)) {
         const ic = document.getElementById(host).querySelector('.iiyaku-icon');
@@ -107,15 +110,18 @@ test('拡張として読み込んだ状態で動く', async t => {
       return out;
     })()`);
     assert.deepEqual(map, { 'lab-for': 'inp-for', 'lab-wrap': 'inp-wrap', 'btn-legend': 'btn-legend',
-                            'sum-first': 'sum-first', 'tree-entry': 'tree-entry' });
+                            'sum-first': 'sum-first', 'tree-entry': 'tree-entry', 'nh-entry': 'nh-entry' });
   });
 
   await t.test('そこで付けなかった語は、後のふつうの文章で説明される', async () => {
+    // 入口が無くて見送った語が、どこにも説明されないまま終わっていないこと。
+    // 語を落とすのではなく、説明する場所を後ろへ送っているだけである、の確認。
     assert.deepEqual(
       await tab.evaluate(`[...document.querySelectorAll('#prose-fallback .iiyaku-icon')]
         .map(i => i.dataset.iiyakuKey).sort()`),
       ['blame', 'collaborator', 'conflict', 'contributors', 'diff', 'forks', 'insights',
-       'origin', 'packages', 'sync', 'visibility', 'watch', 'watching']
+       'origin', 'packages', 'projects', 'release', 'security', 'sync', 'topic',
+       'visibility', 'watch', 'watching', 'wiki']
     );
   });
 
@@ -142,75 +148,111 @@ test('拡張として読み込んだ状態で動く', async t => {
   // 実装と同じ式でテスト側でも計算すると、同じ誤りを共有して素通りする。
   // ここでは Tab を押して、ブラウザが実際に止まった要素だけを「到達できる」とみなす。
 
-  await t.test('装飾扱いの印の入口が、実際の Tab 順路に出てくる（実キー送信）', async () => {
-    const order = await collectTabOrder(cdp, tab, 70);
-    const reachable = new Set(order);
-    // 矢印キーで到達する項目は Tab 順路に出ない。実際に矢印で動かして確かめる。
-    const arrow = await tab.evaluate(`(() => { document.getElementById('tree-entry').focus();
-      return document.activeElement.id; })()`);
-    assert.equal(arrow, 'tree-entry');
-    await pressKey(cdp, tab.sessionId, 'ArrowDown');
-    await sleep(150);
-    const afterArrow = await tab.evaluate(`document.activeElement.id`);
-    assert.equal(afterArrow, 'tree-target', '矢印キーで対象へ移動しない');
-    reachable.add(afterArrow);
-
+  await t.test('装飾扱いの印の入口は、すべて前向き Tab の順路に出てくる（実キー送信）', async () => {
+    // 入口の証明を「実際にブラウザが止まった要素」だけに限る。
+    // 矢印キーによる例外を認めない（それは実装のある部品でしか成り立たず、
+    // DOM の構造からは実装の有無を判定できないため）。
+    const reachable = new Set(await collectTabOrder(cdp, tab, 90));
     const hosted = await tab.evaluate(`[...document.querySelectorAll('.iiyaku-icon[aria-hidden="true"]')]
       .map(ic => {
         const t = document.querySelector('[data-iiyaku-trigger="' + ic.dataset.iiyakuFor + '"]');
         return { key: ic.dataset.iiyakuKey, trigger: t ? (t.id || t.tagName) : null };
       })`);
     const unreachable = hosted.filter(h => !h.trigger || !reachable.has(h.trigger));
-    assert.deepEqual(unreachable, [], `Tab でも矢印でも辿り着けない入口: ${JSON.stringify(unreachable)}`);
+    assert.deepEqual(unreachable, [], `前向き Tab で辿り着けない入口: ${JSON.stringify(unreachable)}`);
     assert.ok(hosted.length >= 5, `装飾扱いの印が少なすぎる: ${hosted.length}`);
   });
 
+  await t.test('装飾扱いの印の入口は、Shift+Tab の順路にも出てくる（実キー送信）', async () => {
+    // 前向きだけを確かめて「キーボードで到達できる」と書かない。
+    // 逆順に回っても同じ入口へ止まることを、実際に Shift+Tab を送って確かめる。
+    const back = new Set(await collectTabOrder(cdp, tab, 90, 'after', { shift: true }));
+    const hosted = await tab.evaluate(`[...document.querySelectorAll('.iiyaku-icon[aria-hidden="true"]')]
+      .map(ic => {
+        const t = document.querySelector('[data-iiyaku-trigger="' + ic.dataset.iiyakuFor + '"]');
+        return { key: ic.dataset.iiyakuKey, trigger: t ? (t.id || t.tagName) : null };
+      })`);
+    const missing = hosted.filter(h => !h.trigger || !back.has(h.trigger));
+    assert.deepEqual(missing, [], `Shift+Tab で辿り着けない入口: ${JSON.stringify(missing)}`);
+  });
+
   await t.test('到達できない要素が Tab 順路に現れない（対照）', async () => {
-    // 前のテストの矢印操作で tabindex が入れ替わっているので、初期状態へ戻す
-    await tab.evaluate(`(() => { document.getElementById('tree-entry').tabIndex = 0;
-      document.getElementById('tree-target').tabIndex = -1;
-      if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); })(); true`);
     // 上の判定が機能していることの裏取り。ここに出てきたら fixture 側が壊れている。
-    const order = new Set(await collectTabOrder(cdp, tab, 70));
+    const order = new Set(await collectTabOrder(cdp, tab, 90));
     const mustNotAppear = ['inp-hidden', 'inp-dnone', 'inp-vhidden', 'btn-in-fs',
                            'ti-empty', 'ti-space', 'orphan-summary', 'sum-second',
-                           'broken-item', 'orphan-item', 'role-only'];
+                           'broken-item', 'orphan-item', 'role-only',
+                           'tree-target', 'nh-target', 'dc-link', 'dc-btn', 'vh-host'];
     assert.deepEqual(mustNotAppear.filter(id => order.has(id)), []);
     // 逆に、到達できるはずのものは出てくる（対照）
-    for (const id of ['inp-for', 'btn-legend', 'sum-first', 'tree-entry']) {
+    for (const id of ['inp-for', 'btn-legend', 'sum-first', 'tree-entry', 'nh-entry']) {
       assert.ok(order.has(id), `${id} が Tab 順路に出てこない＝測れていない`);
     }
   });
 
-  await t.test('矢印で移動した先でも説明が出る', async () => {
-    // 前のテストの矢印操作で tabindex が入れ替わっているので、初期状態へ戻す
+  await t.test('描画されない入口は、ブラウザ自身も止まらない（反証の対照）', async () => {
+    // 監査の独立反証と同じことを、こちらでも実測して同じ答えになるか確かめる。
+    // ここで tabbable と出るなら fixture が反例になっていない。
+    const r = await tab.evaluate(`(() => {
+      const f = id => { const el = document.getElementById(id);
+        return { rects: el.getClientRects().length, tabIndex: el.tabIndex }; };
+      return { dcLink: f('dc-link'), dcBtn: f('dc-btn'), vhHost: f('vh-host') };
+    })()`);
+    // tabindex 属性の上では入口に見える（＝構造だけでは見分けられない）
+    assert.equal(r.dcLink.tabIndex, 0);
+    assert.equal(r.dcBtn.tabIndex, 0);
+    assert.equal(r.vhHost.tabIndex, 0);
+    // しかし箱が無い／隠れているので、実際には止まれない
+    assert.equal(r.dcLink.rects, 0, 'display:contents のリンクに箱がある＝反例になっていない');
+    assert.equal(r.dcBtn.rects, 0, 'display:contents のボタンに箱がある＝反例になっていない');
+  });
+
+  await t.test('矢印に応答する部品としない部品を、実キーで見分ける（対照）', async () => {
+    // 正しい部品では ArrowDown / ArrowUp で実際にフォーカスが動く。
     await tab.evaluate(`(() => { document.getElementById('tree-entry').tabIndex = 0;
       document.getElementById('tree-target').tabIndex = -1;
-      if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); })(); true`);
-    await tab.evaluate(`document.getElementById('tree-entry').focus(); true`);
+      document.getElementById('tree-entry').focus(); })(); true`);
     await pressKey(cdp, tab.sessionId, 'ArrowDown');
-    await sleep(200);
-    const r = await tab.evaluate(`(() => {
-      const tip = document.querySelector('.iiyaku-tooltip');
-      return { active: document.activeElement.id, tip: tip ? tip.textContent.slice(0, 12) : null };
-    })()`);
-    assert.equal(r.active, 'tree-target');
-    assert.ok(r.tip && r.tip.length > 5, `移動先で説明が出ない: ${JSON.stringify(r)}`);
+    await sleep(150);
+    const down = await tab.evaluate(`document.activeElement.id`);
+    await pressKey(cdp, tab.sessionId, 'ArrowUp');
+    await sleep(150);
+    const up = await tab.evaluate(`document.activeElement.id`);
+    assert.equal(down, 'tree-target', 'ArrowDown で移動しない＝正常な部品になっていない');
+    assert.equal(up, 'tree-entry', 'ArrowUp で戻らない');
+
+    // 構造が同じでも、実装が無い部品では動かない。v1.8.2 はここを到達可能と誤判定していた。
+    await tab.evaluate(`(() => { document.getElementById('tree-entry').tabIndex = 0;
+      document.getElementById('tree-target').tabIndex = -1;
+      document.getElementById('nh-entry').focus(); })(); true`);
+    await pressKey(cdp, tab.sessionId, 'ArrowDown');
+    await sleep(150);
+    assert.equal(await tab.evaluate(`document.activeElement.id`), 'nh-entry',
+      '実装の無い部品で矢印が効いている＝反例になっていない');
+
+    // どちらの部品でも、-1 の項目には印を付けていない（構造から推定しない）
+    assert.deepEqual(
+      await tab.evaluate(`['tree-target','nh-target']
+        .map(id => document.getElementById(id).querySelectorAll('.iiyaku-icon').length)`),
+      [0, 0]);
     await tab.evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); true`);
   });
 
-  await t.test('画面の外にある印へキーボードで移っても説明が出る', async () => {
-    // フォーカス移動に伴う自動スクロールで吹き出しが消えていた（v1.8.1 の不具合）
+  await t.test('画面の外にある印へ実際に Tab で移っても説明が出る', async () => {
+    // フォーカス移動に伴う自動スクロールで吹き出しが消えていた（v1.8.1 の不具合）。
+    // focus() を直接呼ばず、Tab を押し続けて本当に到達させる。
+    await tab.evaluate(`window.scrollTo(0, 0); true`);
+    const before = await tab.evaluate(`window.scrollY`);
+    const hit = await tabUntil(cdp, tab,
+      `el.classList.contains('iiyaku-icon') && el.closest('#far-below')`, { steps: 150 });
+    assert.ok(hit, '画面外の印へ Tab で到達できない');
     const r = await tab.evaluate(`(() => {
-      window.scrollTo(0, 0);
-      const i = document.querySelector('#edge .iiyaku-icon') || document.querySelector('#prose .iiyaku-icon');
-      const before = window.scrollY;
-      document.querySelector('#code').scrollIntoView();
-      i.focus();
-      return { scrolled: window.scrollY !== before, tip: !!document.querySelector('.iiyaku-tooltip'),
-               active: document.activeElement === i };
+      const tip = document.querySelector('.iiyaku-tooltip');
+      return { scrolled: window.scrollY !== ${before}, tip: !!tip,
+               key: document.activeElement.dataset.iiyakuKey };
     })()`);
-    assert.equal(r.active, true, '印にフォーカスが当たっていない');
+    assert.equal(r.scrolled, true, '自動スクロールが起きていない＝画面外の再現になっていない');
+    assert.equal(r.key, 'revert');
     assert.equal(r.tip, true, 'スクロールを伴うフォーカスで説明が消える');
     await tab.evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); window.scrollTo(0,0); true`);
   });

@@ -21,7 +21,7 @@ jobs:
         run: |
           node --check src/matcher.js
           node --check src/content.js
-      - name: 用語判定のテスト
+      - name: 用語判定と配布物検査のテスト
         run: node --test "tests/**/*.test.js"
       - name: 構成と文書の整合
         run: node scripts/verify.mjs
@@ -40,6 +40,7 @@ jobs:
         run: node --test tests/e2e/extension.e2e.mjs
 
   # 配布物が OS をまたいで同じになるかを測る。改行が揺れると合算ハッシュが変わる。
+  # 値は次の job で機械的に突き合わせる（ログへ出すだけでは検証にならない）。
   package-hash:
     strategy:
       fail-fast: false
@@ -55,10 +56,46 @@ jobs:
         run: npm test
       - name: 配布物を並べて合算ハッシュを出す
         run: npm run package:stage
+      - name: 合算ハッシュを持ち出す
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: package-hash-${{ matrix.os }}
+          path: dist/COMBINED_SHA256.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  # 3 OS の合算ハッシュが1つに揃うことを、機械で突き合わせて必須にする。
+  # 揃わなければここが赤になる。
+  hash-compare:
+    needs: package-hash
+    runs-on: ubuntu-latest
+    steps:
+      - name: 3 OS 分を集める
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: package-hash-*
+          path: hashes
+      - name: 全部同じであることを確かめる
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(hashes/*/COMBINED_SHA256.txt)
+          echo "集まった数: ${#files[@]}"
+          # 0 件のときに for へ入ると set -u で読みにくく落ちるので、先に数を見る
+          if [ "${#files[@]}" -ne 3 ]; then
+            echo "NG: 3 OS 分そろっていない（${#files[@]} 件）"; exit 1
+          fi
+          for f in "${files[@]}"; do echo "  $f : $(cat "$f")"; done
+          count=$(cat "${files[@]}" | sort -u | wc -l | tr -d ' ')
+          if [ "$count" -ne 1 ]; then
+            echo "NG: OS によって配布物の合算ハッシュが違う（$count 種類）"; exit 1
+          fi
+          echo "OK: 3 OS すべてで同じ（$(head -n1 "${files[0]}")）"
 
   # Windows の実機に近い環境で、拡張として読み込めるかを試す。
-  # CDP のパイプ方式が Windows で通るかは未知のため、落ちても CI 全体は止めない
-  # （結果は記録し、通らなければ別途対応する）。
+  # 落ちたら CI 全体を落とす。以前は continue-on-error を付けていたため、
+  # Windows E2E が失敗しても全体が緑に見えていた（外部監査の指摘で外した）。
   e2e-windows:
     runs-on: windows-latest
     steps:
@@ -67,9 +104,37 @@ jobs:
         with:
           node-version: '22'
       - name: Chrome の場所
-        run: |
-          if (Test-Path "C:\Program Files\Google\Chrome\Application\chrome.exe") { echo "found" } else { echo "not found" }
         shell: pwsh
-      - name: 拡張として読み込んでのテスト（試行）
-        continue-on-error: true
+        run: |
+          $p = "C:\Program Files\Google\Chrome\Application\chrome.exe"
+          if (-not (Test-Path $p)) {
+            Write-Error "Chrome が見つからない: $p"
+            exit 1
+          }
+          Write-Output "found: $p"
+      - name: 拡張として読み込んでのテスト
         run: npm run test:e2e
+
+  # 提出用 ZIP は CI で作り、CI で検査したものだけを使う。
+  # 手元で別に作ると、提出したものと検査したものが別物になりうる。
+  release-zip:
+    needs: [verify, e2e]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+      - name: 提出用 ZIP を作って検査する
+        run: npm run package:zip
+      - name: 作った ZIP をもう一度、独立に検査する
+        run: npm run package:verify-zip
+      - name: ZIP と身元を持ち出す
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: repogloss-store-zip
+          path: |
+            dist/*.zip
+            dist/*.zip.json
+          if-no-files-found: error
+          retention-days: 30

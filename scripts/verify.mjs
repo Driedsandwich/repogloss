@@ -179,6 +179,21 @@ check(`README の変更履歴に ${manifest.version} の行がある`, readme.in
 check(`STORE_LISTING が今回の提出版 ${manifest.version} を指している`, store.includes(manifest.version),
   'ストア掲載メモに現在のバージョンが出てこない');
 
+// Limited Use への準拠を明言する文が、公開されるプライバシーポリシーに在ること。
+// 公式ポリシーが、拡張のサイトかプライバシーポリシーへ置くことを求めている。
+{
+  const privacy = read('PRIVACY.md');
+  check('PRIVACY.md に Limited Use 準拠の明言がある（日本語）',
+    /Chrome Web Store User Data Policy/.test(privacy) && /Limited Use/.test(privacy));
+  check('PRIVACY.md に Limited Use 準拠の明言がある（英語）',
+    /adhere to the Chrome Web Store User Data Policy/.test(privacy));
+  check('PRIVACY.md が公式ポリシーへのリンクを持つ',
+    privacy.includes('developer.chrome.com/docs/webstore/program-policies/limited-use'));
+  // 走査は広いので、「個人情報を読み取らない」という言い切りは事実と合わない
+  check('PRIVACY.md に、個人情報を一切読まないという言い切りが無い',
+    !/(氏名・メール・ID のいずれも読み取らず|個人的な通信内容は一切読)/.test(privacy));
+}
+
 /* ---------- 権限の説明が文書間でそろっているか ---------- */
 // 「storage のみ」と書くと、github.com のページ本文を読むことが伝わらない。
 for (const [name, body] of [['README.md', readme], ['PRIVACY.md', read('PRIVACY.md')], ['STORE_LISTING.md', store]]) {

@@ -76,7 +76,18 @@
     '[role="radio"]', '[role="switch"]', '[role="treeitem"]'
   ].join(',');
 
-  const handled = new WeakSet();   // 処理済みのテキストノード（分割で生じた断片を含む）
+  // 処理済みのテキストノード（分割で生じた断片を含む）。**世代つき**で持つ。
+  //
+  // ただの集合にすると、「その語はもう説明済みだから何もしなかった」ノードまで
+  // 永久に処理済みとして残る。すると、最初の印を含む場所がページから消えたとき、
+  // **既にページにある2番目の候補**が二度と選ばれない。実測では、`branch` を
+  // 2か所に置いて最初の場所を削除したところ、ページ全体の印が 0 個になった
+  // （URL を変えて全体を走査し直しても戻らない）。
+  // 正規の印が退役したときだけ世代を進め、全体から選び直す（下の reselect）。
+  const handled = new WeakMap();   // Text -> 処理した世代
+  let generation = 0;
+  const isHandled = n => handled.get(n) === generation;
+  const markHandled = n => handled.set(n, generation);
   // このページで印を付けた辞書キー -> そのとき自分が何を作ったかの記録。
   //
   // 印の要素だけを覚えるのでは足りない。片づけるときに「印の隣にあるもの」を見て
@@ -263,7 +274,7 @@
   // 値を読み取りもしない。「変えない」と「読まない」は別のことなので、
   // 判定の順序そのものを約束にする（順序が戻っていないかは verify.mjs が検査する）。
   function isTarget(node) {
-    if (handled.has(node)) return false;
+    if (isHandled(node)) return false;
     const el = node.parentElement;
     if (!el) return false;
     if (el.closest(SKIP)) return false;
@@ -696,13 +707,20 @@
       const rec = glossed.get(key);
       if (rec && !rec.icon.isConnected) (released ??= []).push(retireGloss(key));
     }
-    if (!released) return 0;
-    let n = 0;
-    for (const rec of released) {
-      if (rec.termNode.isConnected) n += scanInner(rec.termNode);
-    }
-    return n;
+    return released;
   }
+
+  // 正規の印が居なくなったので、ページ全体から選び直す。
+  //
+  // 世代を進めると、「そのとき既に説明済みだったので何もしなかった」節点も
+  // もう一度候補に戻る。これをしないと、**既にページにある2番目の候補**が
+  // 永久に選ばれない（実測で、語がページから完全に消えた）。
+  // 退役は稀なので、ここだけ全体走査でよい。ふつうの変更では世代は進めない。
+  function reselect() {
+    generation++;
+    return scanInner(document.body);
+  }
+
 
   /* ---------- 6. 注記 ---------- */
   // 1つのテキストノードに含まれる一致すべてへ注記する。
@@ -711,7 +729,7 @@
   // 後ろを次の一致の作業対象にする。後ろから割ると、先に控えた節点があとの分割で
   // さらに割られ、記録が実物とずれる（片づけのときに別の節点を戻してしまう）。
   function annotate(node) {
-    if (handled.has(node)) return 0;
+    if (isHandled(node)) return 0;
     const parent = node.parentNode;
     if (!parent || parent.nodeType !== Node.ELEMENT_NODE) return 0;
 
@@ -719,7 +737,7 @@
     // git の解説ページのような文書では印が数百個になり本文が読めなくなる。
     // ただし前に付けた印が「もう説明として使えない」なら、付け直す。
     const hits = matcher.findHits(node.nodeValue, key => usableGloss(key) !== null);
-    if (hits.length === 0) { handled.add(node); return 0; }
+    if (hits.length === 0) { markHandled(node); return 0; }
     // 付け直すと決まったキーについて、使えなくなった古い印を取り除く。
     // 残しておくと、同じ語の印が画面に2つあることになる。
     for (const h of hits) retireGloss(h.key);
@@ -728,7 +746,7 @@
     // closest() は祖先をたどるので、一致の有無に関わらず全候補で呼ぶと重い
     // （実測で大きなページの初期走査が 15ms から 29ms へ倍増した）。
     const placement = resolvePlacement(parent);
-    if (placement.kind === 'skip') { handled.add(node); return 0; }
+    if (placement.kind === 'skip') { markHandled(node); return 0; }
 
     let cur = node;        // いま扱っている節点（用語で終わる左側になる）
     let consumed = 0;      // cur の先頭が、元の文字列の何文字目にあたるか
@@ -738,11 +756,11 @@
       // 用語が末尾ちょうどで終わるときは割らない。割ると空の節点が1つ増え、
       // 片づけと付け直しを繰り返すたびに増え続ける（往復のたびに1つずつ）。
       const tail = at < cur.length ? cur.splitText(at) : null;
-      if (tail) handled.add(tail);                          // 断片を再処理しない
+      if (tail) markHandled(tail);                          // 断片を再処理しない
       const icon = makeIcon(hit.key, hit.match, DICT[hit.key]);
       parent.insertBefore(icon, tail ?? cur.nextSibling);
       applyIconSemantics(icon, placement);                  // 入った場所を見てから決める
-      handled.add(cur);
+      markHandled(cur);
       // 実際に挿入できたものだけ、作ったものと一緒に控える。
       // termNode は用語を末尾に含む節点。片づけのとき、これを走査対象へ戻す。
       // tailNode は自分が作った右側（作らなかったときは null）。控えるのは
@@ -758,7 +776,7 @@
       cur = tail;
       consumed = hit.end;
     }
-    handled.add(node);
+    markHandled(node);
     return added;
   }
 
@@ -810,7 +828,7 @@
     // その場で見直す（画面遷移やノードの追加を待たない）。
     let removals = false;
     for (const mu of muts) if (mu.removedNodes.length) { removals = true; break; }
-    if (removals) recoverDetachedGlosses();
+    const released = removals ? recoverDetachedGlosses() : null;
 
     // GitHub はページを読み直さずに画面を差し替えることがある。
     // 別のページに移ったら「印を付けた語」を数え直す。そうしないと、
@@ -830,8 +848,11 @@
       scan(document.body);
     }
     for (const mu of muts) {
-      for (const n of mu.addedNodes) scan(n);
+      for (const n of mu.addedNodes) scanInner(n);
     }
+    // ③ 正規の印が居なくなっていたら、ページ全体から選び直す。
+    //    既にページにある候補へ引き継ぐには、ここで世代を進めるしかない。
+    if (released) reselect();
   }));
 
   /* ---------- 9. ON / OFF の切り替え ---------- */

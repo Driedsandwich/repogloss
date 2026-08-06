@@ -339,6 +339,33 @@ export const RETIRE_PAGE = `<!doctype html><html lang="en"><head><meta charset="
   <div id="sink"></div>
 </body></html>`;
 
+/* 正規の印が居なくなったときに、**既にページにある候補**へ引き継げるか。
+   記録と DOM の食い違い、複製された印の扱いも、ここでまとめて見る。 */
+export const RESELECT_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>reselect</title></head><body>
+  <!-- 再選出: 最初を消したら2番目へ。隠れている候補は選ばない -->
+  <p id="first">A push first.</p>
+  <p id="second">A push second.</p>
+  <p id="third" style="display:none">A push hidden.</p>
+  <p id="fourth">A push fourth.</p>
+
+  <!-- 記録の整合 -->
+  <p id="gone">A conflict here.</p>
+  <p id="rewritten">Some checks here.</p>
+  <p id="inserted">Open the issues tab.</p>
+  <p id="moved">List the packages here.</p>
+  <p id="selectable">Ask about the projects board.</p>
+  <p><a href="#" id="lnk">Open the security tab</a></p>
+  <p id="two">A sync and a watch differ.</p>
+
+  <!-- 複製 -->
+  <div id="clone-src"><p>Add a label here.</p></div>
+  <div id="clone-host"><p><a href="#" id="hlnk">Open the workflow view</a></p></div>
+
+  <div id="elsewhere"></div>
+  <div id="sink"></div>
+</body></html>`;
+
 export function startTestServer(html = REPO_PAGE) {
   const { key, cert } = makeCert();
   const server = https.createServer({ key, cert }, (req, res) => {

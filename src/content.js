@@ -77,10 +77,15 @@
   ].join(',');
 
   const handled = new WeakSet();   // 処理済みのテキストノード（分割で生じた断片を含む）
-  // このページで印を付けた辞書キー -> 実際に挿入した印の要素。
-  // Set ではなく要素を持つのは、GitHub がサイドバー等を描き直すと印ごと
-  // 消えることがあり、「付けた」記録だけが残ると二度と付かなくなるため。
-  // 参照先が DOM から外れていたら、付け直しを許す。
+  // このページで印を付けた辞書キー -> そのとき自分が何を作ったかの記録。
+  //
+  // 印の要素だけを覚えるのでは足りない。片づけるときに「印の隣にあるもの」を見て
+  // 自分が割った対だと推し量ることになり、次の3つが起きる（いずれも実測で再現）:
+  //   - ページ側が印の隣へ挿し込んだ Text node を、自分のものと誤って消す
+  //   - その巻き添えで、利用者が選んでいた範囲が空になる
+  //   - ページ側が印だけを外した場合、隣をたどれず、その語が二度と説明されない
+  // だから注記した時点で「自分が割った節点」「自分が作った節点」を控えておき、
+  // 片づけるときはその記録だけを扱う。記録は辞書のキーの数（61）で頭打ちになる。
   const glossed = new Map();
   let triggerSeq = 0;
 
@@ -99,6 +104,12 @@
     opacityProperty: true, visibilityProperty: true,     // 現行の綴り
     checkOpacity: true, checkVisibilityCSS: true         // 古い綴り
   };
+  // 箱を持たない要素（display:contents）の**先祖**に聞くとき用。
+  // visibility だけをわざと外す——visibility は継承する性質で、子が
+  // visibility:visible に戻していれば、先祖が hidden でも文字は見えているため。
+  // display:none・opacity・先祖の content-visibility は継承しないので、
+  // これらは先祖側に聞くしかない。
+  const CONTENTS_HOST_OPTS = { opacityProperty: true, checkOpacity: true };
   const HAS_CHECK_VISIBILITY = typeof Element.prototype.checkVisibility === 'function';
 
   let visibleCache = null;   // 走査1回のあいだだけ有効
@@ -114,8 +125,14 @@
   // 大きな箱へ全面の切り取りを掛ける書き方もある（実測で、この形の中の語に
   // 印が付いていた）。1px という大きさだけを条件にすると取りこぼすので、
   // 「全面を切り落とす指定」もあわせて見る。
+  // ただし CSS2 の clip は **絶対配置の要素にしか効かない**。position が static や
+  // relative のままの要素に rect(0 0 0 0) と書いても、中身はふつうに見えている。
+  // 位置を見ずに「全面の切り取り」とみなすと、読める文章のほうを除外してしまう
+  // （実測: position:static・幅1264px の要素にある語へ印が付かなかった）。
+  // clip-path は position に関係なく効くので、こちらは位置を問わない。
   const FULL_CLIP = /^rect\(0(?:px)?(?:,)?\s+0(?:px)?(?:,)?\s+0(?:px)?(?:,)?\s+0(?:px)?\)$/;
   const FULL_CLIP_PATH = /^inset\(\s*50%\s*\)$/;
+  const CLIP_POSITIONS = ['absolute', 'fixed'];   // legacy clip が効く配置
 
   let clipCache = null;   // 走査1回のあいだだけ有効
 
@@ -128,7 +145,8 @@
     // 大きさの確認は安い。ここを先に見て、多くの要素で getComputedStyle を避ける。
     const tiny = n.offsetWidth <= 1 && n.offsetHeight <= 1;
     const cs = getComputedStyle(n);
-    const clip = cs.clip && cs.clip !== 'auto' ? cs.clip.replace(/\s+/g, ' ').trim() : '';
+    const clip = CLIP_POSITIONS.includes(cs.position) && cs.clip && cs.clip !== 'auto'
+      ? cs.clip.replace(/\s+/g, ' ').trim() : '';
     const path = cs.clipPath && cs.clipPath !== 'none' ? cs.clipPath.trim() : '';
     if (clip || path) {
       // 1px 四方まで潰したうえで切り取る書き方（読み上げ専用の定番）か、
@@ -165,10 +183,42 @@
   // 文字そのものが描かれているか。display:contents の要素は箱を持たないので
   // offsetWidth / offsetHeight が 0 になるが、中の文字は普通に見えている。
   // 要素の箱ではなく、文字の範囲で確かめる。
+  //
+  // ⚠️ これ単独では可視性の証明にならない。content-visibility:hidden で飛ばされた
+  // 中身にも Range は矩形を返す（実測で 3 個）。描かれていない文字にも矩形が出る。
   function hasRenderedText(el) {
     const r = document.createRange();
     r.selectNodeContents(el);
     return r.getClientRects().length > 0;
+  }
+
+  // display:contents の要素にある文字が、実際に読めるか。
+  //
+  // 箱を持つ先祖の可視性を、そのまま子の答えに使ってはいけない。実測の反例が2つある:
+  //   - 先祖が content-visibility:hidden … 先祖自身は描画されたままなので、
+  //     先祖に聞くと「見えている」と答える。しかし中身は飛ばされていて読めない
+  //     （Range の矩形も出るので、矩形の有無でも見抜けない）。
+  //   - 先祖が visibility:hidden で、子が visibility:visible に戻している …
+  //     先祖に聞くと「見えていない」。しかし子の文字は見えている。
+  // どちらも「先祖の1つの答え」を子へ転用したことが原因なので、性質ごとに分ける。
+  //   visibility            … 継承する。子の computed 値が正しい
+  //   display:none / opacity / 先祖の content-visibility … 継承しない。先祖に聞く
+  //   文字が実際に描かれているか … 子の Range で見る
+  //   clip                  … 子から上へたどる（既存の判定）
+  // content-visibility:auto は落とさない（画面外というだけで永久に除外しないため）。
+  function isVisibleContentsText(el, cs) {
+    if (cs.visibility !== 'visible') return false;
+    const host = boxedAncestor(el);
+    if (host) {
+      // visibility を外して聞く。display:none と opacity と、
+      // さらに上の content-visibility:hidden は、これで落ちる。
+      if (!host.checkVisibility(CONTENTS_HOST_OPTS)) return false;
+      // 先祖自身が中身を飛ばしている場合、その先祖は描画されたままなので
+      // checkVisibility では落ちない。ここだけは名指しで見る。
+      if (getComputedStyle(host).contentVisibility === 'hidden') return false;
+    }
+    if (!hasRenderedText(el)) return false;
+    return !isClipHidden(el);
   }
 
   function isVisibleOccurrence(el) {
@@ -177,32 +227,33 @@
       const hit = visibleCache.get(el);
       if (hit !== undefined) return hit;
     }
+    // レイアウトを起こすので高い。1要素につき1回だけ取って使い回す。
+    const cs = getComputedStyle(el);
     let ok;
-    let cs = null;   // 必要になったときだけ1回だけ取る（レイアウトを起こすので高い）
-    if (HAS_CHECK_VISIBILITY) {
+    if (cs.display === 'contents') {
+      // 箱を作らない要素。Chrome は checkVisibility に false を返すが（実測）、
+      // それは「隠れている」ではなく「箱が無い」という意味なので、転用できない。
+      ok = HAS_CHECK_VISIBILITY
+        ? isVisibleContentsText(el, cs)
+        : (cs.visibility === 'visible' && hasRenderedText(el) && !isClipHidden(el));
+    } else if (HAS_CHECK_VISIBILITY) {
       ok = el.checkVisibility(CHECK_VISIBILITY_OPTS);
-      // display:contents の要素は箱を作らないので、Chrome は「描画されていない」と
-      // 答える（実測で false）。しかし中の文字は普通に見えている（文字の範囲は
-      // 矩形を持つ）。ここで落とすと、見えている語を取りこぼす。
-      // 箱を持つ最も近い先祖の可視性で判断し、文字が実際に描かれていることも確かめる。
-      if (!ok && (cs = getComputedStyle(el)).display === 'contents') {
-        const host = boxedAncestor(el);
-        ok = !!host && host.checkVisibility(CHECK_VISIBILITY_OPTS) && hasRenderedText(el);
-      }
+      // その要素自身が content-visibility:hidden のとき、**中身**は隠れているのに
+      // 要素自体は描画されているので checkVisibility は true を返す（実測）。
+      // 直接テキストを持つ場合はここで落とさないと、見えない語に印が付く。
+      if (ok && cs.contentVisibility === 'hidden') ok = false;
+      // 箱をまったく持たず、文字も描かれていないもの
+      if (ok && el.offsetWidth === 0 && el.offsetHeight === 0) ok = hasRenderedText(el);
+      if (ok && isClipHidden(el)) ok = false;
     } else {
-      // 使えない環境では、せめて直接の親だけでも見る（v1.8.3 までの判定）
-      cs = getComputedStyle(el);
+      // checkVisibility が無い環境。manifest の minimum_chrome_version より古い
+      // Chrome か、拡張を手で読み込んだ場合にしか起きない。祖先の opacity や
+      // content-visibility は見抜けないので、ここは「落ちないための保険」にすぎない。
       ok = !(cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0');
+      if (ok && cs.contentVisibility === 'hidden') ok = false;
+      if (ok && el.offsetWidth === 0 && el.offsetHeight === 0) ok = hasRenderedText(el);
+      if (ok && isClipHidden(el)) ok = false;
     }
-    // その要素自身が content-visibility:hidden のとき、**中身**は隠れているのに
-    // 要素自体は描画されているので checkVisibility は true を返す（実測）。
-    // 直接テキストを持つ場合はここで落とさないと、見えない語に印が付く。
-    // content-visibility:auto は落とさない（画面外というだけで永久に除外しないため）。
-    if (ok && (cs || (cs = getComputedStyle(el))).contentVisibility === 'hidden') ok = false;
-    // 箱をまったく持たないもの。ただし display:contents は箱を作らないだけで
-    // 文字は見えているので、文字の範囲で描かれているかを確かめる。
-    if (ok && el.offsetWidth === 0 && el.offsetHeight === 0) ok = hasRenderedText(el);
-    if (ok && isClipHidden(el)) ok = false;
     if (visibleCache) visibleCache.set(el, ok);
     return ok;
   }
@@ -589,53 +640,76 @@
   //   - 単独の印なら、その印自身が Tab の順路に入る
   //   - 装飾扱いの印なら、対応する入口が生きていて Tab の順路に入る
   function usableGloss(key) {
-    const icon = glossed.get(key);
-    if (!icon || !icon.isConnected) return null;
+    const rec = glossed.get(key);
+    if (!rec) return null;
+    const icon = rec.icon;
+    if (!icon.isConnected) return null;
     if (!isVisibleOccurrence(icon.parentElement)) return null;
     const forId = icon.dataset.iiyakuFor;
     if (forId) {
       const trigger = document.querySelector(`[data-iiyaku-trigger="${forId}"]`);
-      return trigger && tabbable(trigger) ? icon : null;
+      return trigger && tabbable(trigger) ? rec : null;
     }
-    return tabbable(icon) ? icon : null;
+    return tabbable(icon) ? rec : null;
   }
 
   // 使えなくなった印を片づける。**元の語を、また注記できる状態へ戻す**ところまでやる。
   //
-  // 印を入れるとき splitText でテキストを2つに割り、両方を handled へ入れている。
+  // 印を入れるとき splitText でテキストを割り、両方を handled へ入れている。
   // 印だけ消すと、割れたテキストは handled に残ったままなので、その語は
   // そのページを開いている間ずっと説明されなくなる（隠した場所をあとで戻しても、
   // 画面遷移で全体を走査し直しても復活しない。実測で再現）。
   //
-  // だから、自分が割った2つを1つに戻し、handled から外して走査対象へ返す。
-  // 親全体へ normalize() は掛けない——ページ側が持っている Text node の同一性や
-  // 選択範囲を壊しうるので、触るのは自分が割った範囲だけにする。
+  // 割ったものを繋ぎ直しはしない。繋ぎ直すには2つの節点を1つにまとめる必要があり、
+  // 消える側に利用者の選択範囲やページ側の参照があると壊れる（実測: 選択していた
+  // 一文が空になった）。文字数は割っても変わらないので、割ったまま handled から
+  // 外して走査対象へ返せば足りる。空の節点が増え続けないよう、注記する側で
+  // 「用語が末尾ちょうどで終わるときは割らない」ようにしてある。
+  //
+  // 隣を見て自分の割った対を推し量ることはしない。ページ側は印の隣へ自由に
+  // 節点を挿し込めるし、印そのものを外すこともある。注記したときの記録だけを使う。
   function retireGloss(key) {
-    const icon = glossed.get(key);
-    if (!icon) return;
-    if (icon.isConnected) {
-      // その印について説明を出している最中なら、先に閉じる
-      if (tip && tipIcons.includes(icon)) hideTip();
-      const prev = icon.previousSibling;
-      const next = icon.nextSibling;
-      icon.remove();
-      const isText = n => n && n.nodeType === Node.TEXT_NODE;
-      if (isText(prev) && isText(next)) {
-        prev.appendData(next.nodeValue);   // 文字列は足し合わせるだけ。増減しない
-        next.remove();
-        handled.delete(prev);
-      } else {
-        // 片側しかテキストが無い形（行頭・行末など）でも、走査対象へは戻す
-        if (isText(prev)) handled.delete(prev);
-        if (isText(next)) handled.delete(next);
-      }
-    }
+    const rec = glossed.get(key);
+    if (!rec) return null;
     glossed.delete(key);
+    if (rec.icon.isConnected) {
+      // その印について説明を出している最中なら、先に閉じる
+      if (tip && tipIcons.includes(rec.icon)) hideTip();
+      rec.icon.remove();     // 外すのは自分が入れた <sup> だけ
+    }
+    // 印が既にページ側から外されていても、ここへ来る。記録があるので、
+    // 用語を含む節点を走査対象へ戻せる（隣をたどる必要がない）。
+    handled.delete(rec.termNode);
+    return rec;
+  }
+
+  // 自分の印が、この片づけを通らずに DOM から外れることがある。GitHub が一部を
+  // 描き直したときや、ページ側が要素を消したときである。放っておくと、記録した
+  // 節点が handled に残り、その語はページを開いているあいだ二度と説明されない
+  // （実測: 印を外して画面遷移しても付き直さなかった）。
+  //
+  // 記録は辞書のキーの数（61）で頭打ちなので、変更のたびに数え直しても軽い。
+  // 外れていた印を片づけたら、その場所をすぐ見直す（画面遷移を待たない）。
+  function recoverDetachedGlosses() {
+    let released = null;
+    for (const key of [...glossed.keys()]) {
+      const rec = glossed.get(key);
+      if (rec && !rec.icon.isConnected) (released ??= []).push(retireGloss(key));
+    }
+    if (!released) return 0;
+    let n = 0;
+    for (const rec of released) {
+      if (rec.termNode.isConnected) n += scanInner(rec.termNode);
+    }
+    return n;
   }
 
   /* ---------- 6. 注記 ---------- */
   // 1つのテキストノードに含まれる一致すべてへ注記する。
-  // 後ろの一致から順に分割すれば、まだ処理していない前方の位置がずれない。
+  //
+  // 前から順に処理する。一致ごとに「用語で終わる左側」と「その後ろ」に割り、
+  // 後ろを次の一致の作業対象にする。後ろから割ると、先に控えた節点があとの分割で
+  // さらに割られ、記録が実物とずれる（片づけのときに別の節点を戻してしまう）。
   function annotate(node) {
     if (handled.has(node)) return 0;
     const parent = node.parentNode;
@@ -656,16 +730,36 @@
     const placement = resolvePlacement(parent);
     if (placement.kind === 'skip') { handled.add(node); return 0; }
 
-    for (let i = hits.length - 1; i >= 0; i--) {
-      const tail = node.splitText(hits[i].end);
-      handled.add(tail);                                    // 断片を再処理しない
-      const icon = makeIcon(hits[i].key, hits[i].match, DICT[hits[i].key]);
-      parent.insertBefore(icon, tail);
+    let cur = node;        // いま扱っている節点（用語で終わる左側になる）
+    let consumed = 0;      // cur の先頭が、元の文字列の何文字目にあたるか
+    let added = 0;
+    for (const hit of hits) {
+      const at = hit.end - consumed;
+      // 用語が末尾ちょうどで終わるときは割らない。割ると空の節点が1つ増え、
+      // 片づけと付け直しを繰り返すたびに増え続ける（往復のたびに1つずつ）。
+      const tail = at < cur.length ? cur.splitText(at) : null;
+      if (tail) handled.add(tail);                          // 断片を再処理しない
+      const icon = makeIcon(hit.key, hit.match, DICT[hit.key]);
+      parent.insertBefore(icon, tail ?? cur.nextSibling);
       applyIconSemantics(icon, placement);                  // 入った場所を見てから決める
-      glossed.set(hits[i].key, icon);   // 実際に挿入できたものだけ記録する
+      handled.add(cur);
+      // 実際に挿入できたものだけ、作ったものと一緒に控える。
+      // termNode は用語を末尾に含む節点。片づけのとき、これを走査対象へ戻す。
+      // tailNode は自分が作った右側（作らなかったときは null）。控えるのは
+      // 「何を作ったか」を後から言えるようにするためで、DOM は動かさない。
+      glossed.set(hit.key, {
+        key: hit.key, term: hit.match, icon, parent,
+        termNode: cur, tailNode: tail, splitOffset: at,
+        placementKind: placement.kind,
+        trigger: placement.kind === 'hosted' ? placement.trigger : null
+      });
+      added++;
+      if (!tail) break;    // 後ろが無い＝これ以上の一致は入らない
+      cur = tail;
+      consumed = hit.end;
     }
     handled.add(node);
-    return hits.length;
+    return added;
   }
 
   /* ---------- 7. 走査 ---------- */
@@ -711,6 +805,13 @@
   let lastUrl = location.href;
   // 差し込みが一度に何十件も来るので、1回分の呼び出しでは測定結果を共有する。
   const observer = new MutationObserver(muts => withRenderCache(() => {
+    // 自分の印だけがページ側から外されることがある。記録した節点を handled へ
+    // 残したままにすると、その語は二度と説明されない。外れていたら片づけて、
+    // その場で見直す（画面遷移やノードの追加を待たない）。
+    let removals = false;
+    for (const mu of muts) if (mu.removedNodes.length) { removals = true; break; }
+    if (removals) recoverDetachedGlosses();
+
     // GitHub はページを読み直さずに画面を差し替えることがある。
     // 別のページに移ったら「印を付けた語」を数え直す。そうしないと、
     // 前の画面で出た語が新しい画面では一度も説明されないままになる。

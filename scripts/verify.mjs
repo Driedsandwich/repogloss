@@ -29,9 +29,13 @@ const manifest = readJson('manifest.json');
 
 // 増やすときは、ここと文書と審査の申告を同時に直す、と決めておく
 const ALLOWED_TOP_KEYS = [
-  'manifest_version', 'name', 'version', 'description',
+  'manifest_version', 'name', 'version', 'description', 'minimum_chrome_version',
   'permissions', 'action', 'icons', 'content_scripts', 'web_accessible_resources'
 ];
+// 動作に必要な最低の Chrome。Element.checkVisibility が入った版。
+// これが無い環境では、祖先の opacity と content-visibility を見抜けず、
+// 見えない場所へ印が付く（実測: 8 つの場面のうち 2 つで逆の答えになった）。
+const MIN_CHROME = '105';
 const ALLOWED_PERMISSIONS = ['storage'];
 const ALLOWED_MATCHES = ['https://github.com/*'];
 const ALLOWED_JS = ['src/matcher.js', 'src/content.js'];
@@ -42,6 +46,8 @@ check('manifest: Manifest V3', manifest.manifest_version === 3, `manifest_versio
 check('manifest: version が x.y.z', /^\d+\.\d+\.\d+$/.test(manifest.version), `version=${manifest.version}`);
 const extraKeys = Object.keys(manifest).filter(k => !ALLOWED_TOP_KEYS.includes(k));
 check('manifest: 想定外の項目が無い', extraKeys.length === 0, `増えた項目: ${extraKeys.join(', ')}`);
+check(`manifest: minimum_chrome_version が ${MIN_CHROME}`, manifest.minimum_chrome_version === MIN_CHROME,
+  `minimum_chrome_version=${manifest.minimum_chrome_version}`);
 check('manifest: permissions は storage だけ', eq(manifest.permissions, ALLOWED_PERMISSIONS), `permissions=${JSON.stringify(manifest.permissions)}`);
 check('manifest: host_permissions を持たない', !manifest.host_permissions);
 check('manifest: optional_permissions を持たない', !manifest.optional_permissions);
@@ -156,12 +162,22 @@ check('content.js が、付けた印の有効性を isConnected だけで判断�
   /function usableGloss/.test(content) && !/prev\s*&&\s*prev\.isConnected/.test(content));
 
 /* ---------- テスト専用のものが配布物へ混ざっていないこと ---------- */
-// 計測用の prelude は同じ拡張の content script として読み込ませるが、
-// それは E2E が並べた一時ディレクトリの中だけの話。配布物には入れない。
-check('計測用の prelude が配布一覧に入っていない',
-  !PACKAGE_FILES.some(f => f.includes('prelude')));
-check('manifest が読み込む JS に prelude が入っていない',
-  !(cs.js ?? []).some(f => f.includes('prelude')));
+// 計測用の JS は同じ拡張の content script として読み込ませるが、それは E2E が
+// 並べた一時ディレクトリの中だけの話。配布物にも、正本の manifest にも入れない。
+{
+  const TEST_ONLY_JS = ['matcher-tap.js', 'leak-probe.js', 'no-checkvisibility.js'];
+  // 名前を並べた検査は、ファイルの名前が変わると黙って何も見なくなる。
+  // まず「その名前のものが実在する」ことを確かめてから、混入を見る。
+  for (const f of TEST_ONLY_JS) {
+    check(`テスト専用の tests/e2e/${f} が実在する`, existsSync(join(ROOT, 'tests/e2e', f)),
+      '名前が変わったなら、この一覧も直す');
+  }
+  const isTestOnly = f => f.startsWith('tests/') || TEST_ONLY_JS.some(t => f.endsWith(t));
+  check('テスト専用の JS が配布一覧に入っていない',
+    !PACKAGE_FILES.some(isTestOnly), PACKAGE_FILES.filter(isTestOnly).join(', '));
+  check('manifest が読み込む JS にテスト専用のものが入っていない',
+    !(cs.js ?? []).some(isTestOnly), (cs.js ?? []).filter(isTestOnly).join(', '));
+}
 
 /* ---------- 辞書 ---------- */
 const dict = readJson('locales/dict.json');
@@ -215,6 +231,57 @@ check(`STORE_LISTING が今回の提出版 ${manifest.version} を指してい�
   // 走査は広いので、「個人情報を読み取らない」という言い切りは事実と合わない
   check('PRIVACY.md に、個人情報を一切読まないという言い切りが無い',
     !/(氏名・メール・ID のいずれも読み取らず|個人的な通信内容は一切読)/.test(privacy));
+
+  // 「取得元として触れない」ことと「本文として一時処理し得る」ことを混ぜない。
+  // v1.8.5 は Cookie・認証情報・入力欄・編集中の文章を1行にまとめて「しない」と
+  // 書いていたが、通常の本文に出た token らしき文字列は一時処理される。
+  // 一括りにした断定が戻ってきたら落とす。
+  //
+  // ⚠️ 「〜とは書きません」という打ち消しの文にも同じ言葉が出る。polarity を見ずに
+  // 語だけを探すと、打ち消しているほうを断定と取り違える（実際に誤検出した）。
+  // 打ち消し文を先に取り除いてから探す。
+  const claims = privacy.replace(/「[^」]*」とは書きません。?/g, '');
+  const LUMPED = [
+    [/Cookie[・･]認証情報[・･]入力欄/, '日本語: Cookie・認証情報・入力欄… を1行にまとめている'],
+    [/Cookies,\s*credentials,\s*form fields/i, '英語: Cookies, credentials, form fields … をまとめている'],
+    [/認証情報[^\n|「」]{0,30}(?:扱わない|取り扱わない|読み取りません)/, '日本語: 認証情報を扱わない、という言い切り']
+  ];
+  for (const [re, label] of LUMPED) {
+    check(`PRIVACY.md に一括りの断定が無い（${label}）`, !re.test(claims));
+  }
+  // 陽性対照: この検査が、実際に v1.8.5 の書き方を落とせること。
+  // 「見つからなかった」が、探し方が壊れているせいでないことを同じ実行で示す。
+  const OLD_WORDING = [
+    '| Cookie・認証情報・入力欄やフォームの中身・編集中の文章 | **しない** |',
+    '| Cookies, credentials, form fields, editable content | **No** |',
+    '本拡張は認証情報を扱わないため、開示は不要です。'
+  ];
+  for (let i = 0; i < LUMPED.length; i++) {
+    check(`一括りの断定を探す検査が、実際に v1.8.5 の書き方を捕まえる（陽性対照 ${i + 1}）`,
+      LUMPED[i][0].test(OLD_WORDING[i]), `この文を捕まえられない: ${OLD_WORDING[i]}`);
+  }
+  // 分けて書けていること（否定の検査だけだと、丸ごと消しても通ってしまう）
+  check('PRIVACY.md が、取得元と本文の一時処理を分けて書いている（日本語）',
+    /取得元として触れない/.test(privacy) && /通常の本文に表示されている/.test(privacy));
+  check('PRIVACY.md が、取得元と本文の一時処理を分けて書いている（英語）',
+    /Sources never touched/.test(privacy) && /displayed in ordinary page text/i.test(privacy));
+}
+
+// ストアの申告は、Dashboard の実画面を人が読むまで確定させない。
+// 冒頭で「他の項目は選択しない」と言い切ると、そのあとの「要確認」が効かなくなる。
+{
+  check('STORE_LISTING が申告を冒頭で言い切っていない',
+    !/他の項目は選択しない/.test(store) && !/Website content以外は選択しない/.test(store));
+  check('STORE_LISTING が、確定と要確認を分けて書いている',
+    /\*\*確定\*\*/.test(store) && /\*\*要確認\*\*/.test(store));
+  // 認証情報は「要確認」側にあること（取得元と本文の一時処理を分けたため）
+  const credRow = store.split('\n').find(l => l.startsWith('| 認証情報'));
+  check('STORE_LISTING の認証情報の行が要確認になっている',
+    !!credRow && credRow.includes('要確認'), credRow ?? '認証情報の行が見つからない');
+  // Dashboard の定義文を書き写す欄が残っていること
+  for (const w of ['確認日', '添えられていた定義文', '外部送信', '人手閲覧']) {
+    check(`STORE_LISTING の転記欄に「${w}」がある`, store.includes(w));
+  }
 }
 
 // CI が提出用 ZIP を作ることを、README が伏せていないこと
@@ -247,6 +314,60 @@ check('README が CI の成果物（提出用 ZIP）について書いている'
     .filter(w => head.includes(w));
   check('変更記録の冒頭に、準備段階の言い切りが残っていない', prep.length === 0,
     `残っている表現: ${prep.join(' / ')}`);
+
+  /* ---- 現在の版を名乗る場所に、古い版が残っていないか ---- */
+  // 「版がどこかに在るか」だけを見る検査では、見出しやリンクの取り残しに気づけない。
+  // v1.8.5 の時点で、§2 の見出しが「今回（v1.8.4）」、§2-0 が「直前（v1.8.3）」、
+  // §6 が「v1.8.2 → v1.8.3 の差分」、再現手順の SHA が v1.8.3 のもの、のまま残っていた。
+  //
+  // 過去を書いている節まで落とすと、正しい記述まで直させることになる。
+  // **見出しに「履歴」を含む節だけを対象外**にし、そこは明示的に履歴だと書かせる。
+  const lines = audit.split('\n');
+  let inHistory = false;
+  const currentLines = [];
+  for (const line of lines) {
+    const h = /^#{2,4}\s+(.*)$/.exec(line);
+    if (h) inHistory = h[1].includes('履歴');
+    if (!inHistory) currentLines.push(line);
+  }
+  const current = currentLines.join('\n');
+  check('AUDIT.md に、現在版を名乗る節が残っている', current.length > 500,
+    `履歴でない部分が ${current.length} 文字しかない＝節の切り分けが壊れている`);
+
+  // それぞれ「ここに書かれた版は、いまの版と同じはず」という場所
+  const SLOTS = [
+    [/今回（v?(\d+\.\d+\.\d+)）/g, '「今回（…）」の見出し',
+     '## 2. 今回（v1.8.4）で直したこと'],
+    [/\|\s*Manifest\s*\|\s*v(\d+\.\d+\.\d+)/g, '「Manifest」の行',
+     '| Manifest | v1.8.5 / Manifest V3 |'],
+    [/docs\/audit\/v(\d+\.\d+\.\d+)-changes\.md/g, '変更記録へのリンク',
+     '| **今回の変更の詳細と証拠** | [`docs/audit/v1.8.3-changes.md`](docs/audit/v1.8.3-changes.md) |'],
+    [/（v\d+\.\d+\.\d+ → v(\d+\.\d+\.\d+) の差分）/g, '「vA → vB の差分」の見出し',
+     '## 6. 権限・通信・保存データ（v1.8.2 → v1.8.3 の差分）'],
+    [/repogloss-(\d+\.\d+\.\d+)(?:-UNCOMMITTED)?\.zip/g, '提出候補の ZIP 名',
+     '| ZIP | `repogloss-1.8.5.zip`・**80,004 バイト**・**13ファイル** |']
+  ];
+  for (const [re, label, staleSample] of SLOTS) {
+    const found = [...current.matchAll(re)].map(mm => mm[1]).filter(x => x !== v);
+    check(`AUDIT.md の${label}が現在の版を指している`, found.length === 0,
+      `古い版: ${[...new Set(found)].join(', ')}`);
+    // 陽性対照: この探し方が、実際に v1.8.5 時点の取り残しを捕まえること。
+    // 「見つからなかった」が、探し方が壊れているせいでないことを同じ実行で示す。
+    re.lastIndex = 0;
+    const hit = re.exec(staleSample);
+    check(`${label}を探す検査が、実際に古い記載を捕まえる（陽性対照）`,
+      !!hit && hit[1] !== v, `この行を捕まえられない: ${staleSample}`);
+    re.lastIndex = 0;
+  }
+
+  // 既に取り下げた提出候補の SHA は、履歴か「参考」と書いた行にしか出てこないこと
+  const SUPERSEDED_SHA = ['e76c9245', '8abc340d', 'c8bdbe3d'];
+  for (const sha of SUPERSEDED_SHA) {
+    const bad = current.split('\n')
+      .filter(l => l.includes(sha) && !l.includes('参考') && !l.includes('提出しない'));
+    check(`AUDIT.md の現在版の説明に、取り下げた候補の SHA（${sha}…）が紛れていない`,
+      bad.length === 0, bad.map(l => l.trim().slice(0, 70)).join(' / '));
+  }
 }
 
 /* ---------- 権限の説明が文書間でそろっているか ---------- */

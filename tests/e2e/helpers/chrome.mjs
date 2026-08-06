@@ -53,15 +53,22 @@ export function stageExtension() {
   return dir;
 }
 
-/* 計測用の変種。配布ファイルはそのままに、テスト専用の prelude を
-   **本体より先に**読み込ませる manifest へ差し替える。
-   触るのは並べた一時ディレクトリだけで、リポジトリの配布物は変えない。 */
-export function stageExtensionWithPrelude() {
+/* 計測用の変種。配布ファイルはそのままに、テスト専用の JS を同じ拡張の
+   content script として読み込ませる manifest へ差し替える。
+   content script は「隔離された世界」で動くので、ページ側からは中を見られない。
+   同じ世界に入るには、この経路しかない。
+   触るのは並べた一時ディレクトリだけで、リポジトリの配布物は変えない。
+
+   extra … 置き先のファイル名 -> リポジトリ内のパス
+   order … 読み込み順を作り直す関数（既定はそのまま） */
+export function stageExtensionWith(extra = {}, order = js => js) {
   const dir = stageExtension();
-  copyFileSync(join(ROOT, 'tests/e2e/prelude.js'), join(dir, 'prelude.js'));
+  for (const [dest, src] of Object.entries(extra)) {
+    copyFileSync(join(ROOT, src), join(dir, dest));
+  }
   const mfPath = join(dir, 'manifest.json');
   const mf = JSON.parse(readFileSync(mfPath, 'utf8'));
-  mf.content_scripts[0].js = ['prelude.js', ...mf.content_scripts[0].js];
+  mf.content_scripts[0].js = order(mf.content_scripts[0].js);
   writeFileSync(mfPath, JSON.stringify(mf, null, 2) + '\n');
   return dir;
 }
@@ -257,6 +264,78 @@ export const LIFECYCLE_PAGE = `<!doctype html><html lang="en"><head><meta charse
   <!-- 印の付け直し。単独の印と、リンクの中の印の両方で往復させる -->
   <p id="life-plain">Do not reset it lightly.</p>
   <p><a href="#" id="life-link">Add an ssh key</a></p>
+  <div id="sink"></div>
+</body></html>`;
+
+/* 箱を作らない要素（display:contents）と、切り取りによる非表示。
+   どちらも「先祖に1回聞いた答え」を子へ転用すると両方向に誤る場所なので、
+   見えている側と見えていない側を対にして置き、同じ語を後ろの本文にも用意する。
+   「隠れている側 0・後ろ 1」か「見えている側 1・後ろ 0」のどちらが正しいかは、
+   その場所が実際に読めるかで決まる。 */
+export const VISIBILITY_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>visibility</title></head><body>
+  <!-- ① 中身を飛ばす先祖の中の display:contents。先祖自身は描画されたままなので、
+       先祖に聞くと「見えている」と答える。Range の矩形も出る。だが読めない -->
+  <div id="cv-host" style="content-visibility:hidden"><span id="cv-dc" style="display:contents">branch</span></div>
+  <p id="cv-later">Later visible branch paragraph.</p>
+
+  <!-- ② visibility:hidden の中で、子が visible に戻している。先祖に聞くと
+       「見えていない」。だが子の文字は見えている（visibility は継承する） -->
+  <div id="vh-host" style="visibility:hidden"><span id="vh-dc" style="display:contents;visibility:visible">fork</span></div>
+  <p id="vh-later">Later visible fork paragraph.</p>
+
+  <!-- ③ ふつうの display:contents。箱は無いが文字は見えている -->
+  <div id="plain-dc" style="display:contents">A token lives here.</div>
+
+  <!-- ④ 先祖が opacity:0 の display:contents -->
+  <div id="op-host" style="opacity:0"><span id="op-dc" style="display:contents">upstream</span></div>
+  <p id="op-later">Later visible upstream paragraph.</p>
+
+  <!-- ⑤ 先祖が display:none の display:contents -->
+  <div id="dn-host" style="display:none"><span id="dn-dc" style="display:contents">release</span></div>
+  <p id="dn-later">Later visible release paragraph.</p>
+
+  <!-- ⑥ 画面外の content-visibility:auto。画面外というだけで除外してはいけない -->
+  <div style="height:2400px"></div>
+  <div id="cva-host" style="content-visibility:auto"><p id="cva-p">Try a rebase later.</p></div>
+
+  <!-- ⑦ legacy clip は絶対配置にしか効かない。static / relative では見えている -->
+  <div id="clip-static" style="position:static;clip:rect(0 0 0 0)">Give it a star today.</div>
+  <div id="clip-relative" style="position:relative;clip:rect(0 0 0 0)">Browse the tags list.</div>
+
+  <!-- ⑧ 絶対配置／固定配置なら効く -->
+  <div id="clip-abs" style="position:absolute;clip:rect(0 0 0 0)">Pick a topic here.</div>
+  <p id="abs-later">Later visible topic paragraph.</p>
+  <div id="clip-fixed" style="position:fixed;clip:rect(0 0 0 0)">Open the wiki page.</div>
+  <p id="fixed-later">Later visible wiki paragraph.</p>
+
+  <!-- ⑨ clip-path は配置に関係なく効く -->
+  <div id="clippath-static" style="position:static;clip-path:inset(50%)">Read the license file.</div>
+  <p id="clippath-later">Later visible license paragraph.</p>
+
+  <!-- ⑩ Primer の読み上げ専用（1px 四方＋絶対配置＋clip） -->
+  <span id="primer" style="position:absolute;width:1px;height:1px;overflow:hidden;
+        clip:rect(0 0 0 0);white-space:nowrap">Open insights now.</span>
+  <p id="primer-later">Later visible insights paragraph.</p>
+
+  <!-- ⑪ 一度描かれてから中身を飛ばす形。ここが本命の反例で、
+       Range は**古い矩形を返し続ける**（実測: 隠す前も後も 1 個）。
+       つまり「文字に矩形があるか」では見抜けず、先祖を名指しで見るしかない。
+       ⑦ のように最初から隠れている場合は矩形が 0 になるので、両方を置く。 -->
+  <div id="late-host"><span id="late-dc" style="display:contents">Try to fetch it.</span></div>
+  <div id="late-sink"></div>
+</body></html>`;
+
+/* 印の片づけと付け直し。ページ側が印の隣へ節点を挿す／印だけを外す／
+   親ごと差し替える、といった動きの中で、こちらが何を壊さないかを見る。 */
+export const RETIRE_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>retire</title></head><body>
+  <p id="solo">Undo it with a revert now.</p>
+  <p id="tail-end">Look at the blame</p>
+  <p><a href="#" id="hosted">Open the diff</a></p>
+  <p id="two">A remote and an origin differ.</p>
+  <p id="replaceable">Check the packages list.</p>
+  <p id="selectable">Ask for a careful review of the code.</p>
   <div id="sink"></div>
 </body></html>`;
 

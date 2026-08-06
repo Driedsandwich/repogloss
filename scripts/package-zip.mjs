@@ -1,6 +1,7 @@
 // ストアへ出す ZIP を作り、作ったものを開き直して中身を確かめる。
-//   node scripts/package-zip.mjs           … 作る（作った直後に検査もする）
-//   node scripts/package-zip.mjs --verify  … 既にある ZIP を検査するだけ
+//   node scripts/package-zip.mjs                    … 作る（作った直後に検査もする）
+//   node scripts/package-zip.mjs --verify           … 既にある ZIP を検査するだけ
+//   node scripts/package-zip.mjs --verify --release … さらに「CI が作ったものか」まで見る
 //
 // 警告では止めない。合わなければ終了コードを 0 以外にして落とす。
 // 逃げ道は --allow-uncommitted だけで、その場合はファイル名へ UNCOMMITTED が入る
@@ -13,9 +14,11 @@ import { execFileSync } from 'node:child_process';
 import { PACKAGE_FILES } from './package-files.mjs';
 import { writeZip } from './zip.mjs';
 import { verifyZipBuffer } from './verify-zip.mjs';
+import { validateProvenance } from './provenance.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const VERIFY_ONLY = process.argv.includes('--verify');
+const RELEASE_MODE = process.argv.includes('--release');
 const ALLOW_DIRTY = process.argv.includes('--allow-uncommitted');
 const sha256 = buf => createHash('sha256').update(buf).digest('hex');
 
@@ -125,26 +128,21 @@ if (VERIFY_ONLY) {
   let rec;
   try { rec = JSON.parse(readFileSync(PROVENANCE, 'utf8')); }
   catch (e) { console.error(`NG: 身元ファイルが JSON として読めない: ${e.message}`); process.exit(1); }
-  const mismatch = [];
-  if (rec.sha256 !== provenance.sha256) mismatch.push(`ZIP の SHA-256（記録 ${rec.sha256} / 実物 ${provenance.sha256}）`);
-  if (rec.contentSha256 !== provenance.contentSha256) mismatch.push('中身の合算ハッシュ');
-  if (rec.version !== provenance.version) mismatch.push(`version（記録 ${rec.version} / 実物 ${provenance.version}）`);
-  if (rec.bytes !== provenance.bytes) mismatch.push(`大きさ（記録 ${rec.bytes} / 実物 ${provenance.bytes}）`);
-  if (rec.fileCount !== provenance.fileCount) mismatch.push('ファイル数');
-  if (JSON.stringify(rec.files) !== JSON.stringify(provenance.files)) mismatch.push('ファイルの一覧');
-  // 出どころは、記録側だけが知っている（別環境で検証するときは env が空になる）。
-  // 今の HEAD と食い違っていたら、別のコミットの成果物を見ている可能性がある。
-  const here = provenance.source.commit;
-  if (rec.source && rec.source.commit && here && rec.source.commit !== here) {
-    mismatch.push(`出どころのコミット（記録 ${rec.source.commit} / いまの HEAD ${here}）`);
-  }
-  if (mismatch.length) {
-    console.error(`NG: 正本の記録と実物が食い違う\n` + mismatch.map(m => '  - ' + m).join('\n'));
+  // 実物と一致するかだけでなく、**項目が揃っているか**まで見る。
+  // 欠けている項目を「比べなかったから合格」にすると、出どころの分からない
+  // ZIP が通ってしまう（v1.8.5 は source.commit を、在るときだけ比べていた）。
+  // 出どころは記録側だけが知っている（別環境で検証すると env は空になる）ので、
+  // 現在の HEAD との突き合わせだけをこちらから足す。
+  const problems = validateProvenance(rec, { ...provenance, headCommit: provenance.source.commit },
+    { release: RELEASE_MODE });
+  if (problems.length) {
+    console.error(`NG: 身元の記録が${RELEASE_MODE ? '提出候補として' : ''}通らない（${problems.length} 件）\n`
+      + problems.map(m => '  - ' + m).join('\n'));
     process.exit(1);
   }
   // ローカルで検証した記録を残したい場合は、正本と別の名前へ出す
   writeFileSync(join(DIST, `${zipName}.verified-local.json`),
-    JSON.stringify({ verifiedAt: 'local', ...provenance }, null, 2) + '\n');
+    JSON.stringify({ verifiedAt: 'local', release: RELEASE_MODE, ...provenance }, null, 2) + '\n');
 } else {
   writeFileSync(PROVENANCE, JSON.stringify(provenance, null, 2) + '\n');
 }

@@ -203,11 +203,36 @@ const REPO_PAGE = `<!doctype html><html lang="en" data-color-mode="light">
   </script>
 </body></html>`;
 
-export function startTestServer() {
+/* 見えない場所の直接テキストと、印の付け直し（ライフサイクル）を確かめるページ。
+   語が重ならないよう、確認したい場所ごとに別の辞書語を割り当てる。 */
+export const LIFECYCLE_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>lifecycle</title></head><body>
+  <!-- 直接テキストを持つ隠し方。子ではなく、その要素自身が文字を持つ形 -->
+  <div id="cvd" style="content-visibility:hidden">Make a commit now.</div>
+  <p id="after-cvd">Later visible commit paragraph.</p>
+  <div id="hd" hidden>Open the issues tab.</div>
+  <p id="after-hd">Later visible issues paragraph.</p>
+  <div id="huf" hidden="until-found">Look at the checks tab.</div>
+  <p id="after-huf">Later visible checks paragraph.</p>
+
+  <!-- 大きな箱に全面の切り取りを掛けた読み上げ専用テキスト -->
+  <div id="bigclip" style="position:absolute;width:400px;height:200px;overflow:hidden;clip:rect(0 0 0 0)">A milestone groups work.</div>
+  <p id="after-bigclip">Later visible milestone paragraph.</p>
+
+  <!-- 箱を作らないが文字は見えている（display:contents の直接テキスト） -->
+  <div id="dcd" style="display:contents">A webhook fires here.</div>
+
+  <!-- 印の付け直し。単独の印と、リンクの中の印の両方で往復させる -->
+  <p id="life-plain">Do not reset it lightly.</p>
+  <p><a href="#" id="life-link">Add an ssh key</a></p>
+  <div id="sink"></div>
+</body></html>`;
+
+export function startTestServer(html = REPO_PAGE) {
   const { key, cert } = makeCert();
   const server = https.createServer({ key, cert }, (req, res) => {
     res.setHeader('content-type', 'text/html; charset=utf-8');
-    res.end(REPO_PAGE);
+    res.end(html);
   });
   return new Promise(resolve => {
     server.listen(0, '127.0.0.1', () => {

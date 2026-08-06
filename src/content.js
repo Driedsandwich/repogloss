@@ -107,7 +107,6 @@
   // "Repository files navigation" に印が付いており、目に見える repository より先に
   // 「ページで最初の1回」を使い切っていた。クラス名は版ごとに変わる自動生成なので、
   // 名前ではなく形（1px 以下 ＋ clip）で判定する。
-  // 大きさの確認は安いので先に置き、getComputedStyle はそこを通ったものだけで呼ぶ。
   function isClipHidden(el) {
     for (let n = el; n && n !== document.body; n = n.parentElement) {
       if (n.offsetWidth > 1 || n.offsetHeight > 1) continue;
@@ -532,15 +531,35 @@
     return tabbable(icon) ? icon : null;
   }
 
-  // 使えなくなった印を片づける。本文の文字は触らない（印は <sup> 1つで、
-  // 中に文字を持たないため、取り除いても文章は壊れない）。
+  // 使えなくなった印を片づける。**元の語を、また注記できる状態へ戻す**ところまでやる。
+  //
+  // 印を入れるとき splitText でテキストを2つに割り、両方を handled へ入れている。
+  // 印だけ消すと、割れたテキストは handled に残ったままなので、その語は
+  // そのページを開いている間ずっと説明されなくなる（隠した場所をあとで戻しても、
+  // 画面遷移で全体を走査し直しても復活しない。実測で再現）。
+  //
+  // だから、自分が割った2つを1つに戻し、handled から外して走査対象へ返す。
+  // 親全体へ normalize() は掛けない——ページ側が持っている Text node の同一性や
+  // 選択範囲を壊しうるので、触るのは自分が割った範囲だけにする。
   function retireGloss(key) {
     const icon = glossed.get(key);
     if (!icon) return;
     if (icon.isConnected) {
       // その印について説明を出している最中なら、先に閉じる
       if (tip && tipIcons.includes(icon)) hideTip();
+      const prev = icon.previousSibling;
+      const next = icon.nextSibling;
       icon.remove();
+      const isText = n => n && n.nodeType === Node.TEXT_NODE;
+      if (isText(prev) && isText(next)) {
+        prev.appendData(next.nodeValue);   // 文字列は足し合わせるだけ。増減しない
+        next.remove();
+        handled.delete(prev);
+      } else {
+        // 片側しかテキストが無い形（行頭・行末など）でも、走査対象へは戻す
+        if (isText(prev)) handled.delete(prev);
+        if (isText(next)) handled.delete(next);
+      }
     }
     glossed.delete(key);
   }

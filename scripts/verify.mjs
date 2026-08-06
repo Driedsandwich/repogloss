@@ -221,6 +221,34 @@ check(`STORE_LISTING が今回の提出版 ${manifest.version} を指してい�
 check('README が CI の成果物（提出用 ZIP）について書いている',
   /artifact/.test(readme) && /提出用 ZIP/.test(readme));
 
+/* ---------- 監査資料が、現在の版を指しているか ---------- */
+// 版を上げたのに監査資料が前の版のままだと、監査側が別のものを読む。
+// commit SHA や CI run ID は commit 後にしか決まらないので、ここでは
+// 「版」と「準備段階の言い切り」だけを見る。
+{
+  const audit = read('AUDIT.md');
+  const v = manifest.version;
+  check(`AUDIT.md が現在の版 ${v} を指している`, audit.includes(v),
+    'AUDIT.md に現在のバージョンが出てこない');
+  // 再現手順が古い版を checkout していないか
+  const co = [...audit.matchAll(/git checkout (v\d+\.\d+\.\d+)/g)].map(m => m[1]);
+  const staleCo = co.filter(t => t !== `v${v}`);
+  check('AUDIT.md の再現手順が現在の版を checkout している', staleCo.length === 0,
+    `古い版: ${staleCo.join(', ')}`);
+  // 変更記録に、準備段階の言い切りが残っていないか
+  const changes = existsSync(join(ROOT, `docs/audit/v${v}-changes.md`))
+    ? read(`docs/audit/v${v}-changes.md`) : '';
+  check(`docs/audit/v${v}-changes.md がある`, changes.length > 0);
+  // 見るのは冒頭の「いまどういう状態か」を書く部分だけ。
+  // 後ろの本文では、過去の版の記述を直した経緯として同じ言葉を引用することがある
+  // （実際に誤検出した）。状態の宣言と、経緯の説明を区別する。
+  const head = changes.split('\n---')[0];
+  const prep = ['まだ commit していない', 'タグも成果物も無い']
+    .filter(w => head.includes(w));
+  check('変更記録の冒頭に、準備段階の言い切りが残っていない', prep.length === 0,
+    `残っている表現: ${prep.join(' / ')}`);
+}
+
 /* ---------- 権限の説明が文書間でそろっているか ---------- */
 // 「storage のみ」と書くと、github.com のページ本文を読むことが伝わらない。
 for (const [name, body] of [['README.md', readme], ['PRIVACY.md', read('PRIVACY.md')], ['STORE_LISTING.md', store]]) {

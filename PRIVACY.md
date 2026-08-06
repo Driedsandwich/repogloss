@@ -1,6 +1,6 @@
 # プライバシーポリシー / Privacy Policy — RepoGloss
 
-最終更新: 2026-08-05
+最終更新: 2026-08-06（v1.8.5）
 
 ---
 
@@ -19,7 +19,7 @@
 
 | データ | 処理（使う） | 端末内に保存 | 外部へ送信 | 第三者と共有 | 開発者が閲覧 |
 |---|---|---|---|---|---|
-| GitHub のページ上に**表示されている文章** | **する**（同梱辞書との照合） | しない | しない | しない | しない |
+| GitHub のページ上の**文章**（下の除外領域を除く。CSS で見えなくなっているものを含む） | **する**（同梱辞書との照合と、見えるかどうかの判定） | しない | しない | しない | しない |
 | 開いている GitHub ページの**URL** | **する**（画面が切り替わったことの検知にだけ使う） | しない | しない | しない | しない |
 | ON / OFF の設定（真偽値 `iiyakuEnabled` ひとつ） | する | **する**（`chrome.storage.local`） | しない | しない | しない |
 | Cookie・認証情報・入力欄やフォームの中身・編集中の文章 | **しない**（走査の前に除外します） | しない | しない | しない | しない |
@@ -33,15 +33,25 @@
 >
 > 一方、**入力欄・フォーム・編集中の領域・コード表示は、文字列を取り出す前に除外**します。「書き換えない」だけでなく「読み取らない」という意味です（`src/content.js` の `isTarget` が、除外を決めてからでないと文字列に触れない作りになっており、その順序は自動検査で固定しています）。
 
-### 2. 表示されている文章の扱い（くわしく）
+### 2. ページの文章の扱い（くわしく）
 
-`github.com` のページを開いている間、**ページ上に表示されている文章を読み取り、利用します。**
+`github.com` のページを開いている間、**ページ上の文章を読み取り、利用します。**
 
-- 用途は、拡張に同梱された辞書（`locales/dict.json`）と照合することだけです。
+**正確な範囲**: 下の「触れない領域」を除いた文章が対象です。そこには、**CSS で見えなくなっている文章も含まれます**（`display:none`、`opacity:0`、`content-visibility:hidden` など）。見えるかどうかは、文字列を読んで辞書に当たった後で判定するためです。先に全部の可視性を測ると、ページが目に見えて重くなります。
+
+**印を付けるのは、見えると判定できた一致だけ**です。見えない場所の一致には印を付けません。
+
+- 用途は、拡張に同梱された辞書（`locales/dict.json`）と照合し、見える場所かどうかを判定することだけです。
 - 照合はすべて利用者の端末内（ブラウザの中）で完結します。ネットワークへは出ません。
 - 結果として、一致した用語の横に ⓘ を表示し、日本語の説明をツールチップとして出します。それ以外の用途はありません。
 - 読み取った内容を保存しません。ページを閉じれば残りません。
-- 編集中の領域（`contenteditable`・入力欄・コード表示）には触れず、読み取りも書き換えもしません。
+- **触れない領域**（下記）は、**文字列を取り出す前に**除外します。読み取りも書き換えもしません。
+  - 編集中の領域（`contenteditable`）
+  - 入力欄・フォーム（`textarea` / `input` / `select`）
+  - コード表示（`<pre>` `<code>` と GitHub のコードビューア）
+  - 読み上げから隠された領域（`aria-hidden="true"`・`.sr-only`・`.visually-hidden`）
+  - 操作できない領域（`inert`）
+  - `hidden` 属性が付いた領域（`hidden="until-found"` を含む）
 
 読み取りの範囲は `github.com` に限られます。他のサイトでは動作しません（`manifest.json` の `content_scripts.matches` が `https://github.com/*` のみのため）。
 
@@ -106,7 +116,7 @@ GitHub リポジトリの Issue でお願いします。脆弱性の報告のみ
 
 | Data | Processed (used) | Stored on device | Transmitted off device | Shared with third parties | Viewed by the developer |
 |---|---|---|---|---|---|
-| **Text displayed on** GitHub pages | **Yes** (matched against the bundled dictionary) | No | No | No | No |
+| **Text on** GitHub pages, excluding the regions listed below (this includes text hidden by CSS) | **Yes** (dictionary matching and a visibility check) | No | No | No | No |
 | **URL** of the GitHub page being viewed | **Yes** (compared with the previous value to detect in-page navigation) | No | No | No | No |
 | On/off setting (a single boolean, `iiyakuEnabled`) | Yes | **Yes** (`chrome.storage.local`) | No | No | No |
 | Cookies, credentials, form fields, editable content | **No** (excluded before any text is read) | No | No | No | No |
@@ -120,15 +130,25 @@ No network requests are made to any external server (no translation API, no anal
 >
 > Separately, **form fields, editable regions, and code views are excluded before their text is read at all** — not merely left unmodified. `isTarget` in `src/content.js` cannot touch a text value until the exclusion check has passed, and that ordering is enforced by an automated check.
 
-### 2. Displayed text, in detail
+### 2. Page text, in detail
 
-While a `github.com` page is open, the extension **reads and uses the text displayed on that page.**
+While a `github.com` page is open, the extension **reads and uses text on that page.**
 
-- The text is used solely to match against a dictionary bundled with the extension (`locales/dict.json`).
+**Exact scope**: everything except the excluded regions listed below — **including text that CSS has made invisible** (`display:none`, `opacity:0`, `content-visibility:hidden`, and so on). Visibility is decided *after* the string has been read and matched against the dictionary, because measuring visibility for every text node first makes the page noticeably slower.
+
+**Markers are only placed on matches judged to be visible.** Invisible matches get no marker.
+
+- The text is used solely to match against the bundled dictionary (`locales/dict.json`) and to decide whether the spot is visible.
 - All matching happens locally, inside the user's browser. Nothing leaves the device.
 - The only result is a small ⓘ marker next to a matched term, showing a Japanese explanation as a tooltip.
 - Read text is never stored. Nothing remains once the page is closed.
-- Editable regions (`contenteditable`, form fields, code views) are neither read nor modified.
+- **Excluded regions are skipped before any text is read** — neither read nor modified:
+  - editable regions (`contenteditable`)
+  - form fields (`textarea` / `input` / `select`)
+  - code views (`<pre>`, `<code>`, GitHub's code viewer)
+  - regions hidden from assistive technology (`aria-hidden="true"`, `.sr-only`, `.visually-hidden`)
+  - non-interactive regions (`inert`)
+  - anything carrying the `hidden` attribute (including `hidden="until-found"`)
 
 Reading is limited to `github.com`. The extension does not run on any other site.
 

@@ -650,18 +650,41 @@
   //   - DOM にあり、その場所が実際に見えている
   //   - 単独の印なら、その印自身が Tab の順路に入る
   //   - 装飾扱いの印なら、対応する入口が生きていて Tab の順路に入る
+  // 記録した内容と、いまの DOM が食い違っていないか。
+  //
+  // 印が DOM に在ることだけを見ていると、**語のほうが消された場所に残った印**を
+  // 「使える」と誤認する。実測では、語の Text node を消して印だけ残すと、
+  // その後に現れた本物の語が「説明済み」として抑止された。ページ側が語と印の
+  // あいだへ節点を挿し込んだ場合も、印は語の直後ではなくなる（実測）。
+  // だから、記録した組み合わせがそのまま残っているかを毎回確かめる。
+  function isCoherent(rec) {
+    if (!rec.icon.isConnected || !rec.termNode.isConnected) return false;
+    if (rec.icon.parentNode !== rec.parent || rec.termNode.parentNode !== rec.parent) return false;
+    // 記録した位置に、記録した語がまだあるか
+    const v = rec.termNode.nodeValue;
+    if (v.slice(rec.splitOffset - rec.term.length, rec.splitOffset) !== rec.term) return false;
+    // 印は語のすぐ後ろか（ページ側が間へ挿し込んでいないか）
+    if (rec.icon.previousSibling !== rec.termNode) return false;
+    // 装飾扱いの印は、記録した入口がいまも生きていて、印が指している ID と
+    // 同じ名札を持っていること。
+    // ここで document 全体を引き直さない——同じ ID を持つ要素が2つ出るのは
+    // 複製されたときだけで、それは sanitizeClones が走査より前に取り除いている。
+    // 全体を引くと、語が見つかるたびに文書全体の検索が走る（実測で重かった）。
+    if (rec.placementKind === 'hosted') {
+      const id = rec.icon.dataset.iiyakuFor;
+      if (!id || !rec.trigger || !rec.trigger.isConnected) return false;
+      if (rec.trigger.getAttribute('data-iiyaku-trigger') !== id) return false;
+    }
+    return true;
+  }
+
   function usableGloss(key) {
     const rec = glossed.get(key);
     if (!rec) return null;
-    const icon = rec.icon;
-    if (!icon.isConnected) return null;
-    if (!isVisibleOccurrence(icon.parentElement)) return null;
-    const forId = icon.dataset.iiyakuFor;
-    if (forId) {
-      const trigger = document.querySelector(`[data-iiyaku-trigger="${forId}"]`);
-      return trigger && tabbable(trigger) ? rec : null;
-    }
-    return tabbable(icon) ? rec : null;
+    if (!isCoherent(rec)) return null;
+    if (!isVisibleOccurrence(rec.icon.parentElement)) return null;
+    if (rec.placementKind === 'hosted') return tabbable(rec.trigger) ? rec : null;
+    return tabbable(rec.icon) ? rec : null;
   }
 
   // 使えなくなった印を片づける。**元の語を、また注記できる状態へ戻す**ところまでやる。
@@ -694,18 +717,17 @@
     return rec;
   }
 
-  // 自分の印が、この片づけを通らずに DOM から外れることがある。GitHub が一部を
-  // 描き直したときや、ページ側が要素を消したときである。放っておくと、記録した
-  // 節点が handled に残り、その語はページを開いているあいだ二度と説明されない
-  // （実測: 印を外して画面遷移しても付き直さなかった）。
+  // 記録と DOM の食い違いを見つけて片づける。
   //
-  // 記録は辞書のキーの数（61）で頭打ちなので、変更のたびに数え直しても軽い。
-  // 外れていた印を片づけたら、その場所をすぐ見直す（画面遷移を待たない）。
-  function recoverDetachedGlosses() {
+  // 印が外れる形（GitHub の描き直し）だけでなく、語だけが消される形、語と印の
+  // あいだへページ側が節点を挿す形もある。後者は removedNodes を伴わないので、
+  // **ノードが増えただけの変更でも**数え直す。記録は辞書のキーの数（61）で
+  // 頭打ちなので、毎回全部見ても軽い（DOM の読み取りだけでレイアウトは起こさない）。
+  function reconcileGlosses() {
     let released = null;
     for (const key of [...glossed.keys()]) {
       const rec = glossed.get(key);
-      if (rec && !rec.icon.isConnected) (released ??= []).push(retireGloss(key));
+      if (rec && !isCoherent(rec)) (released ??= []).push(retireGloss(key));
     }
     return released;
   }
@@ -720,7 +742,6 @@
     generation++;
     return scanInner(document.body);
   }
-
 
   /* ---------- 6. 注記 ---------- */
   // 1つのテキストノードに含まれる一致すべてへ注記する。
@@ -823,12 +844,10 @@
   let lastUrl = location.href;
   // 差し込みが一度に何十件も来るので、1回分の呼び出しでは測定結果を共有する。
   const observer = new MutationObserver(muts => withRenderCache(() => {
-    // 自分の印だけがページ側から外されることがある。記録した節点を handled へ
-    // 残したままにすると、その語は二度と説明されない。外れていたら片づけて、
-    // その場で見直す（画面遷移やノードの追加を待たない）。
-    let removals = false;
-    for (const mu of muts) if (mu.removedNodes.length) { removals = true; break; }
-    const released = removals ? recoverDetachedGlosses() : null;
+    // ② 記録と DOM の食い違いを片づける。印が外された形だけでなく、語だけが
+    //    消された形・語と印のあいだへ挿し込まれた形もあるので、ノードが
+    //    増えただけの変更でも数え直す。
+    const released = reconcileGlosses();
 
     // GitHub はページを読み直さずに画面を差し替えることがある。
     // 別のページに移ったら「印を付けた語」を数え直す。そうしないと、

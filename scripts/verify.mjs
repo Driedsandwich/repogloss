@@ -379,9 +379,10 @@ check('README が CI の成果物（提出用 ZIP）について書いている'
   check('AUDIT.md に、現在版を名乗る節が残っている', current.length > 500,
     `履歴でない部分が ${current.length} 文字しかない＝節の切り分けが壊れている`);
   // 陽性対照: 取り下げ版の記録だけが落ち、現在版の記載は残ること
+  // 「|| current.includes(v)」のような逃げ道を付けると、正本の行が消えても通ってしまう。
+  const VERSION_LINE = new RegExp(`^version:[ \\t]+${v.replace(/\./g, '\\.')}\\s*$`, 'm');
   check('取り下げ版の除外が、現在版の記載まで落としていない（陽性対照）',
-    current.includes(`version:            ${v}`) || current.includes(v),
-    '現在版の記載ごと落ちている');
+    VERSION_LINE.test(current), '現在版の記載ごと落ちている');
   check('取り下げ版の除外が、実際に効いている（陽性対照）',
     stripSuperseded('superseded:\n  - zip: repogloss-0.0.1.zip\nnext: keep\n') === 'next: keep\n');
 
@@ -409,6 +410,50 @@ check('README が CI の成果物（提出用 ZIP）について書いている'
     check(`${label}を探す検査が、実際に古い記載を捕まえる（陽性対照）`,
       !!hit && hit[1] !== v, `この行を捕まえられない: ${staleSample}`);
     re.lastIndex = 0;
+  }
+
+  /* ---- §1-1 の機械可読ブロック（AUDIT.md 自身が「ここが正本」と書いている場所） ---- */
+  // v1.8.7 を打った直後に測ったところ、この yaml の version と commit を古い値へ
+  // 戻しても検査は素通りした。正本と名乗る場所が検査の外に在ると、他の節をいくら
+  // 直しても取り残しが残る（第7回 RG-7-08・第8回 RG-8-05 と同じ型）。
+  {
+    const block = /```yaml\n([\s\S]*?)```/.exec(current);
+    check('AUDIT.md §1-1 に機械可読ブロックがある', !!block);
+    const yaml = block ? block[1] : '';
+    const field = (t, k) => (new RegExp(`^${k}:[ \\t]+(\\S+)`, 'm').exec(t) || [])[1];
+
+    check('§1-1 の version が manifest と一致する', field(yaml, 'version') === v,
+      `yaml: ${field(yaml, 'version')} / manifest: ${v}`);
+    // 陽性対照: この読み取りが、古い値を実際に読み分けられること
+    check('§1-1 の version を読む検査が、古い値を捕まえる（陽性対照）',
+      field(`version:            1.0.0\n`, 'version') === '1.0.0');
+
+    const tag = field(yaml, 'tag');
+    check('§1-1 の tag が、未記入か現在の版のタグである',
+      tag === 'null' || tag === `v${v}`, `tag: ${tag}`);
+
+    const commit = field(yaml, 'commit');
+    check('§1-1 の commit が、未記入か 40 桁の hex である',
+      commit === undefined || /^[0-9a-f]{40}$/.test(commit), `commit: ${commit}`);
+
+    // 取り下げた版のコミットを、現在版の commit として書いてしまう取り違えを止める。
+    // `superseded:` の中は上で落としてあるので、元の全文から拾う。
+    const supersededCommits =
+      [...audit.matchAll(/^[ \t]+commit:[ \t]+([0-9a-f]{40})/gm)].map(mm => mm[1]);
+    check('§1-1 の commit が、取り下げた版のコミットと同じでない',
+      !commit || !supersededCommits.includes(commit),
+      `${commit} は superseded にも載っている`);
+    // 陽性対照: 比較の相手が空だと、上の検査は必ず通ってしまう
+    check('取り下げた版のコミットを、実際に1件以上拾えている（陽性対照）',
+      supersededCommits.length > 0, 'superseded の commit を1件も拾えていない');
+
+    // 提出候補の SHA を書くなら、ZIP 名・バイト数と揃っていること
+    const zip = field(yaml, 'candidate_zip');
+    const sha = field(yaml, 'candidate_sha256');
+    check('§1-1 の candidate_zip と candidate_sha256 が、両方あるか両方無いか',
+      (zip === 'null') === (sha === 'null'), `zip: ${zip} / sha: ${sha}`);
+    check('§1-1 の candidate_sha256 が、未記入か 64 桁の hex である',
+      sha === 'null' || /^[0-9a-f]{64}$/.test(sha ?? ''), `sha: ${sha}`);
   }
 
   // 既に取り下げた提出候補の SHA は、履歴か「参考」と書いた行にしか出てこないこと

@@ -546,6 +546,23 @@ check('content.js が保存キー iiyakuEnabled を変えていない', content.
 check('ツールチップが狭い画面でも収まる指定を持つ',
   /max-width:\s*min\(/.test(css) && /box-sizing:\s*border-box/.test(css.split('.iiyaku-tooltip {')[1] ?? ''));
 
+/* ---------- 監査入口が名乗る検査件数が、実際の件数と合っているか（RG-9-08） ---------- */
+// 版・SHA・タグは検査していたのに、**検査の件数だけ**が同期の外に在った。
+// その結果、`AUDIT.md` が古い件数（158・166）を名乗ったまま残った（実測）。
+// 自分の件数を自分で名乗る以上、そこも突き合わせる。
+// この検査自身が最後の1件なので、いまの checks に 1 を足したものが最終の件数になる。
+{
+  const auditText = read('AUDIT.md');
+  const claimed = [...auditText.matchAll(/検査\s*[（(]\s*(\d+)\s*項目\s*[）)]/g)].map(m => Number(m[1]));
+  const claimed2 = [...auditText.matchAll(/構成検査\s*\*{0,2}(\d+)\s*項目/g)].map(m => Number(m[1]));
+  const all = [...claimed, ...claimed2];
+  const total = checks + 1;
+  check(`AUDIT.md が名乗る検査件数が、実際の ${total} 件と一致する`,
+    all.length > 0 && all.every(n => n === total),
+    all.length === 0 ? 'AUDIT.md に検査件数の記載が見つからない（書き方を変えたなら、この検査も直す）'
+                     : `AUDIT.md の記載: ${[...new Set(all)].join(', ')} / 実際: ${total}`);
+}
+
 /* ---------- 結果 ---------- */
 const label = `${checks} 件を検査`;
 if (failures.length > 0) {

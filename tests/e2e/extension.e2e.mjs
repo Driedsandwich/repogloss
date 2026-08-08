@@ -1671,7 +1671,6 @@ test('ページ側の同名 class・同名属性を壊さず、面積0の切り�
       'display:contents 自身の clip-path を効かせてしまっている');
   });
 
-
   await tab.close();
 });
 

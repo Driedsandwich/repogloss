@@ -383,17 +383,6 @@ export const RESELECT_PAGE = `<!doctype html><html lang="en"><head><meta charset
   <div id="sink"></div>
 </body></html>`;
 
-/* 注記したあとで、その場所が「触れない領域」へ変わる。
-   本文を読む前に手を引けているかを、生の読み取りで測る。 */
-export const PROTECTED_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
-<title>protected</title></head><body>
-  <p id="pr-ce">A branch here.</p>
-  <p id="pr-ah">A commit here.</p>
-  <p id="pr-in">A merge here.</p>
-  <p id="pr-hd">A fetch here.</p>
-  <div id="sink"></div>
-</body></html>`;
-
 /* 記録が「整合している」だけでは足りない場面。隠された・無効にされた・
    語の後ろに文字が増えた・入口の意味が変わった、のいずれでも、
    読める同じ語へ説明が移ること。 */
@@ -422,16 +411,6 @@ export const USABILITY_PAGE = `<!doctype html><html lang="en"><head><meta charse
   <div id="sink"></div>
 </body></html>`;
 
-/* 退役と選び直しが、変更のたびに収束するか。 */
-export const CONVERGE_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
-<title>converge</title></head><body>
-  <p id="cv1">A conflict first.</p>
-  <p id="cv2">A conflict second.</p>
-  <p id="cv3">A conflict third.</p>
-  <p id="cv-sel">Ask for a careful review of the code.</p>
-  <div id="cv-sink"></div>
-</body></html>`;
-
 /* 名前が衝突したときに、ページ側のものを壊さないか。
    と、面積0の切り取りを取りこぼさないか。 */
 export const NAMESPACE_CLIP_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -457,6 +436,27 @@ export const NAMESPACE_CLIP_PAGE = `<!doctype html><html lang="en"><head><meta c
   <p id="c-part-later">A tags later.</p>
   <div id="c-dc" style="display:contents; clip-path:inset(50%)">A sync shown.</div>
   <p id="c-dc-later">A sync later.</p>
+</body></html>`;
+
+/* 注記したあとで、その場所が「触れない領域」へ変わる。
+   本文を読む前に手を引けているかを、生の読み取りで測る。 */
+export const PROTECTED_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>protected</title></head><body>
+  <p id="pr-ce">A branch here.</p>
+  <p id="pr-ah">A commit here.</p>
+  <p id="pr-in">A merge here.</p>
+  <p id="pr-hd">A fetch here.</p>
+  <div id="sink"></div>
+</body></html>`;
+
+/* 退役と選び直しが、変更のたびに収束するか。 */
+export const CONVERGE_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>converge</title></head><body>
+  <p id="cv1">A conflict first.</p>
+  <p id="cv2">A conflict second.</p>
+  <p id="cv3">A conflict third.</p>
+  <p id="cv-sel">Ask for a careful review of the code.</p>
+  <div id="cv-sink"></div>
 </body></html>`;
 
 export function startTestServer(html = REPO_PAGE) {

@@ -1,4 +1,4 @@
-# 監査のための資料（第9回監査用）
+# 監査のための資料（第10回監査用）
 
 このファイルは、外部監査を受けるための入口です。**このリポジトリだけを読めば監査に必要な情報が揃う**ようにしてあります。
 
@@ -12,49 +12,54 @@ RepoGloss は、GitHub の画面に出てくる英語のうち Git / GitHub 固�
 
 | 項目 | 値 |
 |---|---|
-| **監査対象** | **タグ `v1.8.7`** = コミット `308bf038efe18f857bf5bb655bce65b991712a93`（PR #17 の merge commit） |
-| 直前の版 | `v1.8.6` = コミット `3848b89a9cdc7df62dc2eaff8c4ae4b6e6e18086`（**第8回監査の指摘により提出しない**） |
-| 基点コミット | `3cbe4bb767e368e00456855614cd0db1e9a24aeb`（`main`。ここからの差分が今回の変更） |
+| **監査対象** | **v1.8.8 候補（作業ツリー）。まだ commit も tag もしていない** |
+| 直前の版 | `v1.8.7` = コミット `308bf038efe18f857bf5bb655bce65b991712a93`（**第9回監査の指摘により提出しない**） |
+| 基点コミット | `c3d06fbc210a6349fa28d1be99508267011624c8`（`main`。ここからの差分が今回の変更） |
 | 現在の既定ブランチ | `main` |
-| Manifest | v1.8.7 / Manifest V3 |
+| Manifest | v1.8.8 / Manifest V3 |
 | **最低の Chrome** | **105**（`minimum_chrome_version`。v1.8.6 で追加） |
 | Chrome API 権限 | `storage` のみ |
 | サイトアクセス | `https://github.com/*` |
 | `host_permissions` | 宣言なし |
 | 実行されるコード | [`src/matcher.js`](src/matcher.js) と [`src/content.js`](src/content.js) の2本（同梱のみ・リモートコードなし） |
 | 外部依存パッケージ | **なし**（`package.json` は検証用の scripts だけ。ZIP 生成も Node 標準の `zlib` で自作） |
-| ストア公開中の版 | **v1.7.1**（v1.8.0〜v1.8.7 はいずれも未提出） |
+| ストア公開中の版 | **v1.7.1**（v1.8.0〜v1.8.8 はいずれも未提出） |
 
 差分は次のコマンドで確認できます。
 
 ```sh
-git diff --name-only v1.8.6 v1.8.7     # 直前の版との差分
+git diff --name-only v1.8.7            # 作業ツリーと、直前の版との差分
 # → 配布13ファイルのうち manifest.json・src/content.js・README.md・DESIGN.md・
 #    PRIVACY.md が変わっている（辞書・styles.css・matcher.js・アイコン・LICENSE は無変更）
 # → ほかに scripts/ と tests/ と docs/（配布物には入らない）
 ```
 
-**タグは打ってありますが、ウェブストアへは提出していません。** 監査はタグ `v1.8.7` の内容に対して行ってください。
+**まだ commit していないので、タグも提出候補の ZIP もありません。** 監査は作業ツリーの内容に対して行ってください。
 
-### 1-1. 提出候補
+### 1-1. 提出候補（まだ作っていない）
 
-**v1.8.7 の提出候補 ZIP は、CI が作ったものだけです。** 手元で作ったものは `--release` 検査で落ちます（実測。ローカルの HEAD がタグと違うだけでも落ちます）。
+**v1.8.8 の提出候補 ZIP は、この時点では存在しません。** commit・push・tag をしていないため CI が動いておらず、CI が作る `repogloss-store-zip` もありません。提出するのは、いつも CI が作ったものだけです（手元で作ったものは `--release` 検査で落ちます。ローカルの HEAD がタグと違うだけでも落ちます）。
 
 現在版の事実を、機械で読める形で1か所にまとめます（**ここが正本**。他の節はここを引用します）。
 
 ```yaml
-version:            1.8.7
-state:              tagged             # commit / tag は実施。release / store submission は未実施
-base_commit:        3cbe4bb767e368e00456855614cd0db1e9a24aeb
-commit:             308bf038efe18f857bf5bb655bce65b991712a93
-tag:                v1.8.7
-candidate_zip:      repogloss-1.8.7.zip
-candidate_bytes:    90204
-candidate_sha256:   9f590f7c299d8c5f4bd62fc9cf87a5a9a2c8215945683faca76d0cf496afb93e
-content_sha256:     461e428d157baa8f818d4ea9115714d32f0080f7124aa57c1e17a95630f7973e
-combined_sha256:    1d9bcf5193ada70577a41a4dd5f2c15c71cbe16ade3b7f1397071debb719125f
-workflow_run:       31230981587
+version:            1.8.8
+state:              uncommitted        # commit / tag / release / store submission いずれも未実施
+base_commit:        c3d06fbc210a6349fa28d1be99508267011624c8
+tag:                null
+candidate_zip:      null
+candidate_bytes:    null
+candidate_sha256:   null
+content_sha256:     null
+combined_sha256:    null
+workflow_run:       null
 superseded:
+  - version: 1.8.7
+    tag: v1.8.7
+    commit: 308bf038efe18f857bf5bb655bce65b991712a93
+    zip: repogloss-1.8.7.zip
+    sha256: 9f590f7c299d8c5f4bd62fc9cf87a5a9a2c8215945683faca76d0cf496afb93e
+    reason: 第9回監査の指摘により提出しない
   - version: 1.8.6
     tag: v1.8.6
     commit: 3848b89a9cdc7df62dc2eaff8c4ae4b6e6e18086
@@ -64,11 +69,9 @@ superseded:
 store_published:    1.7.1
 ```
 
-タグ `v1.8.6` とその ZIP は保存したまま動かしていません（退避先で SHA が変わっていないことも確認済み）。**v1.8.7 を打った前後で、既存11本のタグは1文字も動いていません**（打つ前後の `refs/tags` 一覧を突き合わせ、1文字の改変なら検出できることも対照で確認）。
+取り下げた版のタグと ZIP は、すべて保存したまま動かしていません（`v1.8.7` を打った前後で、既存11本のタグが1文字も動いていないことを `refs/tags` 一覧の突き合わせで確認済み。1文字の改変なら検出できることも対照で確かめてあります）。
 
-**提出候補は、タグの中身と1バイトも違いません。** CI の run `31230981587` の `release-zip` が出した成果物を落として展開し、13ファイルを `git show v1.8.7:<path>` と突き合わせて **13/13 一致**（対照の `v1.8.6` とは5ファイルで相違）。
-
-**ZIP は誰でも再現できます。** 日時を 1980-01-01 に固定し、並び順を配布一覧の順に固定してあるため、同じ内容からは1バイト違わない同じものができます（v1.8.6 では、手元の macOS / Node 22.22.3 と CI の Linux / Node 22.23.1 で SHA-256 が完全に一致することを実測しました）。配布13ファイルの合算ハッシュは v1.8.7 でも **ubuntu / macos / windows / 手元 macOS の4者で完全に一致**しています（`1d9bcf51…`）。
+**ZIP は誰でも再現できます。** 日時を 1980-01-01 に固定し、並び順を配布一覧の順に固定してあるため、同じ内容からは1バイト違わない同じものができます。直前の v1.8.7 では、配布13ファイルの合算ハッシュが **ubuntu / macos / windows / 手元 macOS の4者で完全に一致**しました（`1d9bcf51…`）。
 
 ```sh
 npm run package:zip -- --allow-uncommitted   # commit 前に試す場合。名前に UNCOMMITTED が入る
@@ -77,25 +80,40 @@ npm run package:verify-zip                   # 中身と身元の記録を検査
 
 ---
 
-## 2. 今回（v1.8.7）で直したこと
+## 2. 今回（v1.8.8）で直したこと
 
-第8回監査の指摘 **P1 3件・P2 2件**への対応。詳細と証拠は [`docs/audit/v1.8.7-changes.md`](docs/audit/v1.8.7-changes.md)。
+第9回監査の指摘 **P1 4件・P2 4件**への対応。詳細と証拠は [`docs/audit/v1.8.8-changes.md`](docs/audit/v1.8.8-changes.md)。
 
 | ID | 内容 | 主な変更箇所 |
 |---|---|---|
-| RG-8-01 | 最初の印を含む場所が消えても、**既にページにある2番目の候補**へ引き継がれなかった | [`src/content.js`](src/content.js) 世代つき `handled` と `reselect` |
+| RG-9-01 | 印が不可視・無効になっても退役せず、**読める同じ語**が抑止されていた | [`src/content.js`](src/content.js) `isUsable` / `reconcileGlosses(deep)` / 属性の監視 |
+| RG-9-02 | 語のうしろに文字が増えても「整合している」と誤認していた | `isCoherent`（`termNode.length === splitOffset`） |
+| RG-9-03 | `label` の対応先が変わっても、古い入口を正式なものとして保持していた | `isUsable`（`resolvePlacement` の再解決）／`releaseTriggerIfUnused` |
+| RG-9-04 | 注記後に保護領域へ移った本文を、除外判定より前に読んでいた | `isCoherent` の先頭で `closest(SKIP)` |
+| RG-9-05 | 所有の判定が class と属性の値に依存し、ページ側の要素を消す・横取りする | `data-iiyaku-owner` / `ownedIconAt` / 内部の関連付け表 |
+| RG-9-06 | `characterData` を見ていないため、語の書き換え直後は誤った印が残った | `MutationObserver` の設定 |
+| RG-9-07 | 面積0の `clip-path` を複数取りこぼしていた | `insetClipsAll`（箱の寸法へ換算）／`shapeClipsAll` |
+| RG-9-08 | 監査入口が名乗る検査件数が古いままだった | `AUDIT.md` ＋[`scripts/verify.mjs`](scripts/verify.mjs) の件数突き合わせ |
+
+**8件すべて、実物と一致することを実測してから直しました。** 通算9巡で 77 件の指摘があり、事実と異なるものは 0 件です。
+
+**RG-9-08 は、こちらで数え直したら記載が1か所ではなく2か所ありました**（§10 の「158項目」と §4-1 の「166項目」）。件数を人が書き写す限り必ずずれるので、**verify 自身の実件数と文書の記載を突き合わせる検査**を足しました。
+
+> **第8回監査の指摘のうち1件は撤回されました。** 「`AUDIT.md` に崩れた表が残る」は、第9回監査でも列数の不一致を再現できず、**根拠不足として撤回**されています（こちらの実測でも、列数の合わない行は0件でした）。RG-8-05 の他の4点（最終更新・準備段階の記述・性能節の重複・配布内リンク切れ）は実在したため、対応はそのまま有効です。
+
+### 2-0. 直前（v1.8.7）で直したこと（履歴）
+
+第8回監査の指摘 **P1 3件・P2 2件**への対応です。詳細と証拠は [`docs/audit/v1.8.7-changes.md`](docs/audit/v1.8.7-changes.md) にあります。
+
+| ID | 内容 | 主な変更箇所 |
+|---|---|---|
+| RG-8-01 | 最初の印を含む場所が消えても、既にページにある2番目の候補へ引き継がれなかった | 世代つき `handled` と `reselect` |
 | RG-8-02 | 語と印の対応が壊れても、印だけを見て「説明済み」と抑止していた | `isCoherent` / `reconcileGlosses` |
-| RG-8-03 | 切り取りの判定に取りこぼしがあり、`display:contents` では逆に落としすぎていた | `rectClipsAll` / `insetClipsAll` / `clipsAwayContent` |
-| RG-8-04 | 注記済みの領域が複製されると、所有していない印と入口 ID が残っていた | `ownedIcons` / `ownedTriggers` / `sanitizeClones` |
-| RG-8-05 | 文書に現在版との食い違いがあり、配布物の中でリンクが切れていた | 文書一式＋[`scripts/verify.mjs`](scripts/verify.mjs) |
+| RG-8-03 | 切り取りの判定に取りこぼしがあり、`display:contents` では落としすぎていた | `rectClipsAll` / `insetClipsAll` |
+| RG-8-04 | 注記済みの領域が複製されると、所有していない印と入口 ID が残っていた | `ownedIcons` / `sanitizeClones` |
+| RG-8-05 | 文書に現在版との食い違いがあり、配布物の中でリンクが切れていた（実際は9件） | 文書一式＋`verify.mjs` |
 
-**5件すべて、実物と一致することを実測してから直しました。** 通算8巡で 69 件の指摘があり、事実と異なるものは 0 件です。
-
-**RG-8-05 は、こちらで数え直したら指摘より範囲が広いことが分かりました。** 監査は配布 README の画像1件を挙げていましたが、同じ形（配布物に入らない場所を相対リンクで指す）が **9件** ありました（`SECURITY.md`・`.github/workflows/ci.yml`・`tests/` 4件・`scripts/` 2件）。配布物の中だけを指す相対リンクに限る、という規則にして全件を絶対 URL へ直し、検査を足しました。
-
-### 2-0. 直前（v1.8.6）で直したこと（履歴）
-
-第7回監査の指摘 **P1 3件・P2 5件**への対応です。詳細と証拠は [`docs/audit/v1.8.6-changes.md`](docs/audit/v1.8.6-changes.md) にあります。
+さらにその前（v1.8.6）は、第7回監査の指摘 **P1 3件・P2 5件**への対応でした（[`docs/audit/v1.8.6-changes.md`](docs/audit/v1.8.6-changes.md)）。
 
 | ID | 内容 | 主な変更箇所 |
 |---|---|---|
@@ -165,33 +183,35 @@ v1.8.2 と v1.8.3 で、**注記される語の集合は3ページとも完全�
 
 ## 4. 検証の結果
 
-### 4-1. 手元（macOS 26 / Google Chrome 151.0.7922.76 / Node.js v22.22.3・2026-08-07）
+### 4-1. 手元（macOS 26 / Google Chrome 151.0.7922.76 / Node.js v22.22.3・2026-08-08）
 
 **commit していないため CI は回っていません。** 下は手元での実行結果です。
 
 | command | exit | 結果 |
 |---|---:|---|
 | `node --check src/matcher.js` / `src/content.js` | 0 | 構文 OK |
-| `npm test` | 0 | 単体 **63件**全成功 / 構成検査 **166項目**・不一致0（辞書61語・version 1.8.7） |
-| `npm run test:e2e` | 0 | **75件**全成功（v1.8.6 は 60件） |
+| `npm test` | 0 | 単体 **63件**全成功 / 構成検査 **196項目**・不一致0（辞書61語・version 1.8.8） |
+| `npm run test:e2e` | 0 | **98件**全成功（v1.8.7 は 75件） |
 | `npm run package:stage` / `:verify` | 0 | 13ファイル一致 |
 | `npm run package:zip -- --allow-uncommitted` / `:verify-zip` | 0 | 13ファイル（**commit 前なので名前に `UNCOMMITTED` が入る。提出候補ではない**） |
 | `npm run package:verify-zip -- --release` | **1** | **意図どおり落ちる**（手元ビルドは提出候補として通さない） |
 
-### 4-1b. 実サイトでの前後比較と性能（2026-08-07）
+### 4-1b. 性能（2026-08-08）
 
-GitHub の実ページ4枚で、v1.8.6 と v1.8.7 の**注記される語の集合**を突き合わせました。**3ページは集合が完全に一致**。`k88hudson/git-flight-rules` だけ1回の計測で `insights` の有無が食い違いましたが、**同じ版を3回ずつ測り直すと両版とも 37 語・`insights` 0 で一致**しました。`insights` を含む3か所はいずれも `checkVisibility` が false（畳まれたメニューの中）で、開き方によって描画状態が変わります。**版の違いではありません。**
+用語の多いページの写しで、v1.8.7 と**交互に**測りました（ページの中で計測。大きな領域を差し込んだときの1バッチ分で、初期走査と同じ経路を通ります）。**順序による偏りを外すため、順番を入れ替えた対照も取っています。**
 
-初期走査は、v1.8.6 と**交互に10往復**して測りました（実ページ・幅1600px・ページの中で計測）。
+| 順序 | v1.8.7 中央値 | v1.8.8 中央値 | 組ごとの差の中央値 | v1.8.8 が遅かった組 |
+|---|---:|---:|---:|---:|
+| v1.8.7 が先 | 26.9 ms（SD 7.3） | **21.6 ms**（SD 2.7） | **−2.4 ms** | 2 / 8 |
+| v1.8.8 が先 | 23.1 ms（SD 3.1） | **22.0 ms**（SD 1.7） | **−2.6 ms** | 0 / 8 |
 
-| | 中央値 | SD | 各回（ms） |
-|---|---:|---:|---|
-| v1.8.6 | 38.8 ms | 5.3 | 38.8 / 32.7 / 37.5 / 52.5 / 33.7 / 35.8 / 43.2 / 39.8 / 38.8 / 37.0 |
-| v1.8.7 | **36.9 ms** | **2.8** | 40.5 / 42.0 / 33.2 / 35.1 / 36.9 / 34.2 / 35.4 / 35.5 / 37.5 / 40.3 |
+**合計16組のうち、v1.8.8 が遅かったのは2組。両方の順序で差の向きが同じ**なので、順序の偏りではありません。速くなったのは、除外領域の判定（25個ほどの選択子を持つ `closest`）を走査ごとに覚えるようにしたためで、これは v1.8.7 には無かった分です。
 
-組ごとの差の中央値は **−1.3 ms**、v1.8.7 のほうが遅かったのは **4/10 組**。**遅くなったとは言えません**（ばらつきはむしろ小さい）。
+退役と選び直しは、属性・文字・削除を混ぜた**50往復で 2.5〜3.1 秒**（単独実行3回：3,145 / 2,529 / 2,654 ms。各往復に 40ms の待ちを入れているので、処理そのものは十分に軽い）。同時に存在する印は常に **0 か 1** で、変更を止めると数が動かなくなります。
 
-> **途中で一度、遅くなっていました。** 5往復で測ったときは 5組すべてで v1.8.7 が遅く（中央値 33.6 → 38.6 ms）、原因は記録の整合を確かめるたびに `document` 全体から入口を引き直していたことでした。同じ ID を持つ要素が2つ出るのは複製されたときだけで、それは走査より前に取り除いてあるので、記録した入口を直接見る形へ変えました。上の数字はその後のものです。
+> **途中で二度、実際に遅くなっていました。** ①入口の解き直しを「語が見つかるたび」に走らせて **24.2 → 33.7 ms（10組すべてで遅い）** ②記録ごとに除外判定を呼び足して **+1.4 / +3.4 ms（16組中14組で遅い）**。①は結果を走査ごとに覚えることで、②は除外判定そのものを走査ごとに覚えることで解消しました。**②は、静かな状態で測り直すまで「差は0」と読み違えていました**（最初の計測はばらつきが大きく、分解能が足りていませんでした）。
+
+> **計測そのものを一度間違えました。** 最初は DOM を差し込む同期部分だけを測っており、**拡張の処理が入っていませんでした**（3.5 ms 前後という小さすぎる値で気づきました）。`MutationObserver` の callback はマイクロタスクとして走るので、差し込んだあとにマイクロタスクを1つ挟んでから止めています。
 
 ### 4-2. CI — **今回は未実行**
 
@@ -290,7 +310,7 @@ E2E は `--remote-debugging-pipe` と `--enable-unsafe-extension-debugging` を�
 
 ---
 
-## 6. 権限・通信・保存データ（v1.8.6 → v1.8.7 の差分）
+## 6. 権限・通信・保存データ（v1.8.7 → v1.8.8 の差分）
 
 ```text
 permissions:                 ['storage'] → ['storage']（差分なし）
@@ -381,12 +401,12 @@ web_accessible_resources:    差分なし（locales/dict.json のみ）
 | 配布物の検査（壊した ZIP を9種ぶつける） | [`tests/package.test.js`](tests/package.test.js) |
 | 提出物の身元の schema と、その検査（28件） | [`scripts/provenance.mjs`](scripts/provenance.mjs) / [`tests/provenance.test.js`](tests/provenance.test.js) |
 | 配布物の一覧（唯一の正本） | [`scripts/package-files.mjs`](scripts/package-files.mjs) |
-| 構成と文書の整合検査（158項目） | [`scripts/verify.mjs`](scripts/verify.mjs) |
+| 構成と文書の整合検査（196項目） | [`scripts/verify.mjs`](scripts/verify.mjs) |
 | ZIP の読み書き（自作） | [`scripts/zip.mjs`](scripts/zip.mjs) |
 | ZIP の検査 | [`scripts/verify-zip.mjs`](scripts/verify-zip.mjs) |
 | CI | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
 | ストア掲載情報と提出記録 | [`STORE_LISTING.md`](STORE_LISTING.md) |
-| **今回の変更の詳細と証拠** | [`docs/audit/v1.8.7-changes.md`](docs/audit/v1.8.7-changes.md) |
+| **今回の変更の詳細と証拠** | [`docs/audit/v1.8.8-changes.md`](docs/audit/v1.8.8-changes.md) |
 
 ---
 

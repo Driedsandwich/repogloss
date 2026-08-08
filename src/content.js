@@ -756,7 +756,13 @@
     // 読まずに退役させれば、その語はふつうの候補として後ろの出現へ回る。
     if (inSkip(rec.parent)) return false;
 
-    // 記録した位置に、記録した語がまだあるか
+    // 記録した位置に、記録した語がまだあるか。
+    // 語の**うしろに文字が増えていない**ことも要る。増えると印は語の直後ではなく
+    // 別の文字列の直後に残るのに、部分一致だけでは整合と見えてしまう
+    // （実測: appendData('PAGE_SUFFIX') で印が "A rebasePAGE_SUFFIX" の後ろに残り、
+    // 後から現れた本物の rebase が「説明済み」として抑止された）。
+    // 注記した時点では必ず termNode.length === splitOffset になっている。
+    if (rec.termNode.length !== rec.splitOffset) return false;
     const v = rec.termNode.nodeValue;
     if (v.slice(rec.splitOffset - rec.term.length, rec.splitOffset) !== rec.term) return false;
     // 印は語のすぐ後ろか（ページ側が間へ挿し込んでいないか）
@@ -774,13 +780,49 @@
     return true;
   }
 
+  // いまも「説明として使える」か。**レイアウトを起こす**ので、必要なときだけ呼ぶ。
+  //
+  // DOM に在って整合していることは、使えることを意味しない。祖先が display:none に
+  // なっても、入口が disabled になっても、記録は整合したままである。それを
+  // 「説明済み」の証拠にすると、**読める同じ語**が二度と説明されない（実測で再現）。
+  //
+  // 入口の意味そのものが変わることもある。label の for が別の control を指すように
+  // 変わると、HTML 上の正式な関連付けと説明の入口が食い違う（実測: 新しい control へ
+  // フォーカスしても説明が出ず、古い control のほうに出た）。だから記録した入口が
+  // いまも「その場所から解決される入口」かどうかを、毎回解き直して確かめる。
+  //
+  // 走査1回のあいだは、同じ記録を測り直さない。usableGloss は「その語はもう
+  // 説明済みか」の判定として**語が見つかるたびに**呼ばれるので、入口の解き直しを
+  // 毎回やると用語の多いページで初期走査が 24ms → 34ms になった（10組すべてで
+  // 遅く、実測）。1回の走査のあいだに記録の見え方が変わることはない。
+  let usableCache = null;
+
+  function isUsable(rec) {
+    if (usableCache) {
+      const hit = usableCache.get(rec);
+      if (hit !== undefined) return hit;
+    }
+    const v = computeUsable(rec);
+    if (usableCache) usableCache.set(rec, v);
+    return v;
+  }
+
+  function computeUsable(rec) {
+    if (!isVisibleOccurrence(rec.icon.parentElement)) return false;
+    const now = resolvePlacement(rec.parent);
+    if (now.kind !== rec.placementKind) return false;
+    if (rec.placementKind === 'hosted') {
+      if (now.trigger !== rec.trigger) return false;
+      return tabbable(rec.trigger);
+    }
+    return tabbable(rec.icon);
+  }
+
   function usableGloss(key) {
     const rec = glossed.get(key);
     if (!rec) return null;
     if (!isCoherent(rec)) return null;
-    if (!isVisibleOccurrence(rec.icon.parentElement)) return null;
-    if (rec.placementKind === 'hosted') return tabbable(rec.trigger) ? rec : null;
-    return tabbable(rec.icon) ? rec : null;
+    return isUsable(rec) ? rec : null;
   }
 
   // 使えなくなった印を片づける。**元の語を、また注記できる状態へ戻す**ところまでやる。
@@ -907,12 +949,12 @@
     const owner = renderCache === null;
     if (owner) { renderCache = new WeakMap(); visibleCache = new WeakMap();
                  clipCache = new WeakMap(); clipChainCache = new WeakMap();
-                 skipCache = new WeakMap(); }
+                 usableCache = new WeakMap(); skipCache = new WeakMap(); }
     try {
       return fn();
     } finally {
       if (owner) { renderCache = null; visibleCache = null; clipCache = null;
-                   clipChainCache = null; skipCache = null; }
+                   clipChainCache = null; usableCache = null; skipCache = null; }
     }
   }
 

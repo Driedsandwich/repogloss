@@ -173,6 +173,10 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     check('isCoherent が SKIP 判定より前にテキストの値を読んでいない',
       skipAt !== -1 && skipAt < valueAt,
       `SKIP の位置=${skipAt} / 値を読む位置=${valueAt === Infinity ? 'なし' : valueAt}`);
+    // 語のうしろに文字が増えたら整合でないこと（RG-9-02）
+    check('isCoherent が、語が節点の末尾で終わることを要求している',
+      /termNode\.length\s*!==\s*rec\.splitOffset/.test(body),
+      '末尾の固定が無いと、印が別の文字列の直後に残ったまま整合と見なされる');
   }
 }
 

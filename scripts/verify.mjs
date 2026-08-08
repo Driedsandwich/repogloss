@@ -180,6 +180,18 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   }
 }
 
+/* ---------- 変更の見張りが、見え方を変える入力まで見ているか（RG-9-01 / RG-9-06） ---------- */
+{
+  check('MutationObserver が文字の書き換えを見ている', /characterData:\s*true/.test(content));
+  check('MutationObserver が属性の変化を見ている',
+    /attributes:\s*true/.test(content) && /attributeFilter/.test(content));
+  for (const attr of ['style', 'hidden', 'inert', 'aria-hidden', 'disabled', 'tabindex', 'for']) {
+    check(`見張る属性に ${attr} が入っている`, new RegExp(`'${attr}'`).test(content));
+  }
+  check('記録の確かめ直しに、見え方まで見る深い経路がある',
+    /function isUsable\(rec\)/.test(content) && /reconcileGlosses\(deep\)/.test(content));
+}
+
 /* ---------- 可視性の判定が祖先まで見ているか ---------- */
 check('content.js が checkVisibility で祖先まで可視性を見ている',
   /checkVisibility\(/.test(content) && /opacityProperty/.test(content));

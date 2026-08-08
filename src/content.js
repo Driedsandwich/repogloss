@@ -861,11 +861,16 @@
   // あいだへページ側が節点を挿す形もある。後者は removedNodes を伴わないので、
   // **ノードが増えただけの変更でも**数え直す。記録は辞書のキーの数（61）で
   // 頭打ちなので、毎回全部見ても軽い（DOM の読み取りだけでレイアウトは起こさない）。
-  function reconcileGlosses() {
+  // deep を付けると、見え方・到達性・入口の意味まで確かめる（レイアウトを起こす）。
+  // 属性が変わった・文字が書き換わった・ノードが外れた、のいずれかを含む変更と、
+  // 画面遷移・ON 復帰のときだけ deep にする。ノードが増えただけの変更では、
+  // 見え方は変わらないので安いほうだけを回す。
+  function reconcileGlosses(deep) {
     let released = null;
     for (const key of [...glossed.keys()]) {
       const rec = glossed.get(key);
-      if (rec && !isCoherent(rec)) (released ??= []).push(retireGloss(key));
+      if (!rec) continue;
+      if (!isCoherent(rec) || (deep && !isUsable(rec))) (released ??= []).push(retireGloss(key));
     }
     return released;
   }
@@ -982,16 +987,46 @@
   // GitHub は画面遷移でページ全体を読み直さないことがあるため、
   // 後から差し込まれた部分も見張る。自分が挿入した断片は handled で弾く。
   let lastUrl = location.href;
+
+  // 見え方・到達性・入口の意味を変えうる属性だけを見る。全属性を見ると、
+  // GitHub が絶えず書き換えている属性で毎回レイアウト計算が走る。
+  const WATCHED_ATTRS = ['style', 'class', 'hidden', 'inert', 'aria-hidden', 'disabled',
+                         'tabindex', 'for', 'href', 'role', 'open', 'contenteditable', 'id'];
+
+  // 自分が起こした変更で deep を誘発しない。印を入れるときに role や tabindex を
+  // 付けるので、そのまま数えると毎回いちばん重い経路へ入ってしまう。
+  function isOurs(node) {
+    const el = node && (node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement);
+    if (!el) return false;
+    if (el.closest('.iiyaku-icon, .iiyaku-tooltip, .iiyaku-toggle')) return true;
+    return false;
+  }
+
   // 差し込みが一度に何十件も来るので、1回分の呼び出しでは測定結果を共有する。
   const observer = new MutationObserver(muts => withRenderCache(() => {
     // ① 複製された「自分のふり」を先に取り除く。走査より前にやらないと、
     //    複製された印が入口 ID の引き当てを乱す。
     for (const mu of muts) for (const n of mu.addedNodes) sanitizeClones(n);
 
-    // ② 記録と DOM の食い違いを片づける。印が外された形だけでなく、語だけが
+    // ② 見え方まで確かめ直す必要がある変更が混ざっているか。
+    //    属性の変化・文字の書き換え・ノードが外れた形は、記録が整合したままでも
+    //    「使えない印」に変えうる（隠された・無効にされた・入口が別を指した）。
+    //    自分が出し入れする吹き出しや、自分が付ける role / tabindex は数えない。
+    //    数えると、カーソルを動かすたびに全記録のレイアウト計算が走る。
+    let deep = false;
+    for (const mu of muts) {
+      if (mu.type === 'attributes' || mu.type === 'characterData') {
+        if (!isOurs(mu.target)) { deep = true; break; }
+        continue;
+      }
+      for (const n of mu.removedNodes) if (!isOurs(n)) { deep = true; break; }
+      if (deep) break;
+    }
+
+    // ③ 記録と DOM の食い違いを片づける。印が外された形だけでなく、語だけが
     //    消された形・語と印のあいだへ挿し込まれた形もあるので、ノードが
     //    増えただけの変更でも数え直す。
-    const released = reconcileGlosses();
+    let released = reconcileGlosses(deep);
 
     // GitHub はページを読み直さずに画面を差し替えることがある。
     // 別のページに移ったら「印を付けた語」を数え直す。そうしないと、
@@ -999,6 +1034,9 @@
     if (location.href !== lastUrl) {
       lastUrl = location.href;
       hideTip();
+      // 画面が変わったときは、DOM がそのままでも見え方は変わりうる。
+      // ここまでが安いほうの確認だけだった場合に備えて、必ず1度は深く見る。
+      if (!deep) { deep = true; released = released || reconcileGlosses(true); }
       // 画面全体を走査し直す。URL の書き換えより先に内容が差し込まれた分は、
       // その時点で生きていた印のせいで飛ばされている可能性があるため。
       //
@@ -1010,21 +1048,48 @@
       // 読める同じ語に説明が付かなくなる。使えなくなった印は片づけて付け直す。
       scan(document.body);
     }
+    // 走査し直す場所を集める。増えたノードだけでは足りない——
+    // 文字が書き換わった場所・属性が変わった場所は、**それまで対象外だったものが
+    // 対象になる**（触れない領域から戻った、隠れていたものが見えるようになった）。
+    // どちらも addedNodes を伴わないので、集めておかないと取り残される（実測）。
+    const roots = new Set();
     for (const mu of muts) {
-      for (const n of mu.addedNodes) scanInner(n);
+      if (mu.type === 'childList') { for (const n of mu.addedNodes) roots.add(n); continue; }
+      if (isOurs(mu.target)) continue;
+      // 文字が変わったなら、前に「この節点は見なくてよい」と決めた根拠も消えている
+      if (mu.type === 'characterData') handled.delete(mu.target);
+      roots.add(mu.target);
     }
-    // ③ 正規の印が居なくなっていたら、ページ全体から選び直す。
+    // 入れ子になった場所は、いちばん外側だけを走ればよい。1回の変更で同じ属性が
+    // 何度も書き換わることがあり、そのたびに同じ枝を歩くと費用が積み上がる。
+    for (const n of roots) {
+      let covered = false;
+      for (let p = n.parentNode; p && !covered; p = p.parentNode) if (roots.has(p)) covered = true;
+      if (!covered) scanInner(n);
+    }
+    // ④ 正規の印が居なくなっていたら、ページ全体から選び直す。
     //    既にページにある候補へ引き継ぐには、ここで世代を進めるしかない。
+    //    **1回の変更のかたまりにつき、選び直しは最大1回**。ここを回数制限せずに
+    //    書くと、選び直しが起こす変更でまた選び直す形が作れてしまう。
     if (released) reselect();
   }));
+
+  const OBSERVE_OPTS = {
+    childList: true, subtree: true,
+    characterData: true,               // 語そのものの書き換えに、その場で気づく
+    attributes: true, attributeFilter: WATCHED_ATTRS
+  };
 
   /* ---------- 9. ON / OFF の切り替え ---------- */
   let observing = false;
 
   function startRuntime() {
     if (observing) return;
+    // OFF のあいだにページが変わっていることがある。先に記録を見え方まで
+    // 確かめ直してから走査する（隠された印を「説明済み」として残さない）。
+    withRenderCache(() => { if (reconcileGlosses(true)) generation++; });
     scan(document.body);
-    observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(document.body, OBSERVE_OPTS);
     observing = true;
   }
 

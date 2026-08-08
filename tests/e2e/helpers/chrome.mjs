@@ -394,6 +394,44 @@ export const PROTECTED_PAGE = `<!doctype html><html lang="en"><head><meta charse
   <div id="sink"></div>
 </body></html>`;
 
+/* 記録が「整合している」だけでは足りない場面。隠された・無効にされた・
+   語の後ろに文字が増えた・入口の意味が変わった、のいずれでも、
+   読める同じ語へ説明が移ること。 */
+export const USABILITY_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>usability</title></head><body>
+  <!-- ① 不可視化: 最初を display:none にしたら、既にある2番目へ -->
+  <p id="u-hide1">A branch first.</p>
+  <p id="u-hide2">A branch second.</p>
+
+  <!-- ② 入口が無効になる: button を disabled にしたら、後ろの読める語へ -->
+  <p><button id="u-btn">Open the fetch view</button></p>
+  <p id="u-btn-later">A fetch later.</p>
+
+  <!-- ③ 語のうしろに文字が増える -->
+  <p id="u-suffix">A rebase first.</p>
+  <div id="u-suffix-sink"></div>
+
+  <!-- ④ label の for が別の control を指す -->
+  <label id="u-lab" for="u-ia">squash merge</label><input id="u-ia"><input id="u-ib">
+  <p id="u-lab-later">squash merge later.</p>
+
+  <!-- ⑥ 語そのものが書き換わる -->
+  <p id="u-cd1">A revert first.</p>
+  <p id="u-cd2">A revert second.</p>
+
+  <div id="sink"></div>
+</body></html>`;
+
+/* 退役と選び直しが、変更のたびに収束するか。 */
+export const CONVERGE_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>converge</title></head><body>
+  <p id="cv1">A conflict first.</p>
+  <p id="cv2">A conflict second.</p>
+  <p id="cv3">A conflict third.</p>
+  <p id="cv-sel">Ask for a careful review of the code.</p>
+  <div id="cv-sink"></div>
+</body></html>`;
+
 export function startTestServer(html = REPO_PAGE) {
   const { key, cert } = makeCert();
   const server = https.createServer({ key, cert }, (req, res) => {

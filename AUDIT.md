@@ -188,15 +188,15 @@ v1.8.2 と v1.8.3 で、**注記される語の集合は3ページとも完全�
 
 ### 4-1. 手元（macOS 26 / Google Chrome 151.0.7922.76 / Node.js v22.22.3・2026-08-08）
 
-**commit していないため CI は回っていません。** 下は手元での実行結果です。
+下は手元での実行結果です（CI の結果は §4-2）。
 
 | command | exit | 結果 |
 |---|---:|---|
 | `node --check src/matcher.js` / `src/content.js` | 0 | 構文 OK |
-| `npm test` | 0 | 単体 **63件**全成功 / 構成検査 **196項目**・不一致0（辞書61語・version 1.8.8） |
+| `npm test` | 0 | 単体 **63件**全成功 / 構成検査 **200項目**・不一致0（辞書61語・version 1.8.8） |
 | `npm run test:e2e` | 0 | **98件**全成功（v1.8.7 は 75件） |
 | `npm run package:stage` / `:verify` | 0 | 13ファイル一致 |
-| `npm run package:zip -- --allow-uncommitted` / `:verify-zip` | 0 | 13ファイル（**commit 前なので名前に `UNCOMMITTED` が入る。提出候補ではない**） |
+| `npm run package:zip -- --allow-uncommitted` / `:verify-zip` | 0 | 13ファイル（名前に `UNCOMMITTED` が入る。**提出候補ではない**） |
 | `npm run package:verify-zip -- --release` | **1** | **意図どおり落ちる**（手元ビルドは提出候補として通さない） |
 
 ### 4-1b. 性能（2026-08-08）
@@ -216,13 +216,22 @@ v1.8.2 と v1.8.3 で、**注記される語の集合は3ページとも完全�
 
 > **計測そのものを一度間違えました。** 最初は DOM を差し込む同期部分だけを測っており、**拡張の処理が入っていませんでした**（3.5 ms 前後という小さすぎる値で気づきました）。`MutationObserver` の callback はマイクロタスクとして走るので、差し込んだあとにマイクロタスクを1つ挟んでから止めています。
 
-### 4-2. CI — **今回は未実行**
+### 4-2. CI（2026-08-08 実測）
 
-commit・push をしていないため、次は**確認できていません**。
+タグ `v1.8.8` のコミット（`6c1351a5`）に対する `main` の run [`31245180346`](https://github.com/Driedsandwich/repogloss/actions/runs/31245180346) は **8ジョブすべて success** です。
 
-- Linux / Windows / macOS 3 OS での実行
-- 3 OS 間の配布物ハッシュ一致（`hash-compare`）
-- 提出候補 ZIP の生成（`release-zip`）と、その `--release` 検査
+| ジョブ | 結果 |
+|---|---|
+| `verify` | 単体 **63件**全成功 / 構成検査 **196項目**・不一致0（version 1.8.8）。**当時**の値で、現在の `main` は 200 項目 |
+| `e2e`（ubuntu・実 Chrome） | **98件**全成功 |
+| `e2e-windows`（実 Chrome） | **98件**全成功 |
+| `package-hash` ×3（ubuntu / macos / windows） | 13ファイル / 223,803 バイト・合算 `7524616e…` |
+| `hash-compare` | **3 OS すべてで同じ**（`7524616e…`）。手元 macOS を入れて4者一致 |
+| `release-zip` | 成果物 `repogloss-store-zip` を生成。中の `--release` 検査も合格 |
+
+PR #18 の run [`31245016400`](https://github.com/Driedsandwich/repogloss/actions/runs/31245016400) も同じ内容で全ジョブ success（`release-zip` は仕様どおり skipped）。
+
+**この節はタグより後に書いています。** タグの中身に「自分の CI がどうだったか」は書けない（書けばコミットが変わり、そのコミットの CI はまだ無い）ため、`main` 側で記録しています。
 
 #### 4-2-h. 直前の版で確かめたこと（履歴）
 
@@ -404,7 +413,7 @@ web_accessible_resources:    差分なし（locales/dict.json のみ）
 | 配布物の検査（壊した ZIP を9種ぶつける） | [`tests/package.test.js`](tests/package.test.js) |
 | 提出物の身元の schema と、その検査（28件） | [`scripts/provenance.mjs`](scripts/provenance.mjs) / [`tests/provenance.test.js`](tests/provenance.test.js) |
 | 配布物の一覧（唯一の正本） | [`scripts/package-files.mjs`](scripts/package-files.mjs) |
-| 構成と文書の整合検査（196項目） | [`scripts/verify.mjs`](scripts/verify.mjs) |
+| 構成と文書の整合検査（200項目） | [`scripts/verify.mjs`](scripts/verify.mjs) |
 | ZIP の読み書き（自作） | [`scripts/zip.mjs`](scripts/zip.mjs) |
 | ZIP の検査 | [`scripts/verify-zip.mjs`](scripts/verify-zip.mjs) |
 | CI | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |

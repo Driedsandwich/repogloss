@@ -419,6 +419,27 @@ check('README が CI の成果物（提出用 ZIP）について書いている'
   check('変更記録の冒頭に、準備段階の言い切りが残っていない', prep.length === 0,
     `残っている表現: ${prep.join(' / ')}`);
 
+  // 同じ取り残しが AUDIT.md でも起きた（第9回のあと、タグを打って CI が全ジョブ
+  // 成功したのに §4 が「commit していないため CI は回っていません」のままだった）。
+  // 変更記録だけを見ていては見つからないので、監査入口も同じ言葉で見る。
+  // `state:` が tagged 以上なら、準備段階の言い切りは残っていてはいけない。
+  {
+    const st = (/^state:\s*(\S+)/m.exec(audit) || [])[1];
+    check('AUDIT.md §1-1 に state がある', !!st, `state=${st}`);
+    const PREP = ['commit していないため', 'まだ commit していない', '今回は未実行',
+                  'commit・push をしていないため'];
+    const left = PREP.filter(w => audit.includes(w));
+    if (st && st !== 'uncommitted') {
+      check(`AUDIT.md に準備段階の言い切りが残っていない（state=${st}）`, left.length === 0,
+        `残っている表現: ${left.join(' / ')}`);
+    } else {
+      check('state=uncommitted のときは準備段階の言い切りを許す', true);
+    }
+    // 陽性対照: この探し方が、実際に取り残しの文を捕まえること
+    check('準備段階の言い切りを探す検査が、実際に捕まえる（陽性対照）',
+      PREP.some(w => 'commit していないため CI は回っていません。'.includes(w)));
+  }
+
   /* ---- 現在の版を名乗る場所に、古い版が残っていないか ---- */
   // 「版がどこかに在るか」だけを見る検査では、見出しやリンクの取り残しに気づけない。
   // v1.8.5 の時点で、§2 の見出しが「今回（v1.8.4）」、§2-0 が「直前（v1.8.3）」、
@@ -553,9 +574,16 @@ check('ツールチップが狭い画面でも収まる指定を持つ',
 // この検査自身が最後の1件なので、いまの checks に 1 を足したものが最終の件数になる。
 {
   const auditText = read('AUDIT.md');
-  const claimed = [...auditText.matchAll(/検査\s*[（(]\s*(\d+)\s*項目\s*[）)]/g)].map(m => Number(m[1]));
-  const claimed2 = [...auditText.matchAll(/構成検査\s*\*{0,2}(\d+)\s*項目/g)].map(m => Number(m[1]));
+  // 過去の run の結果を書いた行は、その時点の事実なので現在の値と一致しなくてよい。
+  // ただし**黙って除外しない**——「当時」と自分で名乗った行だけを対象外にする。
+  const lines = auditText.split('\n').filter(l => !l.includes('当時'));
+  const cur = lines.join('\n');
+  const claimed = [...cur.matchAll(/検査\s*[（(]\s*(\d+)\s*項目\s*[）)]/g)].map(m => Number(m[1]));
+  const claimed2 = [...cur.matchAll(/構成検査\s*\*{0,2}(\d+)\s*項目/g)].map(m => Number(m[1]));
   const all = [...claimed, ...claimed2];
+  // 陽性対照: 「当時」と書いていない行の古い件数は、いまも捕まえること
+  check('検査件数の突き合わせが、古い記載を捕まえる（陽性対照）',
+    [...'構成検査 **111項目**'.matchAll(/構成検査\s*\*{0,2}(\d+)\s*項目/g)].map(m => Number(m[1]))[0] === 111);
   const total = checks + 1;
   check(`AUDIT.md が名乗る検査件数が、実際の ${total} 件と一致する`,
     all.length > 0 && all.every(n => n === total),

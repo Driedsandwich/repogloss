@@ -12,7 +12,7 @@ RepoGloss は、GitHub の画面に出てくる英語のうち Git / GitHub 固�
 
 | 項目 | 値 |
 |---|---|
-| **監査対象** | **v1.8.8 候補（作業ツリー）。まだ commit も tag もしていない** |
+| **監査対象** | **タグ `v1.8.8`** = コミット `6c1351a5b98539a61e854310503fd92ad59a7d24`（PR #18 の merge commit） |
 | 直前の版 | `v1.8.7` = コミット `308bf038efe18f857bf5bb655bce65b991712a93`（**第9回監査の指摘により提出しない**） |
 | 基点コミット | `c3d06fbc210a6349fa28d1be99508267011624c8`（`main`。ここからの差分が今回の変更） |
 | 現在の既定ブランチ | `main` |
@@ -28,31 +28,32 @@ RepoGloss は、GitHub の画面に出てくる英語のうち Git / GitHub 固�
 差分は次のコマンドで確認できます。
 
 ```sh
-git diff --name-only v1.8.7            # 作業ツリーと、直前の版との差分
+git diff --name-only v1.8.7 v1.8.8     # 直前の版との差分
 # → 配布13ファイルのうち manifest.json・src/content.js・README.md・DESIGN.md・
 #    PRIVACY.md が変わっている（辞書・styles.css・matcher.js・アイコン・LICENSE は無変更）
 # → ほかに scripts/ と tests/ と docs/（配布物には入らない）
 ```
 
-**まだ commit していないので、タグも提出候補の ZIP もありません。** 監査は作業ツリーの内容に対して行ってください。
+**タグは打ってありますが、ウェブストアへは提出していません。** 監査はタグ `v1.8.8` の内容に対して行ってください。
 
-### 1-1. 提出候補（まだ作っていない）
+### 1-1. 提出候補
 
-**v1.8.8 の提出候補 ZIP は、この時点では存在しません。** commit・push・tag をしていないため CI が動いておらず、CI が作る `repogloss-store-zip` もありません。提出するのは、いつも CI が作ったものだけです（手元で作ったものは `--release` 検査で落ちます。ローカルの HEAD がタグと違うだけでも落ちます）。
+**v1.8.8 の提出候補 ZIP は、CI が作ったものだけです。** 手元で作ったものは `--release` 検査で落ちます（実測。ローカルの HEAD がタグと違うだけでも落ちます）。
 
 現在版の事実を、機械で読める形で1か所にまとめます（**ここが正本**。他の節はここを引用します）。
 
 ```yaml
 version:            1.8.8
-state:              uncommitted        # commit / tag / release / store submission いずれも未実施
+state:              tagged             # commit / tag は実施。release / store submission は未実施
 base_commit:        c3d06fbc210a6349fa28d1be99508267011624c8
-tag:                null
-candidate_zip:      null
-candidate_bytes:    null
-candidate_sha256:   null
-content_sha256:     null
-combined_sha256:    null
-workflow_run:       null
+commit:             6c1351a5b98539a61e854310503fd92ad59a7d24
+tag:                v1.8.8
+candidate_zip:      repogloss-1.8.8.zip
+candidate_bytes:    97563
+candidate_sha256:   d3a2786ba0f87ac51a75bcb6e9186a6ae3e86ea93ef804905da7fefebcf9bfac
+content_sha256:     6b900e94ca8d1d27742298c5f7e3b64e5c993a7dfa14ff54f25897752e0ddd49
+combined_sha256:    7524616ead29a77ef876d1f6660222d88af93bcfec9580b42d4682fc77c16e2b
+workflow_run:       31245180346
 superseded:
   - version: 1.8.7
     tag: v1.8.7
@@ -69,9 +70,11 @@ superseded:
 store_published:    1.7.1
 ```
 
-取り下げた版のタグと ZIP は、すべて保存したまま動かしていません（`v1.8.7` を打った前後で、既存11本のタグが1文字も動いていないことを `refs/tags` 一覧の突き合わせで確認済み。1文字の改変なら検出できることも対照で確かめてあります）。
+取り下げた版のタグと ZIP は、すべて保存したまま動かしていません（`v1.8.8` を打った前後で、既存12本のタグが1文字も動いていないことを `refs/tags` 一覧の突き合わせで確認済み。1文字の改変なら検出できることも対照で確かめてあります）。
 
-**ZIP は誰でも再現できます。** 日時を 1980-01-01 に固定し、並び順を配布一覧の順に固定してあるため、同じ内容からは1バイト違わない同じものができます。直前の v1.8.7 では、配布13ファイルの合算ハッシュが **ubuntu / macos / windows / 手元 macOS の4者で完全に一致**しました（`1d9bcf51…`）。
+**提出候補は、タグの中身と1バイトも違いません。** CI の run `31245180346` の `release-zip` が出した成果物を落として展開し、13ファイルを `git show v1.8.8:<path>` と突き合わせて **13/13 一致**（対照の `v1.8.7` とは5ファイルで相違）。`--release` 検査にも合格しています（`EXIT=0`。ローカルの HEAD がタグと違う状態では `EXIT=1` になることも実測）。
+
+**ZIP は誰でも再現できます。** 日時を 1980-01-01 に固定し、並び順を配布一覧の順に固定してあるため、同じ内容からは1バイト違わない同じものができます。配布13ファイルの合算ハッシュは **ubuntu / macos / windows / 手元 macOS の4者で完全に一致**しています（`7524616e…`）。
 
 ```sh
 npm run package:zip -- --allow-uncommitted   # commit 前に試す場合。名前に UNCOMMITTED が入る

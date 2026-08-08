@@ -284,17 +284,26 @@ v1.8.2 までは全項目を「収集しない」とする方針だったが、�
 
 ### 8-2. v1.8.8 の作り方（現在の提出候補）
 
-**v1.8.8 はまだ commit していないため、提出候補の ZIP はありません。** 作り方は v1.8.7 と同じで、**提出するのは CI が作った成果物**だけです。手元で作ったものは `--release` 検査で落ちます。
+作り方は v1.8.7 と同じで、**提出するのは CI が作った成果物**だけです。手元で作ったものは `--release` 検査で落ちます。
+
+#### 8-2-1. v1.8.8 の提出物（2026-08-08 実測）
 
 | 項目 | 値 |
 |---|---|
-| ZIP | **未作成**（`repogloss-1.8.8.zip` になる予定） |
-| SHA-256 | **未確定** |
+| ZIP | `repogloss-1.8.8.zip`（95.28 KiB＝97,563 バイト・13ファイル・展開後 223,803 バイト） |
+| **SHA-256** | **`d3a2786ba0f87ac51a75bcb6e9186a6ae3e86ea93ef804905da7fefebcf9bfac`** |
+| 中身の合算ハッシュ | `6b900e94ca8d1d27742298c5f7e3b64e5c993a7dfa14ff54f25897752e0ddd49` |
+| 配布13ファイルの合算 | `7524616ead29a77ef876d1f6660222d88af93bcfec9580b42d4682fc77c16e2b`（ubuntu / macos / windows / 手元 macOS の4者で一致） |
+| 出どころ | CI の run [`31245180346`](https://github.com/Driedsandwich/repogloss/actions/runs/31245180346) の `release-zip` ジョブ（artifact `repogloss-store-zip`） |
+| 対象コミット | `6c1351a5b98539a61e854310503fd92ad59a7d24`（タグ `v1.8.8`） |
 | 変更点 | `manifest.json`／`src/content.js`／`README.md`／`DESIGN.md`／`PRIVACY.md` の5ファイル。辞書・`src/matcher.js`・`styles.css`・アイコン・`LICENSE` は無変更 |
+| 置き場所 | 掲載用素材フォルダの直下（`repogloss-1.8.7.zip` は `_superseded/` へ退避済み） |
+
+**照合済み**: ダウンロードした成果物の SHA-256 が同梱の身元 JSON と一致し、展開した13ファイルがタグ `v1.8.8` と **1バイトも違わない**（対照の `v1.8.7` とは5ファイルで相違）。`npm run package:verify-zip -- --release` にも合格する（`EXIT=0`）。**この検査に判別力があることも実測しました** — ローカルの HEAD がタグと違う状態では `EXIT=1` になります。
 
 **掲載文で差し替えが要る箇所（v1.8.8）**: なし（動作環境・権限・データの扱いは v1.8.7 から変わらない）。
 
-**⚠️ v1.8.7 は提出しません**（第9回監査の指摘）。`repogloss-1.8.7.zip`（`9f590f7c…`）は `_superseded/` へ退避します。
+**⚠️ v1.8.7 は提出しません**（第9回監査の指摘）。`repogloss-1.8.7.zip`（`9f590f7c…`）は `_superseded/` へ退避済みです。
 
 ### 8-2y. v1.8.7 の作り方（履歴）
 

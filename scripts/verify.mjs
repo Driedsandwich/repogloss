@@ -134,17 +134,43 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
 // で、同じ拡張の content script として計測用の prelude を先に読み込ませ、
 // 隔離された世界の中で実際に読まれた回数を数えている。
 // ここは、単純な後戻りを早く止めるためのものである。
+// 判定を関数へ切り出したので、その関数が本当に SKIP を見ていることを先に確かめる。
+// ここを確かめずに名前だけで順序を測ると、中身が空でも通ってしまう。
+{
+  const m = content.match(/function inSkip\(el\)\s*\{([\s\S]*?)\n  \}/);
+  check('content.js に inSkip がある', !!m);
+  check('inSkip が closest(SKIP) で判定している', !!m && m[1].includes('closest(SKIP)'));
+}
 {
   const m = content.match(/function isTarget\(node\)\s*\{([\s\S]*?)\n  \}/);
   check('content.js に isTarget がある', !!m);
   if (m) {
     const body = m[1];
-    const skipAt = body.indexOf('closest(SKIP)');
+    const skipAt = body.indexOf('inSkip(');
     const valueAt = Math.min(
       ...['node.nodeValue', 'node.data', 'node.textContent', 'node.wholeText']
         .map(t => { const i = body.indexOf(t); return i === -1 ? Infinity : i; })
     );
     check('isTarget が SKIP 判定より前にテキストの値を読んでいない',
+      skipAt !== -1 && skipAt < valueAt,
+      `SKIP の位置=${skipAt} / 値を読む位置=${valueAt === Infinity ? 'なし' : valueAt}`);
+  }
+}
+
+// 走査の入口だけでは足りなかった。注記した**あとで**その場所が編集領域などへ
+// 変わることがあり、記録の整合を確かめる側が、除外を見る前に本文を読んでいた
+// （第9回監査 RG-9-04。実測で再現）。同じ順序を isCoherent にも要求する。
+{
+  const m = content.match(/function isCoherent\(rec\)\s*\{([\s\S]*?)\n  \}/);
+  check('content.js に isCoherent がある', !!m);
+  if (m) {
+    const body = m[1];
+    const skipAt = body.indexOf('inSkip(');
+    const valueAt = Math.min(
+      ...['.nodeValue', '.data', '.textContent', '.wholeText', 'substringData']
+        .map(t => { const i = body.indexOf(t); return i === -1 ? Infinity : i; })
+    );
+    check('isCoherent が SKIP 判定より前にテキストの値を読んでいない',
       skipAt !== -1 && skipAt < valueAt,
       `SKIP の位置=${skipAt} / 値を読む位置=${valueAt === Infinity ? 'なし' : valueAt}`);
   }

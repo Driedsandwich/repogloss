@@ -12,6 +12,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { launchChrome, startTestServer, stageExtension, stageExtensionWith,
          SENTINEL_PAGE, LIFECYCLE_PAGE, VISIBILITY_PAGE, RETIRE_PAGE, RESELECT_PAGE,
+         PROTECTED_PAGE,
          openPage, sleep, waitFor,
          pressKey, collectTabOrder, tabUntil } from './helpers/chrome.mjs';
 
@@ -1495,6 +1496,70 @@ test('印が居なくなったら、既にある候補へ引き継ぐ', async t 
     assert.deepEqual([await nIn('#clone-a'), await nKey('label')], [1, 1], 'label が移っていない');
     await waitFor('リンクの複製側へも移る', async () => await nIn('#clone-b') === 1);
     assert.deepEqual([await nIn('#clone-b'), await nKey('workflow')], [1, 1], 'workflow が移っていない');
+  });
+
+  await tab.close();
+});
+
+test('注記したあとで触れない領域へ変わったら、本文を読まずに手を引く', async t => {
+  const srv = await startTestServer(PROTECTED_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  // 生の読み取りを計測する版。matcher tap は「辞書の照合まで届いたか」しか見ないので、
+  // 照合せずに本文を読むだけの経路はそこに映らない（第9回監査はその差を突いた）。
+  const dir = stageExtensionWith(
+    { 'nodevalue-probe.js': 'tests/e2e/nodevalue-probe.js' },
+    js => ['nodevalue-probe.js', ...js]);
+  await cdp.send('Extensions.loadUnpacked', { path: dir });
+  const tab = await openPage(cdp, PAGE);
+  const nIn = sel => tab.evaluate(`document.querySelectorAll(${JSON.stringify(sel)} + ' .iiyaku-icon').length`);
+  const reads = () => tab.evaluate(`document.documentElement.getAttribute('data-rg-raw')`);
+  await waitFor('拡張が印を付ける', async () =>
+    await tab.evaluate(`[...document.querySelectorAll('.iiyaku-icon')].filter(i => i.dataset.iiyakuKey).length`));
+
+  await t.test('計測そのものが効いている（陽性対照）', async () => {
+    assert.equal(await tab.evaluate(`document.documentElement.getAttribute('data-rg-rawtap')`), 'ready',
+      '4つの取り出し口を包めていない');
+    assert.equal(await reads(), 'RGSENTINEL_SELFTEST',
+      '包んだ getter が効いていない＝「読まれていない」を主張できない');
+  });
+
+  const CASES = [
+    ['pr-ce', 'RGSENTINEL_CE', `el.setAttribute('contenteditable','true')`, 'branch'],
+    ['pr-ah', 'RGSENTINEL_AH', `el.setAttribute('aria-hidden','true')`, 'commit'],
+    ['pr-in', 'RGSENTINEL_IN', `el.setAttribute('inert','')`, 'merge'],
+    ['pr-hd', 'RGSENTINEL_HD', `el.setAttribute('hidden','')`, 'fetch']
+  ];
+  for (const [id, sentinel, mutate, key] of CASES) {
+    await t.test(`RG-9-04 ${id} が保護領域へ移ったあと、本文（${sentinel}）を読まない`, async () => {
+      assert.equal(await nIn('#' + id), 1, '前提: 先に印が付いている');
+      await tab.evaluate(`(() => {
+        const el = document.getElementById(${JSON.stringify(id)});
+        ${mutate};
+        const ic = el.querySelector('.iiyaku-icon');
+        ic.previousSibling.nodeValue = ${JSON.stringify(sentinel + ' ' + key)};
+      })(); true`);
+      await tab.evaluate(`(() => { const s = document.createElement('span'); s.textContent = 'zzz';
+        document.getElementById('sink').appendChild(s); })(); true`);
+      await sleep(400);
+      assert.equal(await reads(), 'RGSENTINEL_SELFTEST',
+        `保護領域になった本文を読んでいる: ${await reads()}`);
+      assert.equal(await nIn('#' + id), 0, '保護領域に印が残っている');
+      // 本文はこちらで書き換えない
+      assert.match(await tab.evaluate(
+        `document.getElementById(${JSON.stringify(id)}).textContent`), new RegExp(sentinel));
+    });
+  }
+
+  await t.test('RG-9-04 保護領域から戻ったら、ふつうの候補として選び直せる', async () => {
+    await tab.evaluate(`(() => {
+      const el = document.getElementById('pr-ce');
+      el.removeAttribute('contenteditable');
+      el.firstChild.nodeValue = 'A branch again.';
+    })(); true`);
+    await waitFor('戻った場所へ付け直る', async () => await nIn('#pr-ce') === 1);
+    assert.equal(await reads(), 'RGSENTINEL_SELFTEST', '戻す途中で保護領域の本文を読んでいる');
   });
 
   await tab.close();

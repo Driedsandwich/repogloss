@@ -316,11 +316,26 @@
   // 編集中の内容・フォーム・コード・aria-hidden・inert は、書き換えないだけでなく
   // 値を読み取りもしない。「変えない」と「読まない」は別のことなので、
   // 判定の順序そのものを約束にする（順序が戻っていないかは verify.mjs が検査する）。
+  // 除外領域かどうかは、走査1回のあいだ変わらない（こちらが入れるのは空の <sup> だけで、
+  // それが本文の**祖先**になることはない）。SKIP は25個ほどの選択子を持つので、
+  // テキストノードごとに毎回 closest を呼ぶと積み上がる。要素ごとに覚えて使い回す。
+  let skipCache = null;
+
+  function inSkip(el) {
+    if (skipCache) {
+      const hit = skipCache.get(el);
+      if (hit !== undefined) return hit;
+    }
+    const v = !!el.closest(SKIP);
+    if (skipCache) skipCache.set(el, v);
+    return v;
+  }
+
   function isTarget(node) {
     if (isHandled(node)) return false;
     const el = node.parentElement;
     if (!el) return false;
-    if (el.closest(SKIP)) return false;
+    if (inSkip(el)) return false;
 
     // ---- ここから下でだけ、テキストの文字列に触れる ----
     const v = node.nodeValue;
@@ -732,6 +747,15 @@
   function isCoherent(rec) {
     if (!rec.icon.isConnected || !rec.termNode.isConnected) return false;
     if (rec.icon.parentNode !== rec.parent || rec.termNode.parentNode !== rec.parent) return false;
+
+    // ---- 本文の文字に触れる前に、いまも触れてよい場所かを確かめる ----
+    // 注記したあとで、ページ側がその場所を編集領域・コード・aria-hidden・inert・
+    // hidden へ変えることがある。isTarget は走査の入口で SKIP を先に見るが、
+    // ここで同じ順序を守らないと、**触れないと約束した場所の本文を読む**ことになる
+    // （実測: contenteditable へ移したあと、記録の照合が中身を読んでいた）。
+    // 読まずに退役させれば、その語はふつうの候補として後ろの出現へ回る。
+    if (inSkip(rec.parent)) return false;
+
     // 記録した位置に、記録した語がまだあるか
     const v = rec.termNode.nodeValue;
     if (v.slice(rec.splitOffset - rec.term.length, rec.splitOffset) !== rec.term) return false;
@@ -882,11 +906,13 @@
   function withRenderCache(fn) {
     const owner = renderCache === null;
     if (owner) { renderCache = new WeakMap(); visibleCache = new WeakMap();
-                 clipCache = new WeakMap(); clipChainCache = new WeakMap(); }
+                 clipCache = new WeakMap(); clipChainCache = new WeakMap();
+                 skipCache = new WeakMap(); }
     try {
       return fn();
     } finally {
-      if (owner) { renderCache = null; visibleCache = null; clipCache = null; clipChainCache = null; }
+      if (owner) { renderCache = null; visibleCache = null; clipCache = null;
+                   clipChainCache = null; skipCache = null; }
     }
   }
 

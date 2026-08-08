@@ -383,6 +383,17 @@ export const RESELECT_PAGE = `<!doctype html><html lang="en"><head><meta charset
   <div id="sink"></div>
 </body></html>`;
 
+/* 注記したあとで、その場所が「触れない領域」へ変わる。
+   本文を読む前に手を引けているかを、生の読み取りで測る。 */
+export const PROTECTED_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>protected</title></head><body>
+  <p id="pr-ce">A branch here.</p>
+  <p id="pr-ah">A commit here.</p>
+  <p id="pr-in">A merge here.</p>
+  <p id="pr-hd">A fetch here.</p>
+  <div id="sink"></div>
+</body></html>`;
+
 export function startTestServer(html = REPO_PAGE) {
   const { key, cert } = makeCert();
   const server = https.createServer({ key, cert }, (req, res) => {

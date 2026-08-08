@@ -76,7 +76,18 @@
     '[role="radio"]', '[role="switch"]', '[role="treeitem"]'
   ].join(',');
 
-  const handled = new WeakSet();   // 処理済みのテキストノード（分割で生じた断片を含む）
+  // 処理済みのテキストノード（分割で生じた断片を含む）。**世代つき**で持つ。
+  //
+  // ただの集合にすると、「その語はもう説明済みだから何もしなかった」ノードまで
+  // 永久に処理済みとして残る。すると、最初の印を含む場所がページから消えたとき、
+  // **既にページにある2番目の候補**が二度と選ばれない。実測では、`branch` を
+  // 2か所に置いて最初の場所を削除したところ、ページ全体の印が 0 個になった
+  // （URL を変えて全体を走査し直しても戻らない）。
+  // 正規の印が退役したときだけ世代を進め、全体から選び直す（下の reselect）。
+  const handled = new WeakMap();   // Text -> 処理した世代
+  let generation = 0;
+  const isHandled = n => handled.get(n) === generation;
+  const markHandled = n => handled.set(n, generation);
   // このページで印を付けた辞書キー -> そのとき自分が何を作ったかの記録。
   //
   // 印の要素だけを覚えるのでは足りない。片づけるときに「印の隣にあるもの」を見て
@@ -130,9 +141,45 @@
   // 位置を見ずに「全面の切り取り」とみなすと、読める文章のほうを除外してしまう
   // （実測: position:static・幅1264px の要素にある語へ印が付かなかった）。
   // clip-path は position に関係なく効くので、こちらは位置を問わない。
-  const FULL_CLIP = /^rect\(0(?:px)?(?:,)?\s+0(?:px)?(?:,)?\s+0(?:px)?(?:,)?\s+0(?:px)?\)$/;
-  const FULL_CLIP_PATH = /^inset\(\s*50%\s*\)$/;
+  // 決まった書き方だけを文字列で照合するのはやめる。`rect(0 0 0 0)` と
+  // `inset(50%)` だけを見ていたため、**面積は 0 なのに座標が 0 でない**書き方を
+  // 取りこぼしていた（実測: `rect(5px,5px,5px,5px)` と `inset(100%)` の中の語に
+  // 印が付き、後ろの読める同じ語が説明されなくなった）。値として解いて面積で決める。
   const CLIP_POSITIONS = ['absolute', 'fixed'];   // legacy clip が効く配置
+
+  // clip: rect(top, right, bottom, left)。comma でも空白でも書ける。
+  // 面積が 0 になるのは right <= left か bottom <= top のとき。
+  // auto が混ざっていたら、その辺は決められないので「全面非表示」と断定しない。
+  function rectClipsAll(v) {
+    const m = /^rect\((.+)\)$/.exec(v);
+    if (!m) return false;
+    const parts = m[1].split(/\s*,\s*|\s+/).filter(Boolean);
+    if (parts.length !== 4) return false;
+    if (parts.some(p => p === 'auto')) return false;
+    const n = parts.map(p => parseFloat(p));
+    if (n.some(x => !Number.isFinite(x))) return false;
+    const [top, right, bottom, left] = n;
+    return right <= left || bottom <= top;
+  }
+
+  // clip-path: inset(...)。1〜4値を上右下左へ展開する。
+  // 縦か横の合計が 100% 以上なら中身は残らない。
+  // 長さと百分率が混ざると箱の大きさ抜きには決められないので、断定しない
+  // （round … の角丸指定は面積に関係しないので落とす）。
+  function insetClipsAll(v) {
+    const m = /^inset\(([^)]*)\)$/.exec(v);
+    if (!m) return false;
+    const parts = m[1].split(/\s+round\s+/)[0].trim().split(/\s+/).filter(Boolean);
+    if (parts.length < 1 || parts.length > 4) return false;
+    if (!parts.every(p => /^-?\d*\.?\d+%$/.test(p))) return false;
+    const p = parts.map(x => parseFloat(x));
+    const [top, right, bottom, left] =
+      p.length === 1 ? [p[0], p[0], p[0], p[0]]
+      : p.length === 2 ? [p[0], p[1], p[0], p[1]]
+      : p.length === 3 ? [p[0], p[1], p[2], p[1]]
+      : p;
+    return (top + bottom) >= 100 || (left + right) >= 100;
+  }
 
   let clipCache = null;   // 走査1回のあいだだけ有効
 
@@ -145,13 +192,20 @@
     // 大きさの確認は安い。ここを先に見て、多くの要素で getComputedStyle を避ける。
     const tiny = n.offsetWidth <= 1 && n.offsetHeight <= 1;
     const cs = getComputedStyle(n);
+    // display:contents の要素は箱を作らないので、clip も clip-path も**効かない**。
+    // 通常の箱と同じに扱うと、見えている文章のほうを落とす（実測: 当たり判定でも
+    // 文字に指が当たるのに、印が後ろの文章へ回っていた）。箱を持つ先祖は別に見る。
+    if (cs.display === 'contents') {
+      if (clipCache) clipCache.set(n, false);
+      return false;
+    }
     const clip = CLIP_POSITIONS.includes(cs.position) && cs.clip && cs.clip !== 'auto'
       ? cs.clip.replace(/\s+/g, ' ').trim() : '';
     const path = cs.clipPath && cs.clipPath !== 'none' ? cs.clipPath.trim() : '';
     if (clip || path) {
       // 1px 四方まで潰したうえで切り取る書き方（読み上げ専用の定番）か、
-      // 大きさに関係なく全面を切り落とす書き方か。
-      v = tiny || FULL_CLIP.test(clip) || FULL_CLIP_PATH.test(path);
+      // 大きさに関係なく面積が 0 になる書き方か。
+      v = tiny || rectClipsAll(clip) || insetClipsAll(path);
     }
     if (clipCache) clipCache.set(n, v);
     return v;
@@ -263,7 +317,7 @@
   // 値を読み取りもしない。「変えない」と「読まない」は別のことなので、
   // 判定の順序そのものを約束にする（順序が戻っていないかは verify.mjs が検査する）。
   function isTarget(node) {
-    if (handled.has(node)) return false;
+    if (isHandled(node)) return false;
     const el = node.parentElement;
     if (!el) return false;
     if (el.closest(SKIP)) return false;
@@ -373,7 +427,35 @@
       id = UID + '-t' + (++triggerSeq);
       trigger.setAttribute('data-iiyaku-trigger', id);
     }
+    ownedTriggers.add(trigger);
     return id;
+  }
+
+  /* ---------- 3-2. 自分が作ったものだけを自分のものとして扱う ---------- */
+  // ページ側が、注記済みの領域を丸ごと cloneNode で複製することがある。
+  // 複製された印は class も data 属性も入口 ID もそのままなので、見た目には
+  // 区別が付かない。実測では、同じ入口 ID を持つ要素が2つになり、
+  // その ID で入口を引くと**複製側**が返りうる状態になった。
+  // 自分が作ったものを控えておき、それ以外は自分のものとして扱わない。
+  const ownedIcons = new WeakSet();
+  const ownedTriggers = new WeakSet();
+
+  // 追加された領域を走査する前に、複製された「自分のふり」を取り除く。
+  // 触るのは自分の印と、自分の UID 形式の入口 ID だけ。ページ側の属性や
+  // 本文には手を出さない。取り除いたあと、その中の文字はふつうの候補に戻る。
+  function sanitizeClones(root) {
+    if (!root || root.nodeType !== Node.ELEMENT_NODE) return;
+    const pick = sel => {
+      const out = root.matches && root.matches(sel) ? [root] : [];
+      if (root.querySelectorAll) out.push(...root.querySelectorAll(sel));
+      return out;
+    };
+    for (const ic of pick('.iiyaku-icon')) if (!ownedIcons.has(ic)) ic.remove();
+    for (const t of pick('[data-iiyaku-trigger]')) {
+      if (ownedTriggers.has(t)) continue;
+      const v = t.getAttribute('data-iiyaku-trigger');
+      if (v && v.startsWith(UID + '-t')) t.removeAttribute('data-iiyaku-trigger');
+    }
   }
 
   /* ---------- 4. アイコン注入 ---------- */
@@ -388,6 +470,7 @@
     icon.dataset.iiyaku = ja;
     icon.dataset.iiyakuKey = key;
     icon.dataset.iiyakuTerm = term;
+    ownedIcons.add(icon);   // 複製された印と区別するため、自分の作ったものを控える
     return icon;
   }
 
@@ -639,18 +722,41 @@
   //   - DOM にあり、その場所が実際に見えている
   //   - 単独の印なら、その印自身が Tab の順路に入る
   //   - 装飾扱いの印なら、対応する入口が生きていて Tab の順路に入る
+  // 記録した内容と、いまの DOM が食い違っていないか。
+  //
+  // 印が DOM に在ることだけを見ていると、**語のほうが消された場所に残った印**を
+  // 「使える」と誤認する。実測では、語の Text node を消して印だけ残すと、
+  // その後に現れた本物の語が「説明済み」として抑止された。ページ側が語と印の
+  // あいだへ節点を挿し込んだ場合も、印は語の直後ではなくなる（実測）。
+  // だから、記録した組み合わせがそのまま残っているかを毎回確かめる。
+  function isCoherent(rec) {
+    if (!rec.icon.isConnected || !rec.termNode.isConnected) return false;
+    if (rec.icon.parentNode !== rec.parent || rec.termNode.parentNode !== rec.parent) return false;
+    // 記録した位置に、記録した語がまだあるか
+    const v = rec.termNode.nodeValue;
+    if (v.slice(rec.splitOffset - rec.term.length, rec.splitOffset) !== rec.term) return false;
+    // 印は語のすぐ後ろか（ページ側が間へ挿し込んでいないか）
+    if (rec.icon.previousSibling !== rec.termNode) return false;
+    // 装飾扱いの印は、記録した入口がいまも生きていて、印が指している ID と
+    // 同じ名札を持っていること。
+    // ここで document 全体を引き直さない——同じ ID を持つ要素が2つ出るのは
+    // 複製されたときだけで、それは sanitizeClones が走査より前に取り除いている。
+    // 全体を引くと、語が見つかるたびに文書全体の検索が走る（実測で重かった）。
+    if (rec.placementKind === 'hosted') {
+      const id = rec.icon.dataset.iiyakuFor;
+      if (!id || !rec.trigger || !rec.trigger.isConnected) return false;
+      if (rec.trigger.getAttribute('data-iiyaku-trigger') !== id) return false;
+    }
+    return true;
+  }
+
   function usableGloss(key) {
     const rec = glossed.get(key);
     if (!rec) return null;
-    const icon = rec.icon;
-    if (!icon.isConnected) return null;
-    if (!isVisibleOccurrence(icon.parentElement)) return null;
-    const forId = icon.dataset.iiyakuFor;
-    if (forId) {
-      const trigger = document.querySelector(`[data-iiyaku-trigger="${forId}"]`);
-      return trigger && tabbable(trigger) ? rec : null;
-    }
-    return tabbable(icon) ? rec : null;
+    if (!isCoherent(rec)) return null;
+    if (!isVisibleOccurrence(rec.icon.parentElement)) return null;
+    if (rec.placementKind === 'hosted') return tabbable(rec.trigger) ? rec : null;
+    return tabbable(rec.icon) ? rec : null;
   }
 
   // 使えなくなった印を片づける。**元の語を、また注記できる状態へ戻す**ところまでやる。
@@ -683,25 +789,30 @@
     return rec;
   }
 
-  // 自分の印が、この片づけを通らずに DOM から外れることがある。GitHub が一部を
-  // 描き直したときや、ページ側が要素を消したときである。放っておくと、記録した
-  // 節点が handled に残り、その語はページを開いているあいだ二度と説明されない
-  // （実測: 印を外して画面遷移しても付き直さなかった）。
+  // 記録と DOM の食い違いを見つけて片づける。
   //
-  // 記録は辞書のキーの数（61）で頭打ちなので、変更のたびに数え直しても軽い。
-  // 外れていた印を片づけたら、その場所をすぐ見直す（画面遷移を待たない）。
-  function recoverDetachedGlosses() {
+  // 印が外れる形（GitHub の描き直し）だけでなく、語だけが消される形、語と印の
+  // あいだへページ側が節点を挿す形もある。後者は removedNodes を伴わないので、
+  // **ノードが増えただけの変更でも**数え直す。記録は辞書のキーの数（61）で
+  // 頭打ちなので、毎回全部見ても軽い（DOM の読み取りだけでレイアウトは起こさない）。
+  function reconcileGlosses() {
     let released = null;
     for (const key of [...glossed.keys()]) {
       const rec = glossed.get(key);
-      if (rec && !rec.icon.isConnected) (released ??= []).push(retireGloss(key));
+      if (rec && !isCoherent(rec)) (released ??= []).push(retireGloss(key));
     }
-    if (!released) return 0;
-    let n = 0;
-    for (const rec of released) {
-      if (rec.termNode.isConnected) n += scanInner(rec.termNode);
-    }
-    return n;
+    return released;
+  }
+
+  // 正規の印が居なくなったので、ページ全体から選び直す。
+  //
+  // 世代を進めると、「そのとき既に説明済みだったので何もしなかった」節点も
+  // もう一度候補に戻る。これをしないと、**既にページにある2番目の候補**が
+  // 永久に選ばれない（実測で、語がページから完全に消えた）。
+  // 退役は稀なので、ここだけ全体走査でよい。ふつうの変更では世代は進めない。
+  function reselect() {
+    generation++;
+    return scanInner(document.body);
   }
 
   /* ---------- 6. 注記 ---------- */
@@ -711,7 +822,7 @@
   // 後ろを次の一致の作業対象にする。後ろから割ると、先に控えた節点があとの分割で
   // さらに割られ、記録が実物とずれる（片づけのときに別の節点を戻してしまう）。
   function annotate(node) {
-    if (handled.has(node)) return 0;
+    if (isHandled(node)) return 0;
     const parent = node.parentNode;
     if (!parent || parent.nodeType !== Node.ELEMENT_NODE) return 0;
 
@@ -719,7 +830,7 @@
     // git の解説ページのような文書では印が数百個になり本文が読めなくなる。
     // ただし前に付けた印が「もう説明として使えない」なら、付け直す。
     const hits = matcher.findHits(node.nodeValue, key => usableGloss(key) !== null);
-    if (hits.length === 0) { handled.add(node); return 0; }
+    if (hits.length === 0) { markHandled(node); return 0; }
     // 付け直すと決まったキーについて、使えなくなった古い印を取り除く。
     // 残しておくと、同じ語の印が画面に2つあることになる。
     for (const h of hits) retireGloss(h.key);
@@ -728,7 +839,7 @@
     // closest() は祖先をたどるので、一致の有無に関わらず全候補で呼ぶと重い
     // （実測で大きなページの初期走査が 15ms から 29ms へ倍増した）。
     const placement = resolvePlacement(parent);
-    if (placement.kind === 'skip') { handled.add(node); return 0; }
+    if (placement.kind === 'skip') { markHandled(node); return 0; }
 
     let cur = node;        // いま扱っている節点（用語で終わる左側になる）
     let consumed = 0;      // cur の先頭が、元の文字列の何文字目にあたるか
@@ -738,11 +849,11 @@
       // 用語が末尾ちょうどで終わるときは割らない。割ると空の節点が1つ増え、
       // 片づけと付け直しを繰り返すたびに増え続ける（往復のたびに1つずつ）。
       const tail = at < cur.length ? cur.splitText(at) : null;
-      if (tail) handled.add(tail);                          // 断片を再処理しない
+      if (tail) markHandled(tail);                          // 断片を再処理しない
       const icon = makeIcon(hit.key, hit.match, DICT[hit.key]);
       parent.insertBefore(icon, tail ?? cur.nextSibling);
       applyIconSemantics(icon, placement);                  // 入った場所を見てから決める
-      handled.add(cur);
+      markHandled(cur);
       // 実際に挿入できたものだけ、作ったものと一緒に控える。
       // termNode は用語を末尾に含む節点。片づけのとき、これを走査対象へ戻す。
       // tailNode は自分が作った右側（作らなかったときは null）。控えるのは
@@ -758,7 +869,7 @@
       cur = tail;
       consumed = hit.end;
     }
-    handled.add(node);
+    markHandled(node);
     return added;
   }
 
@@ -805,12 +916,14 @@
   let lastUrl = location.href;
   // 差し込みが一度に何十件も来るので、1回分の呼び出しでは測定結果を共有する。
   const observer = new MutationObserver(muts => withRenderCache(() => {
-    // 自分の印だけがページ側から外されることがある。記録した節点を handled へ
-    // 残したままにすると、その語は二度と説明されない。外れていたら片づけて、
-    // その場で見直す（画面遷移やノードの追加を待たない）。
-    let removals = false;
-    for (const mu of muts) if (mu.removedNodes.length) { removals = true; break; }
-    if (removals) recoverDetachedGlosses();
+    // ① 複製された「自分のふり」を先に取り除く。走査より前にやらないと、
+    //    複製された印が入口 ID の引き当てを乱す。
+    for (const mu of muts) for (const n of mu.addedNodes) sanitizeClones(n);
+
+    // ② 記録と DOM の食い違いを片づける。印が外された形だけでなく、語だけが
+    //    消された形・語と印のあいだへ挿し込まれた形もあるので、ノードが
+    //    増えただけの変更でも数え直す。
+    const released = reconcileGlosses();
 
     // GitHub はページを読み直さずに画面を差し替えることがある。
     // 別のページに移ったら「印を付けた語」を数え直す。そうしないと、
@@ -830,8 +943,11 @@
       scan(document.body);
     }
     for (const mu of muts) {
-      for (const n of mu.addedNodes) scan(n);
+      for (const n of mu.addedNodes) scanInner(n);
     }
+    // ③ 正規の印が居なくなっていたら、ページ全体から選び直す。
+    //    既にページにある候補へ引き継ぐには、ここで世代を進めるしかない。
+    if (released) reselect();
   }));
 
   /* ---------- 9. ON / OFF の切り替え ---------- */

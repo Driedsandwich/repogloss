@@ -1,6 +1,6 @@
 # プライバシーポリシー / Privacy Policy — RepoGloss
 
-最終更新: 2026-08-06（v1.8.5）
+最終更新: 2026-08-07（v1.8.7）
 
 ---
 
@@ -103,7 +103,7 @@ Chrome の権限は、`permissions` に書く API の権限と、コンテンツ
 
 ### 7. 連絡先
 
-GitHub リポジトリの Issue でお願いします。脆弱性の報告のみ [SECURITY.md](./SECURITY.md) の宛先へお願いします。
+GitHub リポジトリの Issue でお願いします。脆弱性の報告のみ [SECURITY.md](https://github.com/Driedsandwich/repogloss/blob/main/SECURITY.md) の宛先へお願いします。
 
 ---
 
@@ -203,7 +203,7 @@ Changes will be made in this file and recorded in the repository history. Any ch
 
 ### 7. Contact
 
-Please open an issue on the GitHub repository. For security reports, see [SECURITY.md](./SECURITY.md).
+Please open an issue on the GitHub repository. For security reports, see [SECURITY.md](https://github.com/Driedsandwich/repogloss/blob/main/SECURITY.md).
 
 ---
 

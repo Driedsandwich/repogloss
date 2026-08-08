@@ -179,6 +179,48 @@ check('content.js が、付けた印の有効性を isConnected だけで判断�
     !(cs.js ?? []).some(isTestOnly), (cs.js ?? []).filter(isTestOnly).join(', '));
 }
 
+/* ---------- 配布する文書の相対リンクが、配布物の中で解決するか ---------- */
+// 提出 ZIP の中には tests/ も scripts/ も .github/ も入らない。相対リンクのまま
+// 書くと、配布された文書の中でリンクが切れる（実測: 9件が解決しなかった。
+// 外部監査は README の画像1件を指摘したが、数え直したら同じ形が9件あった）。
+// 相対で書いてよいのは配布物に入っているものだけ。それ以外は絶対 URL にする。
+{
+  const LINK = /\[[^\]]*\]\((?!https?:|mailto:|#)([^)#]+)(?:#[^)]*)?\)/g;
+  const resolve = (from, target) => {
+    const dir = from.includes('/') ? from.slice(0, from.lastIndexOf('/') + 1) : '';
+    const parts = (dir + target).split('/');
+    const out = [];
+    for (const p of parts) {
+      if (p === '.' || p === '') continue;
+      if (p === '..') out.pop(); else out.push(p);
+    }
+    return out.join('/');
+  };
+  const mds = PACKAGE_FILES.filter(f => extname(f) === '.md');
+  check('配布物に文書が含まれている（この検査の前提）', mds.length > 0, `件数=${mds.length}`);
+  const outsidePkg = [], missingInRepo = [];
+  let links = 0;
+  for (const f of mds) {
+    for (const m of read(f).matchAll(LINK)) {
+      links++;
+      const t = resolve(f, m[1].trim());
+      if (!PACKAGE_FILES.includes(t)) outsidePkg.push(`${f} -> ${m[1]}`);
+      if (!existsSync(join(ROOT, t))) missingInRepo.push(`${f} -> ${m[1]}`);
+    }
+  }
+  check('配布する文書の相対リンクが、配布物の中だけを指している',
+    outsidePkg.length === 0, outsidePkg.join(' / '));
+  check('配布する文書の相対リンクが、リポジトリでも解決する',
+    missingInRepo.length === 0, missingInRepo.join(' / '));
+  // 陽性対照: この検査が、実際に配布物の外を指すリンクを捕まえること
+  const probe = resolve('README.md', './docs/screenshot.png');
+  check('相対リンクの検査が、配布物の外を指すものを捕まえる（陽性対照）',
+    probe === 'docs/screenshot.png' && !PACKAGE_FILES.includes(probe), `解決結果=${probe}`);
+  check('相対リンクの検査が、配布物の中のものは通す（陽性対照）',
+    PACKAGE_FILES.includes(resolve('README.md', './PRIVACY.md')));
+  check('相対リンクを実際に数えている（0件で素通りしていない）', links >= 5, `件数=${links}`);
+}
+
 /* ---------- 辞書 ---------- */
 const dict = readJson('locales/dict.json');
 const keys = Object.keys(dict);
@@ -330,9 +372,18 @@ check('README が CI の成果物（提出用 ZIP）について書いている'
     if (h) inHistory = h[1].includes('履歴');
     if (!inHistory) currentLines.push(line);
   }
-  const current = currentLines.join('\n');
+  // `superseded:` の下（より深いインデント）は「取り下げた過去の版」の記録なので、
+  // 現在版を名乗る場所ではない。ここまで落とすと、正しい履歴まで直させることになる。
+  const stripSuperseded = t => t.replace(/^superseded:\n(?:[ \t]+.*\n?)*/gm, '');
+  const current = stripSuperseded(currentLines.join('\n'));
   check('AUDIT.md に、現在版を名乗る節が残っている', current.length > 500,
     `履歴でない部分が ${current.length} 文字しかない＝節の切り分けが壊れている`);
+  // 陽性対照: 取り下げ版の記録だけが落ち、現在版の記載は残ること
+  check('取り下げ版の除外が、現在版の記載まで落としていない（陽性対照）',
+    current.includes(`version:            ${v}`) || current.includes(v),
+    '現在版の記載ごと落ちている');
+  check('取り下げ版の除外が、実際に効いている（陽性対照）',
+    stripSuperseded('superseded:\n  - zip: repogloss-0.0.1.zip\nnext: keep\n') === 'next: keep\n');
 
   // それぞれ「ここに書かれた版は、いまの版と同じはず」という場所
   const SLOTS = [

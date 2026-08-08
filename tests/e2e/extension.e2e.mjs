@@ -11,7 +11,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { launchChrome, startTestServer, stageExtension, stageExtensionWith,
-         SENTINEL_PAGE, LIFECYCLE_PAGE, VISIBILITY_PAGE, RETIRE_PAGE,
+         SENTINEL_PAGE, LIFECYCLE_PAGE, VISIBILITY_PAGE, RETIRE_PAGE, RESELECT_PAGE,
          openPage, sleep, waitFor,
          pressKey, collectTabOrder, tabUntil } from './helpers/chrome.mjs';
 
@@ -945,6 +945,66 @@ test('箱を持たない文字と、切り取りの判定', async t => {
     }, `切り取りの判定が実際の見え方と合っていない: ${JSON.stringify(r)}`);
   });
 
+  await t.test('面積で判定する — 座標が0でなくても、面積が0なら隠れている（5種）', async () => {
+    // 決まった書き方だけを文字列で照合していたときは、ここを取りこぼしていた。
+    const r = await tab.evaluate(`(() => {
+      const n = id => document.getElementById(id).querySelectorAll('.iiyaku-icon').length;
+      return {
+        // 面積0（座標は0でない）→ 隠れている側 0・後ろ 1
+        rectNonZero: { there: n('clip-nonzero'),  later: n('nonzero-later') },
+        rectFixed:   { there: n('clip-fixed2'),   later: n('fixed2-later') },
+        inset100:    { there: n('clip-inset100'), later: n('inset100-later') },
+        // 面積が残る → 見えているので注記する
+        rectPositive: n('clip-positive'),
+        inset10:      n('clip-inset10'),
+        // display:contents 自身の clip-path は箱が無いので効かない
+        contentsClip: n('dc-clip')
+      };
+    })()`);
+    assert.deepEqual(r, {
+      rectNonZero: { there: 0, later: 1 },   // rect(5px,5px,5px,5px)
+      rectFixed:   { there: 0, later: 1 },   // rect(10px,8px,10px,3px)
+      inset100:    { there: 0, later: 1 },   // inset(100%)
+      rectPositive: 1,                        // rect(0,200px,40px,0) は面積が残る
+      inset10: 1,                             // inset(10%) も残る
+      contentsClip: 1                         // 箱が無いので clip-path は効かない
+    }, `面積の判定が実際の見え方と合っていない: ${JSON.stringify(r)}`);
+  });
+
+  await t.test('面積0の切り取りが本当に見えないことを、当たり判定で確かめる（対照）', async () => {
+    // 当たり判定は「文字が描かれている場所」で見る。要素の箱の左端で測ると、
+    // display:contents には箱が無く、部分的な切り取りでは余白側を突いてしまう。
+    const r = await tab.evaluate(`(() => {
+      const at = id => { const el = document.getElementById(id);
+        const g = document.createRange(); g.selectNodeContents(el);
+        let b = g.getBoundingClientRect();
+        // 文字の場所が画面に入るまでスクロールしてから測る
+        window.scrollBy(0, b.top - 200); b = g.getBoundingClientRect();
+        const hit = document.elementFromPoint(b.left + Math.min(4, b.width/2), b.top + b.height/2);
+        // 祖先が返ってきたときに「当たった」と数えてはいけない。全面を切り取ると
+        // body が返るので、el.contains(hit) だけで見る（display:contents の要素は
+        // 箱が無くても elementFromPoint に自分が返る。実測で確認した）。
+        return { self: !!hit && (hit === el || el.contains(hit)),
+                 onScreen: b.top >= 0 && b.bottom <= document.documentElement.clientHeight && b.width > 0,
+                 clip: getComputedStyle(el).clip, clipPath: getComputedStyle(el).clipPath }; };
+      return { nonzero: at('clip-nonzero'), positive: at('clip-positive'),
+               inset100: at('clip-inset100'), contentsClip: at('dc-clip') };
+    })()`);
+    for (const [k, v] of Object.entries(r)) {
+      assert.equal(v.onScreen, true, `${k} の文字を画面の中で測れていない: ${JSON.stringify(v)}`);
+    }
+    // 面積0のものには指が当たらない（＝本当に見えていない）
+    assert.equal(r.nonzero.self, false, `rect(5px,5px,5px,5px) に当たる＝反例になっていない（${r.nonzero.clip}）`);
+    assert.equal(r.inset100.self, false, `inset(100%) に当たる＝反例になっていない（${r.inset100.clipPath}）`);
+    // 面積が残るものには当たる（＝見えている）
+    assert.equal(r.positive.self, true, `面積の残る rect に当たらない（${r.positive.clip}）`);
+    // display:contents 自身の clip-path は効かない＝文字は見えている
+    assert.equal(r.contentsClip.self, true,
+      `display:contents 自身の clip-path が効いている＝この判定の前提が変わった（${r.contentsClip.clipPath}）`);
+    // inset(10%) は当たり判定に入れない。部分的な切り取りなので、文字が余白側に
+    // 掛かるかは要素の幅次第で、こちらが主張しているのは「全面ではない」ことだけ。
+  });
+
   await t.test('切り取りが実際に効いているかを、当たり判定で確かめる（対照）', async () => {
     // 「clip は絶対配置にしか効かない」を、こちらの式の言い換えではなく
     // ブラウザの振る舞いで見る。切り取られた領域は指も当たらない。
@@ -1216,6 +1276,225 @@ test('印の片づけが、ページの持ち物と選択範囲を壊さない',
     assert.equal(await nKey('packages'), 1, '同じ語の印が増えている');
     assert.equal(await tab.evaluate(`document.getElementById('replaceable').textContent`),
       'Check the packages list.', '本文が変わっている');
+  });
+
+  await tab.close();
+});
+
+/*
+ * 正規の印が居なくなったときに、**既にページにある候補**へ引き継げるか。
+ *
+ * 「同じ語はページで1回だけ」を実現するために、説明済みの語を含む節点は
+ * 処理済みとして飛ばしている。飛ばした記録を永久に残すと、最初の印が消えたとき
+ * その語がページのどこにも説明されなくなる（実測で 0 個になった）。
+ * 記録と DOM の食い違い、複製された印の扱いも、ここでまとめて見る。
+ */
+test('印が居なくなったら、既にある候補へ引き継ぐ', async t => {
+  const srv = await startTestServer(RESELECT_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await chrome.cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(chrome.cdp, PAGE);
+  await waitFor('印が付く', async () =>
+    await tab.evaluate(`document.querySelectorAll('.iiyaku-icon').length > 0`));
+  await sleep(500);
+
+  const nIn = async sel => await tab.evaluate(
+    `document.querySelectorAll(${JSON.stringify(sel)} + ' .iiyaku-icon').length`);
+  const nKey = async k => await tab.evaluate(
+    `document.querySelectorAll('.iiyaku-icon[data-iiyaku-key="' + ${JSON.stringify(k)} + '"]').length`);
+  /* ページ側の変更を起こして、こちらが追随するのを待つ */
+  const change = async js => { await tab.evaluate(`(() => { ${js} })(); true`); await sleep(150); };
+
+  await t.test('最初の場所を消すと、既にある2番目へ移る', async () => {
+    assert.deepEqual([await nIn('#first'), await nIn('#second'), await nKey('push')], [1, 0, 1],
+      '前提が崩れている');
+    await change(`document.getElementById('first').remove();
+      const u = document.createElement('p'); u.textContent = 'unrelated';
+      document.getElementById('sink').append(u);`);
+    await waitFor('2番目へ移る', async () => await nIn('#second') === 1);
+    assert.deepEqual([await nIn('#second'), await nKey('push')], [1, 1],
+      `2番目へ移っていないか、増えている`);
+    assert.equal(await tab.evaluate(`document.getElementById('second').textContent`),
+      'A push second.', '本文が変わっている');
+  });
+
+  await t.test('隠れている候補は選ばず、その次の読める候補へ移る', async () => {
+    // #third は display:none。ここを選ぶと、その語はページのどこでも読めなくなる
+    await change(`document.getElementById('second').remove();
+      const u = document.createElement('p'); u.textContent = 'unrelated 2';
+      document.getElementById('sink').append(u);`);
+    await waitFor('4番目へ移る', async () => await nIn('#fourth') === 1);
+    assert.deepEqual([await nIn('#third'), await nIn('#fourth'), await nKey('push')], [0, 1, 1],
+      '隠れている候補を選んでいるか、増えている');
+  });
+
+  await t.test('URL 変更＋全体走査でも同じ結果になる（対照）', async () => {
+    await change(`history.pushState({}, '', '/octocat/Hello-World/reselect');
+      const u = document.createElement('p'); u.textContent = 'unrelated 3';
+      document.getElementById('sink').append(u);`);
+    await sleep(400);
+    assert.deepEqual([await nIn('#fourth'), await nKey('push')], [1, 1],
+      '全体走査で増えるか消えるかしている');
+  });
+
+  await t.test('10往復しても、印は1個のまま増えも減りもしない', async () => {
+    const text = await tab.evaluate(`document.getElementById('fourth').textContent`);
+    for (let i = 0; i < 10; i++) {
+      await change(`document.getElementById('fourth').style.display = 'none';
+        const p = document.createElement('p'); p.id = 'tmp' + ${i};
+        p.textContent = 'A push again ${i}.'; document.getElementById('sink').append(p);`);
+      await waitFor(`${i}: 移る`, async () => await nIn('#tmp' + i) === 1);
+      await change(`document.getElementById('tmp' + ${i}).remove();
+        document.getElementById('fourth').style.display = '';
+        const u = document.createElement('p'); u.textContent = 'u${i}';
+        document.getElementById('sink').append(u);`);
+      await waitFor(`${i}: 戻る`, async () => await nIn('#fourth') === 1);
+    }
+    assert.equal(await nKey('push'), 1, '同じ語の印が増えている');
+    assert.equal(await tab.evaluate(`document.getElementById('fourth').textContent`), text,
+      '本文が変わっている');
+  });
+
+  /* ---------- 記録と DOM の食い違い ---------- */
+
+  await t.test('語だけが消されたら、印を残さず次の候補へ渡す', async () => {
+    assert.equal(await nIn('#gone'), 1, '前提の印が無い');
+    await change(`document.querySelector('#gone .iiyaku-icon').previousSibling.remove();
+      const p = document.createElement('p'); p.id = 'fresh-conflict';
+      p.textContent = 'A conflict appears again.'; document.getElementById('sink').append(p);`);
+    await waitFor('新しい場所へ移る', async () => await nIn('#fresh-conflict') === 1);
+    assert.deepEqual([await nIn('#gone'), await nKey('conflict')], [0, 1],
+      '語を失った印が残っているか、増えている');
+  });
+
+  await t.test('語が別の文字へ書き換えられたら、古い印を無効にする', async () => {
+    assert.equal(await nIn('#rewritten'), 1, '前提の印が無い');
+    await change(`document.getElementById('rewritten').firstChild.nodeValue = 'Nothing here.';
+      const p = document.createElement('p'); p.id = 'fresh-checks';
+      p.textContent = 'Some checks appear again.'; document.getElementById('sink').append(p);`);
+    await waitFor('新しい場所へ移る', async () => await nIn('#fresh-checks') === 1);
+    assert.deepEqual([await nIn('#rewritten'), await nKey('checks')], [0, 1],
+      '語の無くなった場所に印が残っているか、増えている');
+  });
+
+  await t.test('語と印のあいだへページが節点を挿しても、ページの節点を動かさず印を語の直後へ戻す', async () => {
+    assert.equal(await nIn('#inserted'), 1, '前提の印が無い');
+    const before = await tab.evaluate(`document.getElementById('inserted').textContent`);
+    await change(`const ic = document.querySelector('#inserted .iiyaku-icon');
+      const t = document.createTextNode('PAGE_INSERT'); ic.before(t); window.__ins = t;`);
+    await waitFor('印が語の直後へ戻る', async () => await tab.evaluate(
+      `(() => { const ic = document.querySelector('#inserted .iiyaku-icon');
+        return !!ic && ic.previousSibling === document.getElementById('inserted').firstChild; })()`));
+    const r = await tab.evaluate(`(() => {
+      const p = document.getElementById('inserted');
+      const ic = p.querySelector('.iiyaku-icon');
+      return { 印の直前: ic.previousSibling.nodeValue,
+               ページ節点が生きている: window.__ins.isConnected,
+               ページ節点の中身: window.__ins.nodeValue,
+               印の数: p.querySelectorAll('.iiyaku-icon').length,
+               本文: p.textContent };
+    })()`);
+    assert.match(r.印の直前, /issues$/, `印が語の直後にない: ${JSON.stringify(r)}`);
+    assert.equal(r.ページ節点が生きている, true, 'ページが置いた節点を外している');
+    assert.equal(r.ページ節点の中身, 'PAGE_INSERT', 'ページが置いた節点を書き換えている');
+    assert.equal(r.印の数, 1, '印が増えている');
+    // 印は語の直後へ戻り、ページが置いた節点はその後ろに残る。
+    // 文字そのものは1文字も増減していない（印は文字を持たない <sup>）。
+    assert.equal(r.本文, 'Open the issuesPAGE_INSERT tab.', `本文の文字が変わっている: ${r.本文}`);
+    assert.equal(r.本文.replace('PAGE_INSERT', ''), before,
+      `ページが足した分を除くと元の本文に戻るはず: ${r.本文}`);
+  });
+
+  await t.test('語の節点が別の親へ移されても、印は1個のまま追随する', async () => {
+    assert.equal(await nIn('#moved'), 1, '前提の印が無い');
+    await change(`document.getElementById('elsewhere')
+      .appendChild(document.getElementById('moved').firstChild);`);
+    await waitFor('移動先へ追随する', async () => await nIn('#elsewhere') === 1);
+    assert.deepEqual([await nIn('#moved'), await nKey('packages')], [0, 1],
+      '元の場所に印が残っているか、増えている');
+  });
+
+  await t.test('作り直しても、利用者の選択範囲を壊さない', async () => {
+    const made = await tab.evaluate(`(() => {
+      const p = document.getElementById('selectable');
+      const A = p.firstChild, B = p.lastChild;
+      const sel = getSelection(); sel.removeAllRanges();
+      sel.setBaseAndExtent(B, 1, A, 10);          // 逆向きに、印を跨いで選ぶ
+      window.__a = A; window.__b = B;
+      return { text: sel.toString(), anchorIsB: sel.anchorNode === B };
+    })()`);
+    assert.ok(made.text.length > 3, `前提の選択が作れていない: ${JSON.stringify(made)}`);
+    // 記録の突合を起こす（ページ側が印の隣へ節点を足す）
+    await change(`const ic = document.querySelector('#selectable .iiyaku-icon');
+      if (ic) ic.before(document.createTextNode(''));`);
+    await sleep(400);
+    const after = await tab.evaluate(`(() => {
+      const sel = getSelection();
+      return { text: sel.toString(), count: sel.rangeCount,
+               aAlive: window.__a.isConnected, bAlive: window.__b.isConnected,
+               reversed: sel.anchorNode === window.__b,
+               body: document.getElementById('selectable').textContent };
+    })()`);
+    assert.equal(after.text, made.text, `選択していた文字が変わった: ${JSON.stringify(after)}`);
+    assert.equal(after.count, 1, '選択が消えた');
+    assert.equal(after.aAlive, true, '選択の端にあった節点が外された');
+    assert.equal(after.bAlive, true, '選択の端にあった節点が外された');
+    assert.equal(after.reversed, true, '向きが入れ替わっている');
+    assert.equal(after.body, 'Ask about the projects board.', '本文が変わっている');
+  });
+
+  await t.test('リンクの中の印と、1つの節点に2用語ある場合も保つ', async () => {
+    assert.equal(await nIn('#lnk'), 1, 'リンクの中の印が無い');
+    assert.deepEqual(
+      await tab.evaluate(`[...document.querySelectorAll('#two .iiyaku-icon')]
+        .map(i => i.dataset.iiyakuKey).sort()`), ['sync', 'watch'], '2用語が付いていない');
+    assert.equal(await tab.evaluate(`document.getElementById('two').textContent`),
+      'A sync and a watch differ.', '本文が変わっている');
+  });
+
+  /* ---------- 複製された印 ---------- */
+
+  await t.test('注記済みの領域を複製しても、所有していない印と入口 ID を残さない', async () => {
+    const r = await tab.evaluate(`(() => {
+      const a = document.getElementById('clone-src').cloneNode(true); a.id = 'clone-a';
+      const b = document.getElementById('clone-host').cloneNode(true); b.id = 'clone-b';
+      document.getElementById('sink').append(a, b);
+      return { 複製直後の印: document.querySelectorAll('#clone-a .iiyaku-icon, #clone-b .iiyaku-icon').length };
+    })()`);
+    assert.ok(r.複製直後の印 > 0, '複製で印が写っていない＝この試験の前提が崩れている');
+    await sleep(600);
+    const after = await tab.evaluate(`(() => {
+      const ids = [...document.querySelectorAll('[data-iiyaku-trigger]')]
+        .map(e => e.getAttribute('data-iiyaku-trigger'));
+      return { cloneA: document.querySelectorAll('#clone-a .iiyaku-icon').length,
+               cloneB: document.querySelectorAll('#clone-b .iiyaku-icon').length,
+               origA: document.querySelectorAll('#clone-src .iiyaku-icon').length,
+               origB: document.querySelectorAll('#clone-host .iiyaku-icon').length,
+               label: document.querySelectorAll('.iiyaku-icon[data-iiyaku-key="label"]').length,
+               workflow: document.querySelectorAll('.iiyaku-icon[data-iiyaku-key="workflow"]').length,
+               trigger重複: ids.length !== new Set(ids).size,
+               cloneAの本文: document.getElementById('clone-a').textContent.trim(),
+               cloneBの本文: document.getElementById('clone-b').textContent.trim() };
+    })()`);
+    assert.deepEqual([after.cloneA, after.cloneB], [0, 0],
+      `複製された印が残っている: ${JSON.stringify(after)}`);
+    assert.deepEqual([after.origA, after.origB], [1, 1], '元の印が消えている');
+    assert.deepEqual([after.label, after.workflow], [1, 1], '同じ語の印が増えている');
+    assert.equal(after.trigger重複, false, '同じ入口 ID を持つ要素が複数ある');
+    assert.equal(after.cloneAの本文, 'Add a label here.', '複製側の本文を壊している');
+    assert.equal(after.cloneBの本文, 'Open the workflow view', '複製側の本文を壊している');
+  });
+
+  await t.test('複製したあとに元を消すと、複製側へ正規の印が1つ移る', async () => {
+    await change(`document.getElementById('clone-src').remove();
+      document.getElementById('clone-host').remove();
+      const u = document.createElement('p'); u.textContent = 'u-clone';
+      document.getElementById('sink').append(u);`);
+    await waitFor('複製側へ移る', async () => await nIn('#clone-a') === 1);
+    assert.deepEqual([await nIn('#clone-a'), await nKey('label')], [1, 1], 'label が移っていない');
+    await waitFor('リンクの複製側へも移る', async () => await nIn('#clone-b') === 1);
+    assert.deepEqual([await nIn('#clone-b'), await nKey('workflow')], [1, 1], 'workflow が移っていない');
   });
 
   await tab.close();

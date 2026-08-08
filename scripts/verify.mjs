@@ -180,6 +180,26 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   }
 }
 
+/* ---------- 所有していないものへ手を出していないか（RG-9-05） ---------- */
+// class だけで「自分のもの」と決めると、ページ側が同じ class を使っただけで
+// その要素を消したりクリックを横取りしたりする（実測で両方起きた）。
+{
+  check('複製の除去が、class 単独ではなく自分の合言葉で判定している',
+    /data-iiyaku-owner/.test(content) && !/pick\('\.iiyaku-icon'\)/.test(content),
+    '.iiyaku-icon を class だけで拾って消している');
+  check('印の当たり判定が、自分が作ったものに限定されている',
+    /function ownedIconAt/.test(content) && /ownedIconAt\(el\)/.test(content));
+  check('click の横取りが closest(\'.iiyaku-icon\') ではなくなっている',
+    !/closest\('\.iiyaku-icon'\)/.test(content),
+    'ページ側の同名 class のリンクまで既定動作を止めてしまう');
+  // ページ側の値を selector へ埋めない（埋めると SyntaxError にもなる）
+  const badSelector = /querySelector(All)?\(\s*[`'"][^`'"]*\[\s*data-[^`'"]*=\s*"?\s*['"]\s*\+/;
+  check('外から来た値を CSS selector へ埋めていない', !badSelector.test(content));
+  // 陽性対照: この探し方が、実際に v1.8.7 の書き方を捕まえる
+  check('selector 埋め込みの検査が、実際に古い書き方を捕まえる（陽性対照）',
+    badSelector.test(`document.querySelector('[data-iiyaku-trigger="' + id + '"]')`));
+}
+
 /* ---------- 変更の見張りが、見え方を変える入力まで見ているか（RG-9-01 / RG-9-06） ---------- */
 {
   check('MutationObserver が文字の書き換えを見ている', /characterData:\s*true/.test(content));

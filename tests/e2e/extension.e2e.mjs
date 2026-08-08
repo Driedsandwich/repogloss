@@ -12,7 +12,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { launchChrome, startTestServer, stageExtension, stageExtensionWith,
          SENTINEL_PAGE, LIFECYCLE_PAGE, VISIBILITY_PAGE, RETIRE_PAGE, RESELECT_PAGE,
-         USABILITY_PAGE, PROTECTED_PAGE, CONVERGE_PAGE,
+         USABILITY_PAGE, NAMESPACE_CLIP_PAGE, PROTECTED_PAGE, CONVERGE_PAGE,
          openPage, sleep, waitFor,
          pressKey, collectTabOrder, tabUntil } from './helpers/chrome.mjs';
 
@@ -74,13 +74,13 @@ test('拡張として読み込んだ状態で動く', async t => {
   await t.test('label は、関連付いた入力欄が入口になる', async () => {
     const id = await tab.evaluate(`document.querySelector('#lab-for .iiyaku-icon')?.dataset.iiyakuFor ?? null`);
     assert.ok(id, 'label 内に印が無い');
-    assert.equal(await tab.evaluate(`document.getElementById('inp-for').getAttribute('data-iiyaku-trigger')`), id);
+    assert.equal(await tab.evaluate(`document.getElementById('inp-for').getAttribute('data-iiyaku-entrance')`), id);
   });
 
   await t.test('label が入力欄を含む場合も、その入力欄が入口になる', async () => {
     const id = await tab.evaluate(`document.querySelector('#lab-wrap .iiyaku-icon')?.dataset.iiyakuFor ?? null`);
     assert.ok(id);
-    assert.equal(await tab.evaluate(`document.getElementById('inp-wrap').getAttribute('data-iiyaku-trigger')`), id);
+    assert.equal(await tab.evaluate(`document.getElementById('inp-wrap').getAttribute('data-iiyaku-entrance')`), id);
   });
 
   await t.test('到達できない場所には印を付けない（境界18件）', async () => {
@@ -107,7 +107,7 @@ test('拡張として読み込んだ状態で動く', async t => {
       const out = {};
       for (const [host, expected] of Object.entries(pairs)) {
         const ic = document.getElementById(host).querySelector('.iiyaku-icon');
-        const t = ic && document.querySelector('[data-iiyaku-trigger="' + ic.dataset.iiyakuFor + '"]');
+        const t = ic && document.querySelector('[data-iiyaku-entrance="' + ic.dataset.iiyakuFor + '"]');
         out[host] = ic ? (t ? t.id : '入口なし') : '印なし';
       }
       return out;
@@ -133,7 +133,7 @@ test('拡張として読み込んだ状態で動く', async t => {
       const icons = [...document.querySelectorAll('#scroll-region .iiyaku-icon')];
       return { n: icons.length, roles: icons.map(i => i.getAttribute('role')),
                grouped: icons.filter(i => i.dataset.iiyakuFor).length,
-               containerIsTrigger: document.getElementById('scroll-region').hasAttribute('data-iiyaku-trigger') };
+               containerIsTrigger: document.getElementById('scroll-region').hasAttribute('data-iiyaku-entrance') };
     })()`);
     assert.equal(r.n, 2);
     assert.deepEqual(r.roles, ['button', 'button']);
@@ -158,7 +158,7 @@ test('拡張として読み込んだ状態で動く', async t => {
     const reachable = new Set(await collectTabOrder(cdp, tab, 90));
     const hosted = await tab.evaluate(`[...document.querySelectorAll('.iiyaku-icon[aria-hidden="true"]')]
       .map(ic => {
-        const t = document.querySelector('[data-iiyaku-trigger="' + ic.dataset.iiyakuFor + '"]');
+        const t = document.querySelector('[data-iiyaku-entrance="' + ic.dataset.iiyakuFor + '"]');
         return { key: ic.dataset.iiyakuKey, trigger: t ? (t.id || t.tagName) : null };
       })`);
     const unreachable = hosted.filter(h => !h.trigger || !reachable.has(h.trigger));
@@ -172,7 +172,7 @@ test('拡張として読み込んだ状態で動く', async t => {
     const back = new Set(await collectTabOrder(cdp, tab, 90, 'after', { shift: true }));
     const hosted = await tab.evaluate(`[...document.querySelectorAll('.iiyaku-icon[aria-hidden="true"]')]
       .map(ic => {
-        const t = document.querySelector('[data-iiyaku-trigger="' + ic.dataset.iiyakuFor + '"]');
+        const t = document.querySelector('[data-iiyaku-entrance="' + ic.dataset.iiyakuFor + '"]');
         return { key: ic.dataset.iiyakuKey, trigger: t ? (t.id || t.tagName) : null };
       })`);
     const missing = hosted.filter(h => !h.trigger || !back.has(h.trigger));
@@ -1076,7 +1076,7 @@ test('印の片づけが、ページの持ち物と選択範囲を壊さない',
       window.__forced = null;
       if (ic) {
         const forId = ic.dataset.iiyakuFor;
-        const t = forId ? document.querySelector('[data-iiyaku-trigger="' + forId + '"]') : null;
+        const t = forId ? document.querySelector('[data-iiyaku-entrance="' + forId + '"]') : null;
         window.__forced = t || ic;        // 元へ戻せるよう控える
         window.__forced.tabIndex = -1;
       }
@@ -1466,8 +1466,8 @@ test('印が居なくなったら、既にある候補へ引き継ぐ', async t 
     assert.ok(r.複製直後の印 > 0, '複製で印が写っていない＝この試験の前提が崩れている');
     await sleep(600);
     const after = await tab.evaluate(`(() => {
-      const ids = [...document.querySelectorAll('[data-iiyaku-trigger]')]
-        .map(e => e.getAttribute('data-iiyaku-trigger'));
+      const ids = [...document.querySelectorAll('[data-iiyaku-entrance]')]
+        .map(e => e.getAttribute('data-iiyaku-entrance'));
       return { cloneA: document.querySelectorAll('#clone-a .iiyaku-icon').length,
                cloneB: document.querySelectorAll('#clone-b .iiyaku-icon').length,
                origA: document.querySelectorAll('#clone-src .iiyaku-icon').length,
@@ -1596,6 +1596,65 @@ test('隠された・無効になった・書き換わった印は、読める�
     await waitFor('2番目へ移る', async () => await nIn('#u-cd2') === 1);
     assert.deepEqual([await nIn('#u-cd1'), await nKey('revert')], [0, 1]);
   });
+
+  await tab.close();
+});
+
+test('ページ側の同名 class・同名属性を壊さず、面積0の切り取りは可視から外す', async t => {
+  const srv = await startTestServer(NAMESPACE_CLIP_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  const nIn = sel => tab.evaluate(`document.querySelectorAll(${JSON.stringify(sel)} + ' .iiyaku-icon').length`);
+  await waitFor('拡張が印を付ける', async () =>
+    await tab.evaluate(`[...document.querySelectorAll('.iiyaku-icon')].filter(i => i.dataset.iiyakuKey).length`));
+
+  await t.test('RG-9-05 ページ所有の .iiyaku-icon は、読み込みの前後どちらでも残る', async () => {
+    assert.equal(await tab.evaluate(`!!document.getElementById('page-icon')`), true,
+      '元から在ったページ側の要素を消している');
+    await tab.evaluate(`(() => { const a = document.createElement('a');
+      a.id = 'page-icon-late'; a.href = '#dest2'; a.className = 'iiyaku-icon'; a.textContent = 'LATE';
+      document.getElementById('ns-sink').appendChild(a); })(); true`);
+    await sleep(500);
+    assert.equal(await tab.evaluate(`!!document.getElementById('page-icon-late')`), true,
+      '後から足したページ側の要素を消している');
+    assert.equal(await tab.evaluate(`document.getElementById('page-icon-late').textContent`), 'LATE');
+  });
+
+  await t.test('RG-9-05 ページ所有リンクのクリックを横取りしない', async () => {
+    const r = await tab.evaluate(`(() => {
+      const a = document.getElementById('page-icon');
+      const ev = new MouseEvent('click', { bubbles: true, cancelable: true });
+      a.dispatchEvent(ev);
+      return { prevented: ev.defaultPrevented, hash: location.hash };
+    })()`);
+    assert.equal(r.prevented, false, 'ページ側のリンクの既定動作を止めている');
+    assert.equal(r.hash, '#dest', 'リンク先へ移動していない');
+  });
+
+  await t.test('RG-9-05 ページ既存の data-iiyaku-trigger を自分の ID として採用しない', async () => {
+    // 同じ値を持つ入口が2つあっても、説明が混ざらないこと
+    assert.equal(await tab.evaluate(HOVER_ROWS('ns-a')), 1, 'ns-a に別の語の説明まで出ている');
+    assert.equal(await tab.evaluate(HOVER_ROWS('ns-b')), 1, 'ns-b に別の語の説明まで出ている');
+    // 値をそのまま使っていないこと（自分の目印は別名で、値は自分の合言葉つき）
+    const ids = await tab.evaluate(`[...document.querySelectorAll('[data-iiyaku-entrance]')]
+      .map(e => e.getAttribute('data-iiyaku-entrance'))`);
+    assert.ok(ids.length >= 3, `自分の目印が付いていない: ${JSON.stringify(ids)}`);
+    assert.ok(ids.every(v => /^iiyaku-[a-z0-9]+-t\d+$/.test(v)), `外から来た値が混ざっている: ${JSON.stringify(ids)}`);
+    assert.equal(new Set(ids).size, ids.length, '同じ目印が2つ以上ある');
+    // ページ側の属性は書き換えていない
+    assert.deepEqual(
+      await tab.evaluate(`['ns-a','ns-b','ns-c'].map(i => document.getElementById(i).getAttribute('data-iiyaku-trigger'))`),
+      ['shared', 'shared', 'bad"]sel'], 'ページ側の属性を書き換えている');
+  });
+
+  await t.test('RG-9-05 selector に使えない値が入口にあっても、説明は出る', async () => {
+    // `bad"]sel` を selector へ埋めると SyntaxError になる。値を使わない設計なので出るはず。
+    assert.equal(await tab.evaluate(HOVER_ROWS('ns-c')), 1, '不正な属性値のせいで説明が出ない');
+  });
+
 
   await tab.close();
 });

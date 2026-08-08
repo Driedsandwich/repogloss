@@ -436,14 +436,51 @@
     return { kind: 'skip' };
   }
 
+  // 入口と印の結び付きは、**DOM の属性ではなく内部の表**で持つ。
+  //
+  // 以前はページ要素へ `data-iiyaku-trigger` を書き、その値で querySelector して
+  // 引き当てていた。これには3つの穴があった（いずれも実測で再現）:
+  //   - ページに同じ属性が既にあると、その値をそのまま自分の ID として採用した。
+  //     2つの入口が同じ値を持つと、両方に**相手の説明まで**出た（milestone と wiki）。
+  //   - 値に `"` や `]` が入っていると、selector を組んだ時点で SyntaxError になる。
+  //   - 属性は cloneNode でそのまま複製されるので、複製側が引き当てられうる。
+  // 内部の表なら、ページが何を書いても影響を受けない。ページ要素へ書き込まない
+  // ぶん、ページ DOM を汚さないという利点もある。
+  const triggerIdOf = new WeakMap();   // 入口の要素 -> 自分が付けた内部 ID
+  const iconTrigger = new WeakMap();   // 印 -> その印が属する入口の要素
+  // ID から要素を引く表は持たない。持つとページ要素を強く掴んだままになり、
+  // ページから外れても解放されない。引き当ては印の側（iconTrigger）から行う。
+
+  // 入口に付ける目印。**書くだけで、ここから入口を探すことはしない。**
+  // 名前を以前と変えてある——同じ名前のままだと、ページ側が持っている値と
+  // 見分けが付かず、「読まない」という約束を確かめにくい。
+  const ENTRANCE_ATTR = 'data-iiyaku-entrance';
+
   function triggerKey(trigger) {
-    let id = trigger.getAttribute('data-iiyaku-trigger');
+    let id = triggerIdOf.get(trigger);
     if (!id) {
       id = UID + '-t' + (++triggerSeq);
-      trigger.setAttribute('data-iiyaku-trigger', id);
+      triggerIdOf.set(trigger, id);
+      // ページ側が同じ名前の属性を既に持っていたら、上書きしない。
+      // 引き当ては内部の表なので、書けなくても動作は変わらない。
+      if (!trigger.hasAttribute(ENTRANCE_ATTR)) trigger.setAttribute(ENTRANCE_ATTR, id);
     }
     ownedTriggers.add(trigger);
     return id;
+  }
+
+  // その入口を指す記録が1つも無くなったら、目印を外して手を引く。
+  // 残したままにすると、入口でなくなった要素に目印だけが残る
+  // （実測: label の for が別の control を指したあと、古い control に残っていた）。
+  function releaseTriggerIfUnused(trigger) {
+    if (!trigger) return;
+    for (const rec of glossed.values()) if (rec.trigger === trigger) return;
+    ownedTriggers.delete(trigger);
+    triggerIdOf.delete(trigger);
+    if (trigger.isConnected &&
+        (trigger.getAttribute(ENTRANCE_ATTR) || '').startsWith(UID + '-t')) {
+      trigger.removeAttribute(ENTRANCE_ATTR);
+    }
   }
 
   /* ---------- 3-2. 自分が作ったものだけを自分のものとして扱う ---------- */
@@ -455,9 +492,20 @@
   const ownedIcons = new WeakSet();
   const ownedTriggers = new WeakSet();
 
+  // 印の祖先をたどって、**自分が作った印**を返す。class だけで見てはいけない。
+  // ページ側が `class="iiyaku-icon"` の要素を持っていることがあり、それを
+  // 自分のものとして扱うと、そのリンクのクリックを横取りしてしまう（実測）。
+  function ownedIconAt(el) {
+    for (let n = el; n; n = n.parentElement) if (ownedIcons.has(n)) return n;
+    return null;
+  }
+
   // 追加された領域を走査する前に、複製された「自分のふり」を取り除く。
-  // 触るのは自分の印と、自分の UID 形式の入口 ID だけ。ページ側の属性や
-  // 本文には手を出さない。取り除いたあと、その中の文字はふつうの候補に戻る。
+  //
+  // 判定は class だけではしない。class は誰でも付けられる。自分が作った印には
+  // 読み込みごとに変わる合言葉（data-iiyaku-owner = UID）を入れてあるので、
+  // **「合言葉を持つ」かつ「自分が作ったものではない」**＝複製、と決める。
+  // ページ側が自前で `.iiyaku-icon` を使っていても、それには触らない。
   function sanitizeClones(root) {
     if (!root || root.nodeType !== Node.ELEMENT_NODE) return;
     const pick = sel => {
@@ -465,11 +513,18 @@
       if (root.querySelectorAll) out.push(...root.querySelectorAll(sel));
       return out;
     };
-    for (const ic of pick('.iiyaku-icon')) if (!ownedIcons.has(ic)) ic.remove();
-    for (const t of pick('[data-iiyaku-trigger]')) {
+    // 自分の合言葉を持つのに自分が作ったものではない＝複製された印
+    for (const ic of pick(`[data-iiyaku-owner="${CSS.escape(UID)}"]`)) {
+      if (!ownedIcons.has(ic)) ic.remove();
+    }
+    // 入口の目印も複製される。引き当てには使っていないので実害は無いが、
+    // ページに自分の合言葉だけが残るのは紛らわしいので外す。
+    // 外すのは「自分の合言葉つきの値」を持つ、自分の入口ではない要素だけ。
+    for (const t of pick(`[${ENTRANCE_ATTR}]`)) {
       if (ownedTriggers.has(t)) continue;
-      const v = t.getAttribute('data-iiyaku-trigger');
-      if (v && v.startsWith(UID + '-t')) t.removeAttribute('data-iiyaku-trigger');
+      if ((t.getAttribute(ENTRANCE_ATTR) || '').startsWith(UID + '-t')) {
+        t.removeAttribute(ENTRANCE_ATTR);
+      }
     }
   }
 
@@ -485,6 +540,9 @@
     icon.dataset.iiyaku = ja;
     icon.dataset.iiyakuKey = key;
     icon.dataset.iiyakuTerm = term;
+    // 読み込みごとに変わる合言葉。複製にはこれもそのまま付いてくるので、
+    // 「合言葉あり かつ 自分の作ったものではない」を複製の判定に使う。
+    icon.dataset.iiyakuOwner = UID;
     ownedIcons.add(icon);   // 複製された印と区別するため、自分の作ったものを控える
     return icon;
   }
@@ -497,9 +555,11 @@
       icon.removeAttribute('role');
       icon.removeAttribute('aria-label');
       icon.removeAttribute('tabindex');
-      // 入口側と同じ属性名にしない。同じ名前だと querySelector が
-      // 印自身を入口として拾ってしまう（label の中では印のほうが先に来る）。
+      // 引き当ては内部の表で行う。属性は「どの入口の装飾か」を人が読めるように
+      // 残しているだけで、ここから入口を探すことはしない（ページ側が同じ属性を
+      // 持っていても影響を受けないようにするため）。
       icon.dataset.iiyakuFor = triggerKey(placement.trigger);
+      iconTrigger.set(icon, placement.trigger);
     } else {
       // 押して開閉するので、role は img ではなく button にする。
       // 名前は「どの語の解説か」だけの短いものにし、説明文そのものは
@@ -536,24 +596,30 @@
     else el.removeAttribute('aria-describedby');
   }
 
-  function iconsForTriggerId(id) {
-    return [...document.querySelectorAll(`.iiyaku-icon[data-iiyaku-for="${id}"]`)]
-      .filter(ic => ic.isConnected);
+  // その入口に属する印を、内部の記録から集める。記録は辞書のキーの数（61）で
+  // 頭打ちなので、DOM を検索するより安く、ページ側の属性にも左右されない。
+  function iconsForTrigger(trigger) {
+    const out = [];
+    for (const rec of glossed.values()) {
+      if (rec.trigger === trigger && rec.icon.isConnected && ownedIcons.has(rec.icon)) out.push(rec.icon);
+    }
+    return out;
   }
 
   function triggerOf(icon) {
-    const id = icon.dataset.iiyakuFor;
-    return id ? document.querySelector(`[data-iiyaku-trigger="${id}"]`) : null;
+    const t = iconTrigger.get(icon);
+    return t && t.isConnected ? t : null;
   }
 
   // label 自体はフォーカスを取らないが、カーソルは乗る。
   // その場合は、関連付いた control を入口として扱う。
+  // 判定は「自分が入口として登録したか」だけで行う。ページ側が同じ名前の
+  // 属性を持っていても、それを入口とは見なさない。
   function triggerNear(el) {
-    const direct = el.closest('[data-iiyaku-trigger]');
-    if (direct) return direct;
+    for (let n = el; n; n = n.parentElement) if (ownedTriggers.has(n)) return n;
     const label = el.closest('label');
     const c = label && label.control;
-    return c && c.hasAttribute('data-iiyaku-trigger') ? c : null;
+    return c && ownedTriggers.has(c) ? c : null;
   }
 
   function hideTip() {
@@ -652,14 +718,14 @@
   function requestFrom(target) {
     const el = asElement(target);
     if (!el) return null;
-    const icon = el.closest('.iiyaku-icon');
+    const icon = ownedIconAt(el);
     if (icon) {
       const trigger = triggerOf(icon);
       return { icons: [icon], anchor: icon, describe: trigger || icon };
     }
     const trigger = triggerNear(el);
     if (trigger) {
-      const icons = iconsForTriggerId(trigger.getAttribute('data-iiyaku-trigger'));
+      const icons = iconsForTrigger(trigger);
       if (icons.length) return { icons, anchor: icons[0], describe: trigger };
     }
     return null;
@@ -697,7 +763,7 @@
     document.addEventListener('keydown', e => {
       if (e.key === 'Escape') { if (tip) hideTip(); return; }
       const el = asElement(e.target);
-      if (!el || !el.classList.contains('iiyaku-icon')) return;
+      if (!el || !ownedIcons.has(el)) return;   // ページ側の同名 class には反応しない
       if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
         e.preventDefault();   // Space でページが送られないようにする
         if (tip && tipIcons.length === 1 && tipIcons[0] === el) hideTip();
@@ -708,7 +774,9 @@
     // 触って操作する端末と、留めて読みたい場合。
     document.addEventListener('click', e => {
       const el = asElement(e.target);
-      const icon = el && el.closest('.iiyaku-icon');
+      // 自分が作った印のときだけ横取りする。class だけで見ていたため、
+      // ページ側の `class="iiyaku-icon"` のリンクを押しても遷移しなくなっていた（実測）。
+      const icon = el && ownedIconAt(el);
       if (icon) {
         // リンクの中の印を押しても、そのリンクへ移動しないようにする
         e.preventDefault();
@@ -767,15 +835,11 @@
     if (v.slice(rec.splitOffset - rec.term.length, rec.splitOffset) !== rec.term) return false;
     // 印は語のすぐ後ろか（ページ側が間へ挿し込んでいないか）
     if (rec.icon.previousSibling !== rec.termNode) return false;
-    // 装飾扱いの印は、記録した入口がいまも生きていて、印が指している ID と
-    // 同じ名札を持っていること。
-    // ここで document 全体を引き直さない——同じ ID を持つ要素が2つ出るのは
-    // 複製されたときだけで、それは sanitizeClones が走査より前に取り除いている。
-    // 全体を引くと、語が見つかるたびに文書全体の検索が走る（実測で重かった）。
+    // 装飾扱いの印は、記録した入口がいまも自分のものとして生きていること。
+    // 引き当ては内部の表で行うので、ここで document 全体を引き直さない。
     if (rec.placementKind === 'hosted') {
-      const id = rec.icon.dataset.iiyakuFor;
-      if (!id || !rec.trigger || !rec.trigger.isConnected) return false;
-      if (rec.trigger.getAttribute('data-iiyaku-trigger') !== id) return false;
+      if (!rec.trigger || !rec.trigger.isConnected || !ownedTriggers.has(rec.trigger)) return false;
+      if (iconTrigger.get(rec.icon) !== rec.trigger) return false;
     }
     return true;
   }
@@ -852,6 +916,8 @@
     // 印が既にページ側から外されていても、ここへ来る。記録があるので、
     // 用語を含む節点を走査対象へ戻せる（隣をたどる必要がない）。
     handled.delete(rec.termNode);
+    // その入口を指す記録が他に無ければ、目印も外して手を引く
+    if (rec.placementKind === 'hosted') releaseTriggerIfUnused(rec.trigger);
     return rec;
   }
 
@@ -998,8 +1064,8 @@
   function isOurs(node) {
     const el = node && (node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement);
     if (!el) return false;
-    if (el.closest('.iiyaku-icon, .iiyaku-tooltip, .iiyaku-toggle')) return true;
-    return false;
+    if (ownedIconAt(el)) return true;
+    return !!el.closest('.iiyaku-tooltip, .iiyaku-toggle');
   }
 
   // 差し込みが一度に何十件も来るので、1回分の呼び出しでは測定結果を共有する。

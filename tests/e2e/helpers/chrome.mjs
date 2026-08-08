@@ -432,6 +432,33 @@ export const CONVERGE_PAGE = `<!doctype html><html lang="en"><head><meta charset
   <div id="cv-sink"></div>
 </body></html>`;
 
+/* 名前が衝突したときに、ページ側のものを壊さないか。
+   と、面積0の切り取りを取りこぼさないか。 */
+export const NAMESPACE_CLIP_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>namespace and clip</title><style>.box100{width:100px;height:100px}</style></head><body>
+  <!-- ⑦ ページ側が同じ class・同じ属性名を使っている -->
+  <a id="page-icon" href="#dest" class="iiyaku-icon">PAGE LINK</a>
+  <p><a href="#" id="ns-a" data-iiyaku-trigger="shared">Open the milestone</a></p>
+  <p><a href="#" id="ns-b" data-iiyaku-trigger="shared">Open the wiki</a></p>
+  <p><a href="#" id="ns-c" data-iiyaku-trigger='bad"]sel'>Open the blame</a></p>
+  <div id="ns-sink"></div>
+
+  <!-- ⑧ 面積0の切り取り。後ろに読める同じ語を置いて、そちらへ回るかを見る -->
+  <div id="c-pct" style="clip-path:inset(50% 0 50% 0)">A webhook hidden.</div>
+  <p id="c-pct-later">A webhook later.</p>
+  <div id="c-px" class="box100" style="clip-path:inset(50px)">A topic hidden.</div>
+  <p id="c-px-later">A topic later.</p>
+  <div id="c-side" style="clip-path:inset(0 100% 0 0)">A fork hidden.</div>
+  <p id="c-side-later">A fork later.</p>
+  <div id="c-circle" style="clip-path:circle(0px)">A clone hidden.</div>
+  <p id="c-circle-later">A clone later.</p>
+  <!-- 面積が残るものは可視のまま扱う（落としすぎの対照） -->
+  <div id="c-part" style="clip-path:inset(10%)">A tags partly.</div>
+  <p id="c-part-later">A tags later.</p>
+  <div id="c-dc" style="display:contents; clip-path:inset(50%)">A sync shown.</div>
+  <p id="c-dc-later">A sync later.</p>
+</body></html>`;
+
 export function startTestServer(html = REPO_PAGE) {
   const { key, cert } = makeCert();
   const server = https.createServer({ key, cert }, (req, res) => {

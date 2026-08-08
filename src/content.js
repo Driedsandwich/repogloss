@@ -163,22 +163,79 @@
   }
 
   // clip-path: inset(...)。1〜4値を上右下左へ展開する。
-  // 縦か横の合計が 100% 以上なら中身は残らない。
-  // 長さと百分率が混ざると箱の大きさ抜きには決められないので、断定しない
-  // （round … の角丸指定は面積に関係しないので落とす）。
-  function insetClipsAll(v) {
-    const m = /^inset\(([^)]*)\)$/.exec(v);
+  //
+  // 百分率だけを見ていては足りなかった。ブラウザが返す computed 値には
+  // `inset(50% 0px)` のように**長さと百分率が混ざる**（`inset(50% 0 50% 0)` と
+  // 書いただけでこうなる）。混在を「決められない」として捨てていたため、
+  // 全面が隠れているのに可視と答えていた（実測: 隠れた側に印が付き、
+  // 後ろの読める同じ語が説明されなくなった）。
+  // 箱の寸法が分かるならそこへ換算し、**px で面積を判定する**。
+  //
+  // `calc()` ・`polygon()` ・`path()` ・`shape()` は解かない。値だけからは
+  // 面積を決められないので、**断定しないほうへ倒す**（可視として扱う）。
+  // これは既知の制約として DESIGN.md に書いてある。
+  const LEN_PX = /^(-?\d*\.?\d+)px$/;
+  const LEN_PCT = /^(-?\d*\.?\d+)%$/;
+
+  // 1つの値を px にする。base はその辺の長さ。決められなければ null。
+  function lenToPx(part, base) {
+    if (part === '0') return 0;
+    let m = LEN_PX.exec(part);
+    if (m) return parseFloat(m[1]);
+    m = LEN_PCT.exec(part);
+    if (m) return base === null ? null : parseFloat(m[1]) / 100 * base;
+    return null;                     // calc() や未知の単位
+  }
+
+  // w / h は border box の寸法。取れないときは null を渡す（百分率だけで判定する）。
+  function insetClipsAll(v, w = null, h = null) {
+    const m = /^inset\((.*)\)$/.exec(v);
     if (!m) return false;
-    const parts = m[1].split(/\s+round\s+/)[0].trim().split(/\s+/).filter(Boolean);
+    const body = m[1].split(/\s+round\s+/)[0].trim();
+    if (/calc\(|var\(|min\(|max\(|clamp\(/.test(body)) return false;   // 解かない
+    const parts = body.split(/\s+/).filter(Boolean);
     if (parts.length < 1 || parts.length > 4) return false;
-    if (!parts.every(p => /^-?\d*\.?\d+%$/.test(p))) return false;
-    const p = parts.map(x => parseFloat(x));
-    const [top, right, bottom, left] =
-      p.length === 1 ? [p[0], p[0], p[0], p[0]]
-      : p.length === 2 ? [p[0], p[1], p[0], p[1]]
-      : p.length === 3 ? [p[0], p[1], p[2], p[1]]
-      : p;
-    return (top + bottom) >= 100 || (left + right) >= 100;
+    const [t, r, b, l] =
+      parts.length === 1 ? [parts[0], parts[0], parts[0], parts[0]]
+      : parts.length === 2 ? [parts[0], parts[1], parts[0], parts[1]]
+      : parts.length === 3 ? [parts[0], parts[1], parts[2], parts[1]]
+      : parts;
+    // 箱の寸法が 0 以下だと「0 + 0 >= 0」で何でも全面非表示になってしまう。
+    // その場合は百分率だけで判断する（px は箱に対する割合が決まらない）。
+    const useBox = typeof w === 'number' && typeof h === 'number' && w > 0 && h > 0;
+    const bw = useBox ? w : null;
+    const bh = useBox ? h : null;
+    const top = lenToPx(t, bh), bottom = lenToPx(b, bh);
+    const left = lenToPx(l, bw), right = lenToPx(r, bw);
+    if (useBox) {
+      if (top !== null && bottom !== null && (top + bottom) >= bh) return true;
+      if (left !== null && right !== null && (left + right) >= bw) return true;
+      return false;
+    }
+    // 箱が分からないときは、百分率だけで言えることに限る
+    const pct = s => { const mm = LEN_PCT.exec(s); return mm ? parseFloat(mm[1]) : (s === '0' ? 0 : null); };
+    const [pt, pr, pb, pl] = [pct(t), pct(r), pct(b), pct(l)];
+    if (pt !== null && pb !== null && (pt + pb) >= 100) return true;
+    if (pl !== null && pr !== null && (pl + pr) >= 100) return true;
+    return false;
+  }
+
+  // circle() / ellipse() は半径が 0 なら面積も 0。
+  // 中心（at …）は面積に関係しないので落とす。
+  function shapeClipsAll(v) {
+    const zero = s => s === '0' || /^0(\.0+)?(px|%)$/.test(s);
+    let m = /^circle\((.*)\)$/.exec(v);
+    if (m) {
+      const r = m[1].split(/\s+at\s+/)[0].trim();
+      return r !== '' && zero(r);
+    }
+    m = /^ellipse\((.*)\)$/.exec(v);
+    if (m) {
+      const rr = m[1].split(/\s+at\s+/)[0].trim().split(/\s+/).filter(Boolean);
+      // 縦横どちらかが 0 なら、その時点で面積は 0
+      return rr.length > 0 && rr.length <= 2 && rr.some(zero) && rr.every(x => zero(x) || LEN_PX.test(x) || LEN_PCT.test(x));
+    }
+    return false;
   }
 
   let clipCache = null;   // 走査1回のあいだだけ有効
@@ -190,7 +247,9 @@
     }
     let v = false;
     // 大きさの確認は安い。ここを先に見て、多くの要素で getComputedStyle を避ける。
-    const tiny = n.offsetWidth <= 1 && n.offsetHeight <= 1;
+    // 寸法は inset() の百分率・絶対長を面積へ換算するのにも使う（border box）。
+    const bw = n.offsetWidth, bh = n.offsetHeight;
+    const tiny = bw <= 1 && bh <= 1;
     const cs = getComputedStyle(n);
     // display:contents の要素は箱を作らないので、clip も clip-path も**効かない**。
     // 通常の箱と同じに扱うと、見えている文章のほうを落とす（実測: 当たり判定でも
@@ -204,8 +263,8 @@
     const path = cs.clipPath && cs.clipPath !== 'none' ? cs.clipPath.trim() : '';
     if (clip || path) {
       // 1px 四方まで潰したうえで切り取る書き方（読み上げ専用の定番）か、
-      // 大きさに関係なく面積が 0 になる書き方か。
-      v = tiny || rectClipsAll(clip) || insetClipsAll(path);
+      // 面積が 0 になる書き方か。inset は箱の寸法へ換算して面積で決める。
+      v = tiny || rectClipsAll(clip) || insetClipsAll(path, bw, bh) || shapeClipsAll(path);
     }
     if (clipCache) clipCache.set(n, v);
     return v;

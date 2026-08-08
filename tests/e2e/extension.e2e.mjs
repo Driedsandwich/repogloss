@@ -1655,6 +1655,22 @@ test('ページ側の同名 class・同名属性を壊さず、面積0の切り�
     assert.equal(await tab.evaluate(HOVER_ROWS('ns-c')), 1, '不正な属性値のせいで説明が出ない');
   });
 
+  await t.test('RG-9-07 面積0の切り取りの中には付けず、後ろの読める語へ回す（4形）', async () => {
+    const pairs = [['#c-pct', '#c-pct-later'], ['#c-px', '#c-px-later'],
+                   ['#c-side', '#c-side-later'], ['#c-circle', '#c-circle-later']];
+    const got = [];
+    for (const [a, b] of pairs) got.push([await nIn(a), await nIn(b)]);
+    assert.deepEqual(got, [[0, 1], [0, 1], [0, 1], [0, 1]],
+      `切り取りの判定が合っていない: ${JSON.stringify(got)}`);
+  });
+
+  await t.test('RG-9-07 面積が残る切り取りと display:contents は、可視のまま扱う（落としすぎの対照）', async () => {
+    assert.deepEqual([await nIn('#c-part'), await nIn('#c-part-later')], [1, 0],
+      'inset(10%) を全面非表示と誤判定している');
+    assert.deepEqual([await nIn('#c-dc'), await nIn('#c-dc-later')], [1, 0],
+      'display:contents 自身の clip-path を効かせてしまっている');
+  });
+
 
   await tab.close();
 });

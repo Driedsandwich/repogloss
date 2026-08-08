@@ -163,22 +163,79 @@
   }
 
   // clip-path: inset(...)。1〜4値を上右下左へ展開する。
-  // 縦か横の合計が 100% 以上なら中身は残らない。
-  // 長さと百分率が混ざると箱の大きさ抜きには決められないので、断定しない
-  // （round … の角丸指定は面積に関係しないので落とす）。
-  function insetClipsAll(v) {
-    const m = /^inset\(([^)]*)\)$/.exec(v);
+  //
+  // 百分率だけを見ていては足りなかった。ブラウザが返す computed 値には
+  // `inset(50% 0px)` のように**長さと百分率が混ざる**（`inset(50% 0 50% 0)` と
+  // 書いただけでこうなる）。混在を「決められない」として捨てていたため、
+  // 全面が隠れているのに可視と答えていた（実測: 隠れた側に印が付き、
+  // 後ろの読める同じ語が説明されなくなった）。
+  // 箱の寸法が分かるならそこへ換算し、**px で面積を判定する**。
+  //
+  // `calc()` ・`polygon()` ・`path()` ・`shape()` は解かない。値だけからは
+  // 面積を決められないので、**断定しないほうへ倒す**（可視として扱う）。
+  // これは既知の制約として DESIGN.md に書いてある。
+  const LEN_PX = /^(-?\d*\.?\d+)px$/;
+  const LEN_PCT = /^(-?\d*\.?\d+)%$/;
+
+  // 1つの値を px にする。base はその辺の長さ。決められなければ null。
+  function lenToPx(part, base) {
+    if (part === '0') return 0;
+    let m = LEN_PX.exec(part);
+    if (m) return parseFloat(m[1]);
+    m = LEN_PCT.exec(part);
+    if (m) return base === null ? null : parseFloat(m[1]) / 100 * base;
+    return null;                     // calc() や未知の単位
+  }
+
+  // w / h は border box の寸法。取れないときは null を渡す（百分率だけで判定する）。
+  function insetClipsAll(v, w = null, h = null) {
+    const m = /^inset\((.*)\)$/.exec(v);
     if (!m) return false;
-    const parts = m[1].split(/\s+round\s+/)[0].trim().split(/\s+/).filter(Boolean);
+    const body = m[1].split(/\s+round\s+/)[0].trim();
+    if (/calc\(|var\(|min\(|max\(|clamp\(/.test(body)) return false;   // 解かない
+    const parts = body.split(/\s+/).filter(Boolean);
     if (parts.length < 1 || parts.length > 4) return false;
-    if (!parts.every(p => /^-?\d*\.?\d+%$/.test(p))) return false;
-    const p = parts.map(x => parseFloat(x));
-    const [top, right, bottom, left] =
-      p.length === 1 ? [p[0], p[0], p[0], p[0]]
-      : p.length === 2 ? [p[0], p[1], p[0], p[1]]
-      : p.length === 3 ? [p[0], p[1], p[2], p[1]]
-      : p;
-    return (top + bottom) >= 100 || (left + right) >= 100;
+    const [t, r, b, l] =
+      parts.length === 1 ? [parts[0], parts[0], parts[0], parts[0]]
+      : parts.length === 2 ? [parts[0], parts[1], parts[0], parts[1]]
+      : parts.length === 3 ? [parts[0], parts[1], parts[2], parts[1]]
+      : parts;
+    // 箱の寸法が 0 以下だと「0 + 0 >= 0」で何でも全面非表示になってしまう。
+    // その場合は百分率だけで判断する（px は箱に対する割合が決まらない）。
+    const useBox = typeof w === 'number' && typeof h === 'number' && w > 0 && h > 0;
+    const bw = useBox ? w : null;
+    const bh = useBox ? h : null;
+    const top = lenToPx(t, bh), bottom = lenToPx(b, bh);
+    const left = lenToPx(l, bw), right = lenToPx(r, bw);
+    if (useBox) {
+      if (top !== null && bottom !== null && (top + bottom) >= bh) return true;
+      if (left !== null && right !== null && (left + right) >= bw) return true;
+      return false;
+    }
+    // 箱が分からないときは、百分率だけで言えることに限る
+    const pct = s => { const mm = LEN_PCT.exec(s); return mm ? parseFloat(mm[1]) : (s === '0' ? 0 : null); };
+    const [pt, pr, pb, pl] = [pct(t), pct(r), pct(b), pct(l)];
+    if (pt !== null && pb !== null && (pt + pb) >= 100) return true;
+    if (pl !== null && pr !== null && (pl + pr) >= 100) return true;
+    return false;
+  }
+
+  // circle() / ellipse() は半径が 0 なら面積も 0。
+  // 中心（at …）は面積に関係しないので落とす。
+  function shapeClipsAll(v) {
+    const zero = s => s === '0' || /^0(\.0+)?(px|%)$/.test(s);
+    let m = /^circle\((.*)\)$/.exec(v);
+    if (m) {
+      const r = m[1].split(/\s+at\s+/)[0].trim();
+      return r !== '' && zero(r);
+    }
+    m = /^ellipse\((.*)\)$/.exec(v);
+    if (m) {
+      const rr = m[1].split(/\s+at\s+/)[0].trim().split(/\s+/).filter(Boolean);
+      // 縦横どちらかが 0 なら、その時点で面積は 0
+      return rr.length > 0 && rr.length <= 2 && rr.some(zero) && rr.every(x => zero(x) || LEN_PX.test(x) || LEN_PCT.test(x));
+    }
+    return false;
   }
 
   let clipCache = null;   // 走査1回のあいだだけ有効
@@ -190,7 +247,9 @@
     }
     let v = false;
     // 大きさの確認は安い。ここを先に見て、多くの要素で getComputedStyle を避ける。
-    const tiny = n.offsetWidth <= 1 && n.offsetHeight <= 1;
+    // 寸法は inset() の百分率・絶対長を面積へ換算するのにも使う（border box）。
+    const bw = n.offsetWidth, bh = n.offsetHeight;
+    const tiny = bw <= 1 && bh <= 1;
     const cs = getComputedStyle(n);
     // display:contents の要素は箱を作らないので、clip も clip-path も**効かない**。
     // 通常の箱と同じに扱うと、見えている文章のほうを落とす（実測: 当たり判定でも
@@ -204,8 +263,8 @@
     const path = cs.clipPath && cs.clipPath !== 'none' ? cs.clipPath.trim() : '';
     if (clip || path) {
       // 1px 四方まで潰したうえで切り取る書き方（読み上げ専用の定番）か、
-      // 大きさに関係なく面積が 0 になる書き方か。
-      v = tiny || rectClipsAll(clip) || insetClipsAll(path);
+      // 面積が 0 になる書き方か。inset は箱の寸法へ換算して面積で決める。
+      v = tiny || rectClipsAll(clip) || insetClipsAll(path, bw, bh) || shapeClipsAll(path);
     }
     if (clipCache) clipCache.set(n, v);
     return v;
@@ -316,11 +375,26 @@
   // 編集中の内容・フォーム・コード・aria-hidden・inert は、書き換えないだけでなく
   // 値を読み取りもしない。「変えない」と「読まない」は別のことなので、
   // 判定の順序そのものを約束にする（順序が戻っていないかは verify.mjs が検査する）。
+  // 除外領域かどうかは、走査1回のあいだ変わらない（こちらが入れるのは空の <sup> だけで、
+  // それが本文の**祖先**になることはない）。SKIP は25個ほどの選択子を持つので、
+  // テキストノードごとに毎回 closest を呼ぶと積み上がる。要素ごとに覚えて使い回す。
+  let skipCache = null;
+
+  function inSkip(el) {
+    if (skipCache) {
+      const hit = skipCache.get(el);
+      if (hit !== undefined) return hit;
+    }
+    const v = !!el.closest(SKIP);
+    if (skipCache) skipCache.set(el, v);
+    return v;
+  }
+
   function isTarget(node) {
     if (isHandled(node)) return false;
     const el = node.parentElement;
     if (!el) return false;
-    if (el.closest(SKIP)) return false;
+    if (inSkip(el)) return false;
 
     // ---- ここから下でだけ、テキストの文字列に触れる ----
     const v = node.nodeValue;
@@ -421,28 +495,74 @@
     return { kind: 'skip' };
   }
 
+  // 入口と印の結び付きは、**DOM の属性ではなく内部の表**で持つ。
+  //
+  // 以前はページ要素へ `data-iiyaku-trigger` を書き、その値で querySelector して
+  // 引き当てていた。これには3つの穴があった（いずれも実測で再現）:
+  //   - ページに同じ属性が既にあると、その値をそのまま自分の ID として採用した。
+  //     2つの入口が同じ値を持つと、両方に**相手の説明まで**出た（milestone と wiki）。
+  //   - 値に `"` や `]` が入っていると、selector を組んだ時点で SyntaxError になる。
+  //   - 属性は cloneNode でそのまま複製されるので、複製側が引き当てられうる。
+  // 内部の表なら、ページが何を書いても影響を受けない。ページ要素へ書き込まない
+  // ぶん、ページ DOM を汚さないという利点もある。
+  const triggerIdOf = new WeakMap();   // 入口の要素 -> 自分が付けた内部 ID
+  const iconTrigger = new WeakMap();   // 印 -> その印が属する入口の要素
+  // ID から要素を引く表は持たない。持つとページ要素を強く掴んだままになり、
+  // ページから外れても解放されない。引き当ては印の側（iconTrigger）から行う。
+
+  // 入口に付ける目印。**書くだけで、ここから入口を探すことはしない。**
+  // 名前を以前と変えてある——同じ名前のままだと、ページ側が持っている値と
+  // 見分けが付かず、「読まない」という約束を確かめにくい。
+  const ENTRANCE_ATTR = 'data-iiyaku-entrance';
+
   function triggerKey(trigger) {
-    let id = trigger.getAttribute('data-iiyaku-trigger');
+    let id = triggerIdOf.get(trigger);
     if (!id) {
       id = UID + '-t' + (++triggerSeq);
-      trigger.setAttribute('data-iiyaku-trigger', id);
+      triggerIdOf.set(trigger, id);
+      // ページ側が同じ名前の属性を既に持っていたら、上書きしない。
+      // 引き当ては内部の表なので、書けなくても動作は変わらない。
+      if (!trigger.hasAttribute(ENTRANCE_ATTR)) trigger.setAttribute(ENTRANCE_ATTR, id);
     }
     ownedTriggers.add(trigger);
     return id;
   }
 
+  // その入口を指す記録が1つも無くなったら、目印を外して手を引く。
+  // 残したままにすると、入口でなくなった要素に目印だけが残る
+  // （実測: label の for が別の control を指したあと、古い control に残っていた）。
+  function releaseTriggerIfUnused(trigger) {
+    if (!trigger) return;
+    for (const rec of glossed.values()) if (rec.trigger === trigger) return;
+    ownedTriggers.delete(trigger);
+    triggerIdOf.delete(trigger);
+    if (trigger.isConnected &&
+        (trigger.getAttribute(ENTRANCE_ATTR) || '').startsWith(UID + '-t')) {
+      trigger.removeAttribute(ENTRANCE_ATTR);
+    }
+  }
+
   /* ---------- 3-2. 自分が作ったものだけを自分のものとして扱う ---------- */
   // ページ側が、注記済みの領域を丸ごと cloneNode で複製することがある。
-  // 複製された印は class も data 属性も入口 ID もそのままなので、見た目には
-  // 区別が付かない。実測では、同じ入口 ID を持つ要素が2つになり、
-  // その ID で入口を引くと**複製側**が返りうる状態になった。
+  // 複製された印は class も data 属性もそのままなので、見た目には区別が付かない。
   // 自分が作ったものを控えておき、それ以外は自分のものとして扱わない。
   const ownedIcons = new WeakSet();
   const ownedTriggers = new WeakSet();
 
+  // 印の祖先をたどって、**自分が作った印**を返す。class だけで見てはいけない。
+  // ページ側が `class="iiyaku-icon"` の要素を持っていることがあり、それを
+  // 自分のものとして扱うと、そのリンクのクリックを横取りしてしまう（実測）。
+  function ownedIconAt(el) {
+    for (let n = el; n; n = n.parentElement) if (ownedIcons.has(n)) return n;
+    return null;
+  }
+
   // 追加された領域を走査する前に、複製された「自分のふり」を取り除く。
-  // 触るのは自分の印と、自分の UID 形式の入口 ID だけ。ページ側の属性や
-  // 本文には手を出さない。取り除いたあと、その中の文字はふつうの候補に戻る。
+  //
+  // 判定は class だけではしない。class は誰でも付けられる。自分が作った印には
+  // 読み込みごとに変わる合言葉（data-iiyaku-owner = UID）を入れてあるので、
+  // **「合言葉を持つ」かつ「自分が作ったものではない」**＝複製、と決める。
+  // ページ側が自前で `.iiyaku-icon` を使っていても、それには触らない。
   function sanitizeClones(root) {
     if (!root || root.nodeType !== Node.ELEMENT_NODE) return;
     const pick = sel => {
@@ -450,11 +570,18 @@
       if (root.querySelectorAll) out.push(...root.querySelectorAll(sel));
       return out;
     };
-    for (const ic of pick('.iiyaku-icon')) if (!ownedIcons.has(ic)) ic.remove();
-    for (const t of pick('[data-iiyaku-trigger]')) {
+    // 自分の合言葉を持つのに自分が作ったものではない＝複製された印
+    for (const ic of pick(`[data-iiyaku-owner="${CSS.escape(UID)}"]`)) {
+      if (!ownedIcons.has(ic)) ic.remove();
+    }
+    // 入口の目印も複製される。引き当てには使っていないので実害は無いが、
+    // ページに自分の合言葉だけが残るのは紛らわしいので外す。
+    // 外すのは「自分の合言葉つきの値」を持つ、自分の入口ではない要素だけ。
+    for (const t of pick(`[${ENTRANCE_ATTR}]`)) {
       if (ownedTriggers.has(t)) continue;
-      const v = t.getAttribute('data-iiyaku-trigger');
-      if (v && v.startsWith(UID + '-t')) t.removeAttribute('data-iiyaku-trigger');
+      if ((t.getAttribute(ENTRANCE_ATTR) || '').startsWith(UID + '-t')) {
+        t.removeAttribute(ENTRANCE_ATTR);
+      }
     }
   }
 
@@ -470,6 +597,9 @@
     icon.dataset.iiyaku = ja;
     icon.dataset.iiyakuKey = key;
     icon.dataset.iiyakuTerm = term;
+    // 読み込みごとに変わる合言葉。複製にはこれもそのまま付いてくるので、
+    // 「合言葉あり かつ 自分の作ったものではない」を複製の判定に使う。
+    icon.dataset.iiyakuOwner = UID;
     ownedIcons.add(icon);   // 複製された印と区別するため、自分の作ったものを控える
     return icon;
   }
@@ -482,9 +612,11 @@
       icon.removeAttribute('role');
       icon.removeAttribute('aria-label');
       icon.removeAttribute('tabindex');
-      // 入口側と同じ属性名にしない。同じ名前だと querySelector が
-      // 印自身を入口として拾ってしまう（label の中では印のほうが先に来る）。
+      // 引き当ては内部の表で行う。属性は「どの入口の装飾か」を人が読めるように
+      // 残しているだけで、ここから入口を探すことはしない（ページ側が同じ属性を
+      // 持っていても影響を受けないようにするため）。
       icon.dataset.iiyakuFor = triggerKey(placement.trigger);
+      iconTrigger.set(icon, placement.trigger);
     } else {
       // 押して開閉するので、role は img ではなく button にする。
       // 名前は「どの語の解説か」だけの短いものにし、説明文そのものは
@@ -521,24 +653,30 @@
     else el.removeAttribute('aria-describedby');
   }
 
-  function iconsForTriggerId(id) {
-    return [...document.querySelectorAll(`.iiyaku-icon[data-iiyaku-for="${id}"]`)]
-      .filter(ic => ic.isConnected);
+  // その入口に属する印を、内部の記録から集める。記録は辞書のキーの数（61）で
+  // 頭打ちなので、DOM を検索するより安く、ページ側の属性にも左右されない。
+  function iconsForTrigger(trigger) {
+    const out = [];
+    for (const rec of glossed.values()) {
+      if (rec.trigger === trigger && rec.icon.isConnected && ownedIcons.has(rec.icon)) out.push(rec.icon);
+    }
+    return out;
   }
 
   function triggerOf(icon) {
-    const id = icon.dataset.iiyakuFor;
-    return id ? document.querySelector(`[data-iiyaku-trigger="${id}"]`) : null;
+    const t = iconTrigger.get(icon);
+    return t && t.isConnected ? t : null;
   }
 
   // label 自体はフォーカスを取らないが、カーソルは乗る。
   // その場合は、関連付いた control を入口として扱う。
+  // 判定は「自分が入口として登録したか」だけで行う。ページ側が同じ名前の
+  // 属性を持っていても、それを入口とは見なさない。
   function triggerNear(el) {
-    const direct = el.closest('[data-iiyaku-trigger]');
-    if (direct) return direct;
+    for (let n = el; n; n = n.parentElement) if (ownedTriggers.has(n)) return n;
     const label = el.closest('label');
     const c = label && label.control;
-    return c && c.hasAttribute('data-iiyaku-trigger') ? c : null;
+    return c && ownedTriggers.has(c) ? c : null;
   }
 
   function hideTip() {
@@ -637,14 +775,14 @@
   function requestFrom(target) {
     const el = asElement(target);
     if (!el) return null;
-    const icon = el.closest('.iiyaku-icon');
+    const icon = ownedIconAt(el);
     if (icon) {
       const trigger = triggerOf(icon);
       return { icons: [icon], anchor: icon, describe: trigger || icon };
     }
     const trigger = triggerNear(el);
     if (trigger) {
-      const icons = iconsForTriggerId(trigger.getAttribute('data-iiyaku-trigger'));
+      const icons = iconsForTrigger(trigger);
       if (icons.length) return { icons, anchor: icons[0], describe: trigger };
     }
     return null;
@@ -682,7 +820,7 @@
     document.addEventListener('keydown', e => {
       if (e.key === 'Escape') { if (tip) hideTip(); return; }
       const el = asElement(e.target);
-      if (!el || !el.classList.contains('iiyaku-icon')) return;
+      if (!el || !ownedIcons.has(el)) return;   // ページ側の同名 class には反応しない
       if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
         e.preventDefault();   // Space でページが送られないようにする
         if (tip && tipIcons.length === 1 && tipIcons[0] === el) hideTip();
@@ -693,7 +831,9 @@
     // 触って操作する端末と、留めて読みたい場合。
     document.addEventListener('click', e => {
       const el = asElement(e.target);
-      const icon = el && el.closest('.iiyaku-icon');
+      // 自分が作った印のときだけ横取りする。class だけで見ていたため、
+      // ページ側の `class="iiyaku-icon"` のリンクを押しても遷移しなくなっていた（実測）。
+      const icon = el && ownedIconAt(el);
       if (icon) {
         // リンクの中の印を押しても、そのリンクへ移動しないようにする
         e.preventDefault();
@@ -729,34 +869,84 @@
   // その後に現れた本物の語が「説明済み」として抑止された。ページ側が語と印の
   // あいだへ節点を挿し込んだ場合も、印は語の直後ではなくなる（実測）。
   // だから、記録した組み合わせがそのまま残っているかを毎回確かめる。
+  // ここは**レイアウトを起こさない**判定だけを置く（毎回の変更で全記録に掛かるため）。
+  // 見え方に関わる判定は下の isUsable に分けてある。
   function isCoherent(rec) {
     if (!rec.icon.isConnected || !rec.termNode.isConnected) return false;
     if (rec.icon.parentNode !== rec.parent || rec.termNode.parentNode !== rec.parent) return false;
-    // 記録した位置に、記録した語がまだあるか
+
+    // ---- 本文の文字に触れる前に、いまも触れてよい場所かを確かめる ----
+    // 注記したあとで、ページ側がその場所を編集領域・コード・aria-hidden・inert・
+    // hidden へ変えることがある。isTarget は走査の入口で SKIP を先に見るが、
+    // ここで同じ順序を守らないと、**触れないと約束した場所の本文を読む**ことになる
+    // （実測: contenteditable へ移したあと、記録の照合が中身を読んでいた）。
+    // 読まずに退役させれば、その語はふつうの候補として後ろの出現へ回る。
+    if (inSkip(rec.parent)) return false;
+
+    // 記録した位置に、記録した語がまだあるか。
+    // 語の**うしろに文字が増えていない**ことも要る。増えると印は語の直後ではなく
+    // 別の文字列の直後に残るのに、部分一致だけでは整合と見えてしまう
+    // （実測: appendData('PAGE_SUFFIX') で印が "A rebasePAGE_SUFFIX" の後ろに残り、
+    // 後から現れた本物の rebase が「説明済み」として抑止された）。
+    // 注記した時点では必ず termNode.length === splitOffset になっている。
+    if (rec.termNode.length !== rec.splitOffset) return false;
     const v = rec.termNode.nodeValue;
     if (v.slice(rec.splitOffset - rec.term.length, rec.splitOffset) !== rec.term) return false;
     // 印は語のすぐ後ろか（ページ側が間へ挿し込んでいないか）
     if (rec.icon.previousSibling !== rec.termNode) return false;
-    // 装飾扱いの印は、記録した入口がいまも生きていて、印が指している ID と
-    // 同じ名札を持っていること。
-    // ここで document 全体を引き直さない——同じ ID を持つ要素が2つ出るのは
-    // 複製されたときだけで、それは sanitizeClones が走査より前に取り除いている。
-    // 全体を引くと、語が見つかるたびに文書全体の検索が走る（実測で重かった）。
+    // 装飾扱いの印は、記録した入口がいまも自分のものとして生きていること。
+    // 引き当ては内部の表で行うので、ここで document 全体を引き直さない。
     if (rec.placementKind === 'hosted') {
-      const id = rec.icon.dataset.iiyakuFor;
-      if (!id || !rec.trigger || !rec.trigger.isConnected) return false;
-      if (rec.trigger.getAttribute('data-iiyaku-trigger') !== id) return false;
+      if (!rec.trigger || !rec.trigger.isConnected || !ownedTriggers.has(rec.trigger)) return false;
+      if (iconTrigger.get(rec.icon) !== rec.trigger) return false;
     }
     return true;
+  }
+
+  // いまも「説明として使える」か。**レイアウトを起こす**ので、変更の種類を見て
+  // 必要なときだけ呼ぶ（下の reconcileGlosses の deep）。
+  //
+  // DOM に在って整合していることは、使えることを意味しない。祖先が display:none に
+  // なっても、入口が disabled になっても、記録は整合したままである。それを
+  // 「説明済み」の証拠にすると、**読める同じ語**が二度と説明されない（実測で再現）。
+  //
+  // 入口の意味そのものが変わることもある。label の for が別の control を指すように
+  // 変わると、HTML 上の正式な関連付けと説明の入口が食い違う（実測: 新しい control へ
+  // フォーカスしても説明が出ず、古い control のほうに出た）。だから記録した入口が
+  // いまも「その場所から解決される入口」かどうかを、毎回解き直して確かめる。
+  // 走査1回のあいだは、同じ記録を測り直さない。
+  // `usableGloss` は「その語はもう説明済みか」の判定として、**語が見つかるたびに**
+  // 呼ばれる。入口の解き直し（closest ＋ 描画確認）を毎回やると、用語の多いページで
+  // 初期走査が 24ms → 34ms になった（10組すべてで遅く、実測）。1回の走査のあいだに
+  // 記録の見え方が変わることはないので、ここで覚えてよい。
+  let usableCache = null;
+
+  function isUsable(rec) {
+    if (usableCache) {
+      const hit = usableCache.get(rec);
+      if (hit !== undefined) return hit;
+    }
+    const v = computeUsable(rec);
+    if (usableCache) usableCache.set(rec, v);
+    return v;
+  }
+
+  function computeUsable(rec) {
+    if (!isVisibleOccurrence(rec.icon.parentElement)) return false;
+    const now = resolvePlacement(rec.parent);
+    if (now.kind !== rec.placementKind) return false;
+    if (rec.placementKind === 'hosted') {
+      if (now.trigger !== rec.trigger) return false;
+      return tabbable(rec.trigger);
+    }
+    return tabbable(rec.icon);
   }
 
   function usableGloss(key) {
     const rec = glossed.get(key);
     if (!rec) return null;
     if (!isCoherent(rec)) return null;
-    if (!isVisibleOccurrence(rec.icon.parentElement)) return null;
-    if (rec.placementKind === 'hosted') return tabbable(rec.trigger) ? rec : null;
-    return tabbable(rec.icon) ? rec : null;
+    return isUsable(rec) ? rec : null;
   }
 
   // 使えなくなった印を片づける。**元の語を、また注記できる状態へ戻す**ところまでやる。
@@ -786,6 +976,8 @@
     // 印が既にページ側から外されていても、ここへ来る。記録があるので、
     // 用語を含む節点を走査対象へ戻せる（隣をたどる必要がない）。
     handled.delete(rec.termNode);
+    // その入口を指す記録が他に無ければ、目印も外して手を引く
+    if (rec.placementKind === 'hosted') releaseTriggerIfUnused(rec.trigger);
     return rec;
   }
 
@@ -795,11 +987,16 @@
   // あいだへページ側が節点を挿す形もある。後者は removedNodes を伴わないので、
   // **ノードが増えただけの変更でも**数え直す。記録は辞書のキーの数（61）で
   // 頭打ちなので、毎回全部見ても軽い（DOM の読み取りだけでレイアウトは起こさない）。
-  function reconcileGlosses() {
+  // deep を付けると、見え方・到達性・入口の意味まで確かめる（レイアウトを起こす）。
+  // 属性が変わった・文字が書き換わった・ノードが外れた、のいずれかを含む変更と、
+  // 画面遷移・ON 復帰のときだけ deep にする。ノードが増えただけの変更では、
+  // 見え方は変わらないので安いほうだけを回す。
+  function reconcileGlosses(deep) {
     let released = null;
     for (const key of [...glossed.keys()]) {
       const rec = glossed.get(key);
-      if (rec && !isCoherent(rec)) (released ??= []).push(retireGloss(key));
+      if (!rec) continue;
+      if (!isCoherent(rec) || (deep && !isUsable(rec))) (released ??= []).push(retireGloss(key));
     }
     return released;
   }
@@ -882,11 +1079,13 @@
   function withRenderCache(fn) {
     const owner = renderCache === null;
     if (owner) { renderCache = new WeakMap(); visibleCache = new WeakMap();
-                 clipCache = new WeakMap(); clipChainCache = new WeakMap(); }
+                 clipCache = new WeakMap(); clipChainCache = new WeakMap();
+                 usableCache = new WeakMap(); skipCache = new WeakMap(); }
     try {
       return fn();
     } finally {
-      if (owner) { renderCache = null; visibleCache = null; clipCache = null; clipChainCache = null; }
+      if (owner) { renderCache = null; visibleCache = null; clipCache = null;
+                   clipChainCache = null; usableCache = null; skipCache = null; }
     }
   }
 
@@ -914,16 +1113,46 @@
   // GitHub は画面遷移でページ全体を読み直さないことがあるため、
   // 後から差し込まれた部分も見張る。自分が挿入した断片は handled で弾く。
   let lastUrl = location.href;
+
+  // 見え方・到達性・入口の意味を変えうる属性だけを見る。全属性を見ると、
+  // GitHub が絶えず書き換えている属性で毎回レイアウト計算が走る。
+  const WATCHED_ATTRS = ['style', 'class', 'hidden', 'inert', 'aria-hidden', 'disabled',
+                         'tabindex', 'for', 'href', 'role', 'open', 'contenteditable', 'id'];
+
+  // 自分が起こした変更で deep を誘発しない。印を入れるときに role や tabindex を
+  // 付けるので、そのまま数えると毎回いちばん重い経路へ入ってしまう。
+  function isOurs(node) {
+    const el = node && (node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement);
+    if (!el) return false;
+    if (ownedIconAt(el)) return true;
+    return !!el.closest('.iiyaku-tooltip, .iiyaku-toggle');
+  }
+
   // 差し込みが一度に何十件も来るので、1回分の呼び出しでは測定結果を共有する。
   const observer = new MutationObserver(muts => withRenderCache(() => {
     // ① 複製された「自分のふり」を先に取り除く。走査より前にやらないと、
-    //    複製された印が入口 ID の引き当てを乱す。
+    //    複製された印が引き当てを乱す。
     for (const mu of muts) for (const n of mu.addedNodes) sanitizeClones(n);
 
-    // ② 記録と DOM の食い違いを片づける。印が外された形だけでなく、語だけが
+    // ② 見え方まで確かめ直す必要がある変更が混ざっているか。
+    //    属性の変化・文字の書き換え・ノードが外れた形は、記録が整合したままでも
+    //    「使えない印」に変えうる（隠された・無効にされた・入口が別を指した）。
+    //    自分が出し入れする吹き出しや、自分が付ける role / tabindex は数えない。
+    //    数えると、カーソルを動かすたびに全記録のレイアウト計算が走る。
+    let deep = false;
+    for (const mu of muts) {
+      if (mu.type === 'attributes' || mu.type === 'characterData') {
+        if (!isOurs(mu.target)) { deep = true; break; }
+        continue;
+      }
+      for (const n of mu.removedNodes) if (!isOurs(n)) { deep = true; break; }
+      if (deep) break;
+    }
+
+    // ③ 記録と DOM の食い違いを片づける。印が外された形だけでなく、語だけが
     //    消された形・語と印のあいだへ挿し込まれた形もあるので、ノードが
     //    増えただけの変更でも数え直す。
-    const released = reconcileGlosses();
+    let released = reconcileGlosses(deep);
 
     // GitHub はページを読み直さずに画面を差し替えることがある。
     // 別のページに移ったら「印を付けた語」を数え直す。そうしないと、
@@ -931,6 +1160,9 @@
     if (location.href !== lastUrl) {
       lastUrl = location.href;
       hideTip();
+      // 画面が変わったときは、DOM がそのままでも見え方は変わりうる。
+      // ここまでが安いほうの確認だけだった場合に備えて、必ず1度は深く見る。
+      if (!deep) { deep = true; released = released || reconcileGlosses(true); }
       // 画面全体を走査し直す。URL の書き換えより先に内容が差し込まれた分は、
       // その時点で生きていた印のせいで飛ばされている可能性があるため。
       //
@@ -942,21 +1174,48 @@
       // 読める同じ語に説明が付かなくなる。使えなくなった印は片づけて付け直す。
       scan(document.body);
     }
+    // 走査し直す場所を集める。増えたノードだけでは足りない——
+    // 文字が書き換わった場所・属性が変わった場所は、**それまで対象外だったものが
+    // 対象になる**（触れない領域から戻った、隠れていたものが見えるようになった）。
+    // どちらも addedNodes を伴わないので、集めておかないと取り残される（実測）。
+    const roots = new Set();
     for (const mu of muts) {
-      for (const n of mu.addedNodes) scanInner(n);
+      if (mu.type === 'childList') { for (const n of mu.addedNodes) roots.add(n); continue; }
+      if (isOurs(mu.target)) continue;
+      // 文字が変わったなら、前に「この節点は見なくてよい」と決めた根拠も消えている
+      if (mu.type === 'characterData') handled.delete(mu.target);
+      roots.add(mu.target);
     }
-    // ③ 正規の印が居なくなっていたら、ページ全体から選び直す。
+    // 入れ子になった場所は、いちばん外側だけを走ればよい。1回の変更で同じ属性が
+    // 何度も書き換わることがあり、そのたびに同じ枝を歩くと費用が積み上がる。
+    for (const n of roots) {
+      let covered = false;
+      for (let p = n.parentNode; p && !covered; p = p.parentNode) if (roots.has(p)) covered = true;
+      if (!covered) scanInner(n);
+    }
+    // ④ 正規の印が居なくなっていたら、ページ全体から選び直す。
     //    既にページにある候補へ引き継ぐには、ここで世代を進めるしかない。
+    //    **1回の変更のかたまりにつき、選び直しは最大1回**。ここを回数制限せずに
+    //    書くと、選び直しが起こす変更でまた選び直す形が作れてしまう。
     if (released) reselect();
   }));
+
+  const OBSERVE_OPTS = {
+    childList: true, subtree: true,
+    characterData: true,               // 語そのものの書き換えに、その場で気づく
+    attributes: true, attributeFilter: WATCHED_ATTRS
+  };
 
   /* ---------- 9. ON / OFF の切り替え ---------- */
   let observing = false;
 
   function startRuntime() {
     if (observing) return;
+    // OFF のあいだにページが変わっていることがある。先に記録を見え方まで
+    // 確かめ直してから走査する（隠された印を「説明済み」として残さない）。
+    withRenderCache(() => { if (reconcileGlosses(true)) generation++; });
     scan(document.body);
-    observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(document.body, OBSERVE_OPTS);
     observing = true;
   }
 

@@ -12,6 +12,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { launchChrome, startTestServer, stageExtension, stageExtensionWith,
          SENTINEL_PAGE, LIFECYCLE_PAGE, VISIBILITY_PAGE, RETIRE_PAGE, RESELECT_PAGE,
+         USABILITY_PAGE, NAMESPACE_CLIP_PAGE, PROTECTED_PAGE, CONVERGE_PAGE,
          openPage, sleep, waitFor,
          pressKey, collectTabOrder, tabUntil } from './helpers/chrome.mjs';
 
@@ -73,13 +74,13 @@ test('拡張として読み込んだ状態で動く', async t => {
   await t.test('label は、関連付いた入力欄が入口になる', async () => {
     const id = await tab.evaluate(`document.querySelector('#lab-for .iiyaku-icon')?.dataset.iiyakuFor ?? null`);
     assert.ok(id, 'label 内に印が無い');
-    assert.equal(await tab.evaluate(`document.getElementById('inp-for').getAttribute('data-iiyaku-trigger')`), id);
+    assert.equal(await tab.evaluate(`document.getElementById('inp-for').getAttribute('data-iiyaku-entrance')`), id);
   });
 
   await t.test('label が入力欄を含む場合も、その入力欄が入口になる', async () => {
     const id = await tab.evaluate(`document.querySelector('#lab-wrap .iiyaku-icon')?.dataset.iiyakuFor ?? null`);
     assert.ok(id);
-    assert.equal(await tab.evaluate(`document.getElementById('inp-wrap').getAttribute('data-iiyaku-trigger')`), id);
+    assert.equal(await tab.evaluate(`document.getElementById('inp-wrap').getAttribute('data-iiyaku-entrance')`), id);
   });
 
   await t.test('到達できない場所には印を付けない（境界18件）', async () => {
@@ -106,7 +107,7 @@ test('拡張として読み込んだ状態で動く', async t => {
       const out = {};
       for (const [host, expected] of Object.entries(pairs)) {
         const ic = document.getElementById(host).querySelector('.iiyaku-icon');
-        const t = ic && document.querySelector('[data-iiyaku-trigger="' + ic.dataset.iiyakuFor + '"]');
+        const t = ic && document.querySelector('[data-iiyaku-entrance="' + ic.dataset.iiyakuFor + '"]');
         out[host] = ic ? (t ? t.id : '入口なし') : '印なし';
       }
       return out;
@@ -132,7 +133,7 @@ test('拡張として読み込んだ状態で動く', async t => {
       const icons = [...document.querySelectorAll('#scroll-region .iiyaku-icon')];
       return { n: icons.length, roles: icons.map(i => i.getAttribute('role')),
                grouped: icons.filter(i => i.dataset.iiyakuFor).length,
-               containerIsTrigger: document.getElementById('scroll-region').hasAttribute('data-iiyaku-trigger') };
+               containerIsTrigger: document.getElementById('scroll-region').hasAttribute('data-iiyaku-entrance') };
     })()`);
     assert.equal(r.n, 2);
     assert.deepEqual(r.roles, ['button', 'button']);
@@ -157,7 +158,7 @@ test('拡張として読み込んだ状態で動く', async t => {
     const reachable = new Set(await collectTabOrder(cdp, tab, 90));
     const hosted = await tab.evaluate(`[...document.querySelectorAll('.iiyaku-icon[aria-hidden="true"]')]
       .map(ic => {
-        const t = document.querySelector('[data-iiyaku-trigger="' + ic.dataset.iiyakuFor + '"]');
+        const t = document.querySelector('[data-iiyaku-entrance="' + ic.dataset.iiyakuFor + '"]');
         return { key: ic.dataset.iiyakuKey, trigger: t ? (t.id || t.tagName) : null };
       })`);
     const unreachable = hosted.filter(h => !h.trigger || !reachable.has(h.trigger));
@@ -171,7 +172,7 @@ test('拡張として読み込んだ状態で動く', async t => {
     const back = new Set(await collectTabOrder(cdp, tab, 90, 'after', { shift: true }));
     const hosted = await tab.evaluate(`[...document.querySelectorAll('.iiyaku-icon[aria-hidden="true"]')]
       .map(ic => {
-        const t = document.querySelector('[data-iiyaku-trigger="' + ic.dataset.iiyakuFor + '"]');
+        const t = document.querySelector('[data-iiyaku-entrance="' + ic.dataset.iiyakuFor + '"]');
         return { key: ic.dataset.iiyakuKey, trigger: t ? (t.id || t.tagName) : null };
       })`);
     const missing = hosted.filter(h => !h.trigger || !back.has(h.trigger));
@@ -1075,7 +1076,7 @@ test('印の片づけが、ページの持ち物と選択範囲を壊さない',
       window.__forced = null;
       if (ic) {
         const forId = ic.dataset.iiyakuFor;
-        const t = forId ? document.querySelector('[data-iiyaku-trigger="' + forId + '"]') : null;
+        const t = forId ? document.querySelector('[data-iiyaku-entrance="' + forId + '"]') : null;
         window.__forced = t || ic;        // 元へ戻せるよう控える
         window.__forced.tabIndex = -1;
       }
@@ -1465,8 +1466,8 @@ test('印が居なくなったら、既にある候補へ引き継ぐ', async t 
     assert.ok(r.複製直後の印 > 0, '複製で印が写っていない＝この試験の前提が崩れている');
     await sleep(600);
     const after = await tab.evaluate(`(() => {
-      const ids = [...document.querySelectorAll('[data-iiyaku-trigger]')]
-        .map(e => e.getAttribute('data-iiyaku-trigger'));
+      const ids = [...document.querySelectorAll('[data-iiyaku-entrance]')]
+        .map(e => e.getAttribute('data-iiyaku-entrance'));
       return { cloneA: document.querySelectorAll('#clone-a .iiyaku-icon').length,
                cloneB: document.querySelectorAll('#clone-b .iiyaku-icon').length,
                origA: document.querySelectorAll('#clone-src .iiyaku-icon').length,
@@ -1495,6 +1496,324 @@ test('印が居なくなったら、既にある候補へ引き継ぐ', async t 
     assert.deepEqual([await nIn('#clone-a'), await nKey('label')], [1, 1], 'label が移っていない');
     await waitFor('リンクの複製側へも移る', async () => await nIn('#clone-b') === 1);
     assert.deepEqual([await nIn('#clone-b'), await nKey('workflow')], [1, 1], 'workflow が移っていない');
+  });
+
+  await tab.close();
+});
+
+/* ============================================================================
+   第9回監査の反例（RG-9-01 … RG-9-07）
+   ここに置く試験は、いずれも v1.8.7 の実物で**先に再現してから**書いている。
+   ========================================================================= */
+
+// 吹き出しは出しっぱなしにせず、その場で数えて閉じる。
+// （出したままだと次の測定が前の吹き出しを数えてしまう）
+const HOVER_ROWS = id => `(() => {
+  const el = document.getElementById(${JSON.stringify(id)});
+  if (!el) return -1;
+  el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+  const t = document.querySelector('.iiyaku-tooltip');
+  const n = t ? t.querySelectorAll('.iiyaku-tooltip-item').length : 0;
+  el.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body }));
+  return n;
+})()`;
+
+test('隠された・無効になった・書き換わった印は、読める同じ語へ譲る', async t => {
+  const srv = await startTestServer(USABILITY_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+
+  const nIn = sel => tab.evaluate(`document.querySelectorAll(${JSON.stringify(sel)} + ' .iiyaku-icon').length`);
+  const nKey = k => tab.evaluate(
+    `document.querySelectorAll('.iiyaku-icon[data-iiyaku-key="' + ${JSON.stringify(k)} + '"]').length`);
+  // 陽性対照つきの待ち。ページ側にも .iiyaku-icon が居る場面があるので、
+  // 「自分が付けた印（key つき）」で数える。
+  await waitFor('拡張が印を付ける', async () =>
+    await tab.evaluate(`[...document.querySelectorAll('.iiyaku-icon')].filter(i => i.dataset.iiyakuKey).length`));
+
+  await t.test('RG-9-01a 最初の場所を隠すと、既にある2番目へ移る（属性の変更だけで）', async () => {
+    assert.deepEqual([await nIn('#u-hide1'), await nIn('#u-hide2')], [1, 0], '前提が崩れている');
+    // ノードを足さない。属性を変えるだけで気づけること自体が要件。
+    await tab.evaluate(`document.getElementById('u-hide1').style.display = 'none'; true`);
+    await waitFor('2番目へ移る', async () => await nIn('#u-hide2') === 1);
+    assert.deepEqual([await nIn('#u-hide1'), await nIn('#u-hide2'), await nKey('branch')], [0, 1, 1]);
+  });
+
+  await t.test('RG-9-01b 入口を無効にすると、後ろの読める語へ移り、旧入口に説明が出ない', async () => {
+    assert.deepEqual([await nIn('#u-btn'), await nIn('#u-btn-later')], [1, 0], '前提が崩れている');
+    await tab.evaluate(`document.getElementById('u-btn').disabled = true; true`);
+    await waitFor('後ろへ移る', async () => await nIn('#u-btn-later') === 1);
+    assert.deepEqual([await nIn('#u-btn'), await nIn('#u-btn-later'), await nKey('fetch')], [0, 1, 1]);
+    assert.equal(await tab.evaluate(HOVER_ROWS('u-btn')), 0, '無効にした入口にまだ説明が出る');
+  });
+
+  await t.test('RG-9-02 語のうしろに文字が増えたら退役し、新しい候補へ1つだけ付く', async () => {
+    const before = await tab.evaluate(`(() => {
+      const ic = [...document.querySelectorAll('.iiyaku-icon')].find(i => i.dataset.iiyakuKey === 'rebase');
+      if (!ic) return null;
+      ic.previousSibling.appendData('PAGE_SUFFIX');
+      const p = document.createElement('p'); p.textContent = 'A rebase newly appears.';
+      document.getElementById('u-suffix-sink').appendChild(p);
+      return ic.previousSibling.nodeValue;
+    })()`);
+    assert.equal(before, 'A rebasePAGE_SUFFIX', 'この試験の前提（末尾への追記）が起きていない');
+    await waitFor('新しい候補へ付け直る', async () => await nIn('#u-suffix-sink') === 1);
+    assert.equal(await nKey('rebase'), 1, 'rebase の印が1つでない');
+    assert.equal(
+      await tab.evaluate(`[...document.querySelectorAll('.iiyaku-icon')]
+        .find(i => i.dataset.iiyakuKey === 'rebase').previousSibling.nodeValue`),
+      'A rebase', '印が語の直後にない');
+    // ページ側が書き足した文字は、こちらで消さない
+    assert.match(await tab.evaluate(`document.getElementById('u-suffix').textContent`), /PAGE_SUFFIX/);
+  });
+
+  await t.test('RG-9-03 label の for が変わったら、新しい control だけが入口になる', async () => {
+    assert.equal(await tab.evaluate(HOVER_ROWS('u-ia')), 1, '前提: 最初は ia が入口');
+    assert.equal(await tab.evaluate(HOVER_ROWS('u-ib')), 0, '前提: ib はまだ入口ではない');
+    await tab.evaluate(`document.getElementById('u-lab').htmlFor = 'u-ib'; true`);
+    await waitFor('新しい control が入口になる', async () =>
+      await tab.evaluate(HOVER_ROWS('u-ib')) === 1);
+    assert.equal(await tab.evaluate(HOVER_ROWS('u-ia')), 0, '古い control にまだ説明が出る');
+    assert.equal(await nIn('#u-lab'), 1, 'label から印が消えている');
+    assert.equal(await nIn('#u-lab-later'), 0, '後ろへ余計に付いている');
+    // 残留した目印が無いこと（自分の合言葉つきのものだけを数える）
+    assert.equal(
+      await tab.evaluate(`document.getElementById('u-ia').hasAttribute('data-iiyaku-entrance')`),
+      false, '入口でなくなった要素に目印が残っている');
+  });
+
+  await t.test('RG-9-06 語そのものを書き換えたら、他の変更を待たずに移る', async () => {
+    assert.deepEqual([await nIn('#u-cd1'), await nIn('#u-cd2')], [1, 0], '前提が崩れている');
+    await tab.evaluate(`(() => {
+      const ic = [...document.querySelectorAll('.iiyaku-icon')].find(i => i.dataset.iiyakuKey === 'revert');
+      ic.previousSibling.nodeValue = 'A banana';
+    })(); true`);
+    // ここで**ノードを足さない**。足すと childList の変更で気づいてしまい、
+    // 文字の書き換えに気づけたかを確かめられない。
+    await waitFor('2番目へ移る', async () => await nIn('#u-cd2') === 1);
+    assert.deepEqual([await nIn('#u-cd1'), await nKey('revert')], [0, 1]);
+  });
+
+  await tab.close();
+});
+
+test('ページ側の同名 class・同名属性を壊さず、面積0の切り取りは可視から外す', async t => {
+  const srv = await startTestServer(NAMESPACE_CLIP_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  const nIn = sel => tab.evaluate(`document.querySelectorAll(${JSON.stringify(sel)} + ' .iiyaku-icon').length`);
+  await waitFor('拡張が印を付ける', async () =>
+    await tab.evaluate(`[...document.querySelectorAll('.iiyaku-icon')].filter(i => i.dataset.iiyakuKey).length`));
+
+  await t.test('RG-9-05 ページ所有の .iiyaku-icon は、読み込みの前後どちらでも残る', async () => {
+    assert.equal(await tab.evaluate(`!!document.getElementById('page-icon')`), true,
+      '元から在ったページ側の要素を消している');
+    await tab.evaluate(`(() => { const a = document.createElement('a');
+      a.id = 'page-icon-late'; a.href = '#dest2'; a.className = 'iiyaku-icon'; a.textContent = 'LATE';
+      document.getElementById('ns-sink').appendChild(a); })(); true`);
+    await sleep(500);
+    assert.equal(await tab.evaluate(`!!document.getElementById('page-icon-late')`), true,
+      '後から足したページ側の要素を消している');
+    assert.equal(await tab.evaluate(`document.getElementById('page-icon-late').textContent`), 'LATE');
+  });
+
+  await t.test('RG-9-05 ページ所有リンクのクリックを横取りしない', async () => {
+    const r = await tab.evaluate(`(() => {
+      const a = document.getElementById('page-icon');
+      const ev = new MouseEvent('click', { bubbles: true, cancelable: true });
+      a.dispatchEvent(ev);
+      return { prevented: ev.defaultPrevented, hash: location.hash };
+    })()`);
+    assert.equal(r.prevented, false, 'ページ側のリンクの既定動作を止めている');
+    assert.equal(r.hash, '#dest', 'リンク先へ移動していない');
+  });
+
+  await t.test('RG-9-05 ページ既存の data-iiyaku-trigger を自分の ID として採用しない', async () => {
+    // 同じ値を持つ入口が2つあっても、説明が混ざらないこと
+    assert.equal(await tab.evaluate(HOVER_ROWS('ns-a')), 1, 'ns-a に別の語の説明まで出ている');
+    assert.equal(await tab.evaluate(HOVER_ROWS('ns-b')), 1, 'ns-b に別の語の説明まで出ている');
+    // 値をそのまま使っていないこと（自分の目印は別名で、値は自分の合言葉つき）
+    const ids = await tab.evaluate(`[...document.querySelectorAll('[data-iiyaku-entrance]')]
+      .map(e => e.getAttribute('data-iiyaku-entrance'))`);
+    assert.ok(ids.length >= 3, `自分の目印が付いていない: ${JSON.stringify(ids)}`);
+    assert.ok(ids.every(v => /^iiyaku-[a-z0-9]+-t\d+$/.test(v)), `外から来た値が混ざっている: ${JSON.stringify(ids)}`);
+    assert.equal(new Set(ids).size, ids.length, '同じ目印が2つ以上ある');
+    // ページ側の属性は書き換えていない
+    assert.deepEqual(
+      await tab.evaluate(`['ns-a','ns-b','ns-c'].map(i => document.getElementById(i).getAttribute('data-iiyaku-trigger'))`),
+      ['shared', 'shared', 'bad"]sel'], 'ページ側の属性を書き換えている');
+  });
+
+  await t.test('RG-9-05 selector に使えない値が入口にあっても、説明は出る', async () => {
+    // `bad"]sel` を selector へ埋めると SyntaxError になる。値を使わない設計なので出るはず。
+    assert.equal(await tab.evaluate(HOVER_ROWS('ns-c')), 1, '不正な属性値のせいで説明が出ない');
+  });
+
+  await t.test('RG-9-07 面積0の切り取りの中には付けず、後ろの読める語へ回す（4形）', async () => {
+    const pairs = [['#c-pct', '#c-pct-later'], ['#c-px', '#c-px-later'],
+                   ['#c-side', '#c-side-later'], ['#c-circle', '#c-circle-later']];
+    const got = [];
+    for (const [a, b] of pairs) got.push([await nIn(a), await nIn(b)]);
+    assert.deepEqual(got, [[0, 1], [0, 1], [0, 1], [0, 1]],
+      `切り取りの判定が合っていない: ${JSON.stringify(got)}`);
+  });
+
+  await t.test('RG-9-07 面積が残る切り取りと display:contents は、可視のまま扱う（落としすぎの対照）', async () => {
+    assert.deepEqual([await nIn('#c-part'), await nIn('#c-part-later')], [1, 0],
+      'inset(10%) を全面非表示と誤判定している');
+    assert.deepEqual([await nIn('#c-dc'), await nIn('#c-dc-later')], [1, 0],
+      'display:contents 自身の clip-path を効かせてしまっている');
+  });
+
+  await tab.close();
+});
+
+test('注記したあとで触れない領域へ変わったら、本文を読まずに手を引く', async t => {
+  const srv = await startTestServer(PROTECTED_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  // 生の読み取りを計測する版。matcher tap は「辞書の照合まで届いたか」しか見ないので、
+  // 照合せずに本文を読むだけの経路はそこに映らない（第9回監査はその差を突いた）。
+  const dir = stageExtensionWith(
+    { 'nodevalue-probe.js': 'tests/e2e/nodevalue-probe.js' },
+    js => ['nodevalue-probe.js', ...js]);
+  await cdp.send('Extensions.loadUnpacked', { path: dir });
+  const tab = await openPage(cdp, PAGE);
+  const nIn = sel => tab.evaluate(`document.querySelectorAll(${JSON.stringify(sel)} + ' .iiyaku-icon').length`);
+  const reads = () => tab.evaluate(`document.documentElement.getAttribute('data-rg-raw')`);
+  await waitFor('拡張が印を付ける', async () =>
+    await tab.evaluate(`[...document.querySelectorAll('.iiyaku-icon')].filter(i => i.dataset.iiyakuKey).length`));
+
+  await t.test('計測そのものが効いている（陽性対照）', async () => {
+    assert.equal(await tab.evaluate(`document.documentElement.getAttribute('data-rg-rawtap')`), 'ready',
+      '4つの取り出し口を包めていない');
+    assert.equal(await reads(), 'RGSENTINEL_SELFTEST',
+      '包んだ getter が効いていない＝「読まれていない」を主張できない');
+  });
+
+  const CASES = [
+    ['pr-ce', 'RGSENTINEL_CE', `el.setAttribute('contenteditable','true')`, 'branch'],
+    ['pr-ah', 'RGSENTINEL_AH', `el.setAttribute('aria-hidden','true')`, 'commit'],
+    ['pr-in', 'RGSENTINEL_IN', `el.setAttribute('inert','')`, 'merge'],
+    ['pr-hd', 'RGSENTINEL_HD', `el.setAttribute('hidden','')`, 'fetch']
+  ];
+  for (const [id, sentinel, mutate, key] of CASES) {
+    await t.test(`RG-9-04 ${id} が保護領域へ移ったあと、本文（${sentinel}）を読まない`, async () => {
+      assert.equal(await nIn('#' + id), 1, '前提: 先に印が付いている');
+      await tab.evaluate(`(() => {
+        const el = document.getElementById(${JSON.stringify(id)});
+        ${mutate};
+        const ic = el.querySelector('.iiyaku-icon');
+        ic.previousSibling.nodeValue = ${JSON.stringify(sentinel + ' ' + key)};
+      })(); true`);
+      await tab.evaluate(`(() => { const s = document.createElement('span'); s.textContent = 'zzz';
+        document.getElementById('sink').appendChild(s); })(); true`);
+      await sleep(400);
+      assert.equal(await reads(), 'RGSENTINEL_SELFTEST',
+        `保護領域になった本文を読んでいる: ${await reads()}`);
+      assert.equal(await nIn('#' + id), 0, '保護領域に印が残っている');
+      // 本文はこちらで書き換えない
+      assert.match(await tab.evaluate(
+        `document.getElementById(${JSON.stringify(id)}).textContent`), new RegExp(sentinel));
+    });
+  }
+
+  await t.test('RG-9-04 保護領域から戻ったら、ふつうの候補として選び直せる', async () => {
+    await tab.evaluate(`(() => {
+      const el = document.getElementById('pr-ce');
+      el.removeAttribute('contenteditable');
+      el.firstChild.nodeValue = 'A branch again.';
+    })(); true`);
+    await waitFor('戻った場所へ付け直る', async () => await nIn('#pr-ce') === 1);
+    assert.equal(await reads(), 'RGSENTINEL_SELFTEST', '戻す途中で保護領域の本文を読んでいる');
+  });
+
+  await tab.close();
+});
+
+test('退役と選び直しは、変更を混ぜても収束する', async t => {
+  const srv = await startTestServer(CONVERGE_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  const nKey = k => tab.evaluate(
+    `document.querySelectorAll('.iiyaku-icon[data-iiyaku-key="' + ${JSON.stringify(k)} + '"]').length`);
+  await waitFor('拡張が印を付ける', async () => await nKey('conflict'));
+
+  await t.test('RG-9-01/06 属性・文字・削除を混ぜて50往復しても、印は常に0か1', async () => {
+    // 利用者の選択範囲が壊れないことも、同じ往復の中で見る
+    await tab.evaluate(`(() => {
+      const t = document.getElementById('cv-sel').firstChild;
+      const r = document.createRange(); r.setStart(t, 4); r.setEnd(t, 20);
+      const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+      window.__selText = String(s);
+      window.__textNode = t;
+      window.__body = document.getElementById('cv-sel').textContent;
+    })(); true`);
+
+    const t0 = Date.now();
+    let worst = 0;
+    for (let i = 0; i < 50; i++) {
+      const mode = i % 4;
+      await tab.evaluate(`(() => {
+        const ids = ['cv1', 'cv2', 'cv3'];
+        const el = document.getElementById(ids[${i} % 3]);
+        if (${mode} === 0) el.style.display = 'none';
+        else if (${mode} === 1) { for (const x of ids) document.getElementById(x).style.display = ''; }
+        else if (${mode} === 2) {
+          const ic = document.querySelector('.iiyaku-icon[data-iiyaku-key="conflict"]');
+          if (ic && ic.previousSibling) ic.previousSibling.nodeValue = 'A banana';
+        } else {
+          const s = document.createElement('p'); s.textContent = 'A conflict extra.';
+          s.id = 'cv-extra'; const old = document.getElementById('cv-extra'); if (old) old.remove();
+          document.getElementById('cv-sink').appendChild(s);
+        }
+      })(); true`);
+      await sleep(40);
+      const n = await nKey('conflict');
+      if (n > worst) worst = n;
+      assert.ok(n <= 1, `${i} 回目で conflict の印が ${n} 個になった`);
+    }
+    const elapsed = Date.now() - t0;
+
+    // 変更を止めたあと、状態が動き続けていないこと（自分の変更で回り続ける形の検出）
+    await sleep(400);
+    const a = await tab.evaluate(`document.querySelectorAll('.iiyaku-icon').length`);
+    await sleep(400);
+    const b = await tab.evaluate(`document.querySelectorAll('.iiyaku-icon').length`);
+    assert.equal(a, b, `変更を止めても印の数が動き続けている: ${a} -> ${b}`);
+
+    // 読める候補が在るなら、必ず1つは説明が付いている
+    const final = await tab.evaluate(`(() => {
+      const vis = ['cv1','cv2','cv3','cv-extra'].filter(id => {
+        const el = document.getElementById(id); return el && el.checkVisibility();
+      });
+      return { visible: vis.length,
+               icons: document.querySelectorAll('.iiyaku-icon[data-iiyaku-key="conflict"]').length };
+    })()`);
+    if (final.visible > 0) assert.equal(final.icons, 1, `読める候補が ${final.visible} 個あるのに印が ${final.icons} 個`);
+    assert.equal(worst, 1, `途中で印が重複した（最大 ${worst} 個）`);
+    assert.ok(elapsed < 60000, `50往復に ${elapsed}ms かかった`);
+    console.log(`  # 50往復: ${elapsed}ms / 最大同時 ${worst} 個`);
+  });
+
+  await t.test('往復のあいだ、利用者の選択範囲と本文が壊れていない', async () => {
+    const r = await tab.evaluate(`({
+      sel: String(getSelection()), kept: window.__selText,
+      sameNode: getSelection().anchorNode === window.__textNode,
+      body: document.getElementById('cv-sel').textContent, wasBody: window.__body })`);
+    assert.equal(r.sel, r.kept, `選択範囲が変わった: ${JSON.stringify(r)}`);
+    assert.equal(r.sameNode, true, '選択していた Text node が別のものに差し替わった');
+    assert.equal(r.body, r.wasBody, '本文が変わった');
   });
 
   await tab.close();

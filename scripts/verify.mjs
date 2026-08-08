@@ -134,12 +134,19 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
 // で、同じ拡張の content script として計測用の prelude を先に読み込ませ、
 // 隔離された世界の中で実際に読まれた回数を数えている。
 // ここは、単純な後戻りを早く止めるためのものである。
+// 判定を関数へ切り出したので、その関数が本当に SKIP を見ていることを先に確かめる。
+// ここを確かめずに名前だけで順序を測ると、中身が空でも通ってしまう。
+{
+  const m = content.match(/function inSkip\(el\)\s*\{([\s\S]*?)\n  \}/);
+  check('content.js に inSkip がある', !!m);
+  check('inSkip が closest(SKIP) で判定している', !!m && m[1].includes('closest(SKIP)'));
+}
 {
   const m = content.match(/function isTarget\(node\)\s*\{([\s\S]*?)\n  \}/);
   check('content.js に isTarget がある', !!m);
   if (m) {
     const body = m[1];
-    const skipAt = body.indexOf('closest(SKIP)');
+    const skipAt = body.indexOf('inSkip(');
     const valueAt = Math.min(
       ...['node.nodeValue', 'node.data', 'node.textContent', 'node.wholeText']
         .map(t => { const i = body.indexOf(t); return i === -1 ? Infinity : i; })
@@ -148,6 +155,61 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
       skipAt !== -1 && skipAt < valueAt,
       `SKIP の位置=${skipAt} / 値を読む位置=${valueAt === Infinity ? 'なし' : valueAt}`);
   }
+}
+
+// 走査の入口だけでは足りなかった。注記した**あとで**その場所が編集領域などへ
+// 変わることがあり、記録の整合を確かめる側が、除外を見る前に本文を読んでいた
+// （第9回監査 RG-9-04。実測で再現）。同じ順序を isCoherent にも要求する。
+{
+  const m = content.match(/function isCoherent\(rec\)\s*\{([\s\S]*?)\n  \}/);
+  check('content.js に isCoherent がある', !!m);
+  if (m) {
+    const body = m[1];
+    const skipAt = body.indexOf('inSkip(');
+    const valueAt = Math.min(
+      ...['.nodeValue', '.data', '.textContent', '.wholeText', 'substringData']
+        .map(t => { const i = body.indexOf(t); return i === -1 ? Infinity : i; })
+    );
+    check('isCoherent が SKIP 判定より前にテキストの値を読んでいない',
+      skipAt !== -1 && skipAt < valueAt,
+      `SKIP の位置=${skipAt} / 値を読む位置=${valueAt === Infinity ? 'なし' : valueAt}`);
+    // 語のうしろに文字が増えたら整合でないこと（RG-9-02）
+    check('isCoherent が、語が節点の末尾で終わることを要求している',
+      /termNode\.length\s*!==\s*rec\.splitOffset/.test(body),
+      '末尾の固定が無いと、印が別の文字列の直後に残ったまま整合と見なされる');
+  }
+}
+
+/* ---------- 所有していないものへ手を出していないか（RG-9-05） ---------- */
+// class だけで「自分のもの」と決めると、ページ側が同じ class を使っただけで
+// その要素を消したりクリックを横取りしたりする（実測で両方起きた）。
+{
+  check('複製の除去が、class 単独ではなく自分の合言葉で判定している',
+    /data-iiyaku-owner/.test(content) && !/pick\('\.iiyaku-icon'\)/.test(content),
+    '.iiyaku-icon を class だけで拾って消している');
+  check('印の当たり判定が、自分が作ったものに限定されている',
+    /function ownedIconAt/.test(content) && /ownedIconAt\(el\)/.test(content));
+  check('click の横取りが closest(\'.iiyaku-icon\') ではなくなっている',
+    !/closest\('\.iiyaku-icon'\)/.test(content),
+    'ページ側の同名 class のリンクまで既定動作を止めてしまう');
+  // ページ側の値を selector へ埋めない（埋めると SyntaxError にもなる）
+  const badSelector = /querySelector(All)?\(\s*[`'"][^`'"]*\[\s*data-[^`'"]*=\s*"?\s*['"]\s*\+/;
+  check('外から来た値を CSS selector へ埋めていない', !badSelector.test(content));
+  // 陽性対照: この探し方が、実際に v1.8.7 の書き方を捕まえる
+  check('selector 埋め込みの検査が、実際に古い書き方を捕まえる（陽性対照）',
+    badSelector.test(`document.querySelector('[data-iiyaku-trigger="' + id + '"]')`));
+}
+
+/* ---------- 変更の見張りが、見え方を変える入力まで見ているか（RG-9-01 / RG-9-06） ---------- */
+{
+  check('MutationObserver が文字の書き換えを見ている', /characterData:\s*true/.test(content));
+  check('MutationObserver が属性の変化を見ている',
+    /attributes:\s*true/.test(content) && /attributeFilter/.test(content));
+  for (const attr of ['style', 'hidden', 'inert', 'aria-hidden', 'disabled', 'tabindex', 'for']) {
+    check(`見張る属性に ${attr} が入っている`, new RegExp(`'${attr}'`).test(content));
+  }
+  check('記録の確かめ直しに、見え方まで見る深い経路がある',
+    /function isUsable\(rec\)/.test(content) && /reconcileGlosses\(deep\)/.test(content));
 }
 
 /* ---------- 可視性の判定が祖先まで見ているか ---------- */
@@ -483,6 +545,23 @@ for (const cls of ['iiyaku-icon', 'iiyaku-toggle', 'iiyaku-tooltip', 'iiyaku-off
 check('content.js が保存キー iiyakuEnabled を変えていない', content.includes("'iiyakuEnabled'"));
 check('ツールチップが狭い画面でも収まる指定を持つ',
   /max-width:\s*min\(/.test(css) && /box-sizing:\s*border-box/.test(css.split('.iiyaku-tooltip {')[1] ?? ''));
+
+/* ---------- 監査入口が名乗る検査件数が、実際の件数と合っているか（RG-9-08） ---------- */
+// 版・SHA・タグは検査していたのに、**検査の件数だけ**が同期の外に在った。
+// その結果、`AUDIT.md` が古い件数（158・166）を名乗ったまま残った（実測）。
+// 自分の件数を自分で名乗る以上、そこも突き合わせる。
+// この検査自身が最後の1件なので、いまの checks に 1 を足したものが最終の件数になる。
+{
+  const auditText = read('AUDIT.md');
+  const claimed = [...auditText.matchAll(/検査\s*[（(]\s*(\d+)\s*項目\s*[）)]/g)].map(m => Number(m[1]));
+  const claimed2 = [...auditText.matchAll(/構成検査\s*\*{0,2}(\d+)\s*項目/g)].map(m => Number(m[1]));
+  const all = [...claimed, ...claimed2];
+  const total = checks + 1;
+  check(`AUDIT.md が名乗る検査件数が、実際の ${total} 件と一致する`,
+    all.length > 0 && all.every(n => n === total),
+    all.length === 0 ? 'AUDIT.md に検査件数の記載が見つからない（書き方を変えたなら、この検査も直す）'
+                     : `AUDIT.md の記載: ${[...new Set(all)].join(', ')} / 実際: ${total}`);
+}
 
 /* ---------- 結果 ---------- */
 const label = `${checks} 件を検査`;

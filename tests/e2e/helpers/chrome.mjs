@@ -383,6 +383,82 @@ export const RESELECT_PAGE = `<!doctype html><html lang="en"><head><meta charset
   <div id="sink"></div>
 </body></html>`;
 
+/* 記録が「整合している」だけでは足りない場面。隠された・無効にされた・
+   語の後ろに文字が増えた・入口の意味が変わった、のいずれでも、
+   読める同じ語へ説明が移ること。 */
+export const USABILITY_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>usability</title></head><body>
+  <!-- ① 不可視化: 最初を display:none にしたら、既にある2番目へ -->
+  <p id="u-hide1">A branch first.</p>
+  <p id="u-hide2">A branch second.</p>
+
+  <!-- ② 入口が無効になる: button を disabled にしたら、後ろの読める語へ -->
+  <p><button id="u-btn">Open the fetch view</button></p>
+  <p id="u-btn-later">A fetch later.</p>
+
+  <!-- ③ 語のうしろに文字が増える -->
+  <p id="u-suffix">A rebase first.</p>
+  <div id="u-suffix-sink"></div>
+
+  <!-- ④ label の for が別の control を指す -->
+  <label id="u-lab" for="u-ia">squash merge</label><input id="u-ia"><input id="u-ib">
+  <p id="u-lab-later">squash merge later.</p>
+
+  <!-- ⑥ 語そのものが書き換わる -->
+  <p id="u-cd1">A revert first.</p>
+  <p id="u-cd2">A revert second.</p>
+
+  <div id="sink"></div>
+</body></html>`;
+
+/* 名前が衝突したときに、ページ側のものを壊さないか。
+   と、面積0の切り取りを取りこぼさないか。 */
+export const NAMESPACE_CLIP_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>namespace and clip</title><style>.box100{width:100px;height:100px}</style></head><body>
+  <!-- ⑦ ページ側が同じ class・同じ属性名を使っている -->
+  <a id="page-icon" href="#dest" class="iiyaku-icon">PAGE LINK</a>
+  <p><a href="#" id="ns-a" data-iiyaku-trigger="shared">Open the milestone</a></p>
+  <p><a href="#" id="ns-b" data-iiyaku-trigger="shared">Open the wiki</a></p>
+  <p><a href="#" id="ns-c" data-iiyaku-trigger='bad"]sel'>Open the blame</a></p>
+  <div id="ns-sink"></div>
+
+  <!-- ⑧ 面積0の切り取り。後ろに読める同じ語を置いて、そちらへ回るかを見る -->
+  <div id="c-pct" style="clip-path:inset(50% 0 50% 0)">A webhook hidden.</div>
+  <p id="c-pct-later">A webhook later.</p>
+  <div id="c-px" class="box100" style="clip-path:inset(50px)">A topic hidden.</div>
+  <p id="c-px-later">A topic later.</p>
+  <div id="c-side" style="clip-path:inset(0 100% 0 0)">A fork hidden.</div>
+  <p id="c-side-later">A fork later.</p>
+  <div id="c-circle" style="clip-path:circle(0px)">A clone hidden.</div>
+  <p id="c-circle-later">A clone later.</p>
+  <!-- 面積が残るものは可視のまま扱う（落としすぎの対照） -->
+  <div id="c-part" style="clip-path:inset(10%)">A tags partly.</div>
+  <p id="c-part-later">A tags later.</p>
+  <div id="c-dc" style="display:contents; clip-path:inset(50%)">A sync shown.</div>
+  <p id="c-dc-later">A sync later.</p>
+</body></html>`;
+
+/* 注記したあとで、その場所が「触れない領域」へ変わる。
+   本文を読む前に手を引けているかを、生の読み取りで測る。 */
+export const PROTECTED_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>protected</title></head><body>
+  <p id="pr-ce">A branch here.</p>
+  <p id="pr-ah">A commit here.</p>
+  <p id="pr-in">A merge here.</p>
+  <p id="pr-hd">A fetch here.</p>
+  <div id="sink"></div>
+</body></html>`;
+
+/* 退役と選び直しが、変更のたびに収束するか。 */
+export const CONVERGE_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>converge</title></head><body>
+  <p id="cv1">A conflict first.</p>
+  <p id="cv2">A conflict second.</p>
+  <p id="cv3">A conflict third.</p>
+  <p id="cv-sel">Ask for a careful review of the code.</p>
+  <div id="cv-sink"></div>
+</body></html>`;
+
 export function startTestServer(html = REPO_PAGE) {
   const { key, cert } = makeCert();
   const server = https.createServer({ key, cert }, (req, res) => {

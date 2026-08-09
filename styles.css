@@ -11,7 +11,7 @@
    収録されているが macOS の標準フォントには無く、豆腐（□）として表示される。
    どのフォントにも必ずある ASCII の "i" を、CSS で描いた丸の中に置く。
    ::after で描くので、本文をコピーしても印が混ざらない。 */
-.iiyaku-icon {
+.iiyaku-icon[data-iiyaku-owner] {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -34,33 +34,33 @@
   transition: opacity 0.15s ease, background-color 0.15s ease;
 }
 
-.iiyaku-icon::after {
+.iiyaku-icon[data-iiyaku-owner]::after {
   content: "i";
   /* Windows は Times New Roman / Georgia、macOS は Georgia / Hiragino Mincho、
      Linux は Liberation Serif。どれかは必ずあるので、印の "i" は豆腐にならない。 */
   font-family: Georgia, "Times New Roman", "Liberation Serif", "Hiragino Mincho ProN", serif;
 }
 
-.iiyaku-icon:hover,
-.iiyaku-icon:focus-visible {
+.iiyaku-icon[data-iiyaku-owner]:hover,
+.iiyaku-icon[data-iiyaku-owner]:focus-visible {
   opacity: 1;
   background-color: currentColor;
 }
 
-.iiyaku-icon:hover::after,
-.iiyaku-icon:focus-visible::after {
+.iiyaku-icon[data-iiyaku-owner]:hover::after,
+.iiyaku-icon[data-iiyaku-owner]:focus-visible::after {
   color: var(--bgColor-default, var(--color-canvas-default, #ffffff));
 }
 
 /* キーボードで止まったことが分かるようにする。マウス操作では出さない。 */
-.iiyaku-icon:focus-visible {
+.iiyaku-icon[data-iiyaku-owner]:focus-visible {
   outline: 2px solid currentColor;
   outline-offset: 2px;
 }
 
 /* OFF のとき。印を DOM から消さずに隠すだけにしている（消すと ON へ戻したときに
    付き直さない語が出る）。display:none なので Tab の順路からも外れる。 */
-.iiyaku-off .iiyaku-icon {
+.iiyaku-off .iiyaku-icon[data-iiyaku-owner] {
   display: none;
 }
 
@@ -157,12 +157,12 @@
 
 /* GitHub の変数が取れない場合の受け皿。OS がダークのときだけ効く。 */
 @media (prefers-color-scheme: dark) {
-  .iiyaku-icon {
+  .iiyaku-icon[data-iiyaku-owner] {
     color: var(--fgColor-accent, var(--color-accent-fg, #60a5fa));
   }
 
-  .iiyaku-icon:hover::after,
-  .iiyaku-icon:focus-visible::after {
+  .iiyaku-icon[data-iiyaku-owner]:hover::after,
+  .iiyaku-icon[data-iiyaku-owner]:focus-visible::after {
     color: var(--bgColor-default, var(--color-canvas-default, #0d1117));
   }
 
@@ -179,7 +179,7 @@
 
 /* 動きを減らす設定にしている人には、装飾のための変化を出さない。 */
 @media (prefers-reduced-motion: reduce) {
-  .iiyaku-icon,
+  .iiyaku-icon[data-iiyaku-owner],
   .iiyaku-toggle {
     transition: none;
   }

@@ -1292,9 +1292,15 @@
   function startRuntime() {
     if (observing) return;
     observing = true;
-    // OFF のあいだにページが変わっていることがある。先に記録を見え方まで
-    // 確かめ直してから走査する（隠された印を「説明済み」として残さない）。
-    withRenderCache(() => { if (reconcileGlosses(true)) generation++; });
+    // OFF のあいだは見張っていないので、その間の複製はそのまま残っている。
+    // **走査より前に、ページ全体から複製を取り除く**（実測: OFF 中に注記済みの
+    // 領域を複製して ON へ戻すと、正規の印と複製の印が2つ並んだ）。
+    withRenderCache(() => {
+      sanitizeClones(document.body);
+      // OFF のあいだにページが変わっていることがある。先に記録を見え方まで
+      // 確かめ直してから走査する（隠された印を「説明済み」として残さない）。
+      if (reconcileGlosses(true)) generation++;
+    });
     scan(document.body);
     observer.observe(document.body, OBSERVE_OPTS);
     if (document.head) headObserver.observe(document.head, HEAD_OPTS);

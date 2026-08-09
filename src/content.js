@@ -222,8 +222,15 @@
 
   // circle() / ellipse() は半径が 0 なら面積も 0。
   // 中心（at …）は面積に関係しないので落とす。
+  //
+  // 半径にはキーワードも書ける（closest-side / farthest-side）。実測の computed 値は
+  // `ellipse(0px closest-side)` のように**数値とキーワードが混ざる**。混在を
+  // 「解けない」として捨てていたため、全面が隠れているのに可視と答えていた。
+  // キーワード側は 0 ではない（辺までの距離）ので、**片方が 0 なら面積は 0**。
+  const SHAPE_KEYWORD = /^(closest|farthest)-side$/;
   function shapeClipsAll(v) {
     const zero = s => s === '0' || /^0(\.0+)?(px|%)$/.test(s);
+    const known = s => zero(s) || LEN_PX.test(s) || LEN_PCT.test(s) || SHAPE_KEYWORD.test(s);
     let m = /^circle\((.*)\)$/.exec(v);
     if (m) {
       const r = m[1].split(/\s+at\s+/)[0].trim();
@@ -233,9 +240,43 @@
     if (m) {
       const rr = m[1].split(/\s+at\s+/)[0].trim().split(/\s+/).filter(Boolean);
       // 縦横どちらかが 0 なら、その時点で面積は 0
-      return rr.length > 0 && rr.length <= 2 && rr.some(zero) && rr.every(x => zero(x) || LEN_PX.test(x) || LEN_PCT.test(x));
+      return rr.length > 0 && rr.length <= 2 && rr.some(zero) && rr.every(known);
     }
     return false;
+  }
+
+  // clip-path は `<basic-shape> || <geometry-box>` を取る。実測の computed 値は
+  // `inset(50%) content-box` のように**参照ボックスが後ろに付く**。これを外して
+  // 形だけを解き、百分率はその参照ボックスの実寸に対して解決する
+  // （content-box の 50% は、padding を除いた内側の 50%）。
+  // 付いていなければ border-box が既定。
+  const GEOMETRY_BOX = /\s+(border-box|padding-box|content-box|margin-box|fill-box|stroke-box|view-box)$/;
+
+  function splitGeometryBox(v) {
+    const m = GEOMETRY_BOX.exec(v);
+    return m ? { shape: v.slice(0, m.index).trim(), box: m[1] } : { shape: v, box: 'border-box' };
+  }
+
+  // 参照ボックスの実寸。取れなければ null を返す（＝箱の大きさを使わない判定へ）。
+  const px = s => { const n = parseFloat(s); return Number.isFinite(n) ? n : 0; };
+  function refBoxSize(el, cs, box) {
+    const bw = el.offsetWidth, bh = el.offsetHeight;   // border box
+    if (!(bw > 0 && bh > 0)) return null;
+    if (box === 'border-box' || box === 'view-box' || box === 'stroke-box') return { w: bw, h: bh };
+    const bl = px(cs.borderLeftWidth), br = px(cs.borderRightWidth);
+    const bt = px(cs.borderTopWidth), bb = px(cs.borderBottomWidth);
+    if (box === 'padding-box') return { w: bw - bl - br, h: bh - bt - bb };
+    if (box === 'content-box' || box === 'fill-box') {
+      const pl = px(cs.paddingLeft), pr = px(cs.paddingRight);
+      const pt = px(cs.paddingTop), pb = px(cs.paddingBottom);
+      return { w: bw - bl - br - pl - pr, h: bh - bt - bb - pt - pb };
+    }
+    if (box === 'margin-box') {
+      const ml = px(cs.marginLeft), mr = px(cs.marginRight);
+      const mt = px(cs.marginTop), mb = px(cs.marginBottom);
+      return { w: bw + ml + mr, h: bh + mt + mb };
+    }
+    return { w: bw, h: bh };
   }
 
   let clipCache = null;   // 走査1回のあいだだけ有効
@@ -263,8 +304,12 @@
     const path = cs.clipPath && cs.clipPath !== 'none' ? cs.clipPath.trim() : '';
     if (clip || path) {
       // 1px 四方まで潰したうえで切り取る書き方（読み上げ専用の定番）か、
-      // 面積が 0 になる書き方か。inset は箱の寸法へ換算して面積で決める。
-      v = tiny || rectClipsAll(clip) || insetClipsAll(path, bw, bh) || shapeClipsAll(path);
+      // 面積が 0 になる書き方か。inset は参照ボックスの実寸へ換算して面積で決める。
+      const { shape, box } = splitGeometryBox(path);
+      const ref = path ? refBoxSize(n, cs, box) : null;
+      v = tiny || rectClipsAll(clip)
+        || insetClipsAll(shape, ref ? ref.w : null, ref ? ref.h : null)
+        || shapeClipsAll(shape);
     }
     if (clipCache) clipCache.set(n, v);
     return v;

@@ -459,6 +459,54 @@ export const CONVERGE_PAGE = `<!doctype html><html lang="en"><head><meta charset
   <div id="cv-sink"></div>
 </body></html>`;
 
+/* 見え方を変える合図が、DOM の変更として出ないもの。
+   属性の絞り込み・子の追加・CSS の遷移・media query・head の stylesheet。 */
+export const SIGNALS_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>signals</title>
+<style>
+  [data-state=closed]{display:none}
+  #has-box:has(.hider){display:none}
+  #checked-box:has(#toggle:checked){display:none}
+  #fade{opacity:1;transition:opacity .08s linear}
+  #fade.gone{opacity:0}
+  @media(min-width:700px){#wide{display:block}#narrow{display:none}}
+  @media(max-width:699px){#wide{display:none}#narrow{display:block}}
+</style></head><body>
+  <!-- 属性の絞り込みでは拾えないもの -->
+  <label id="lab" for="ctrl">branch</label><input id="ctrl"><p id="lab-later">A branch later.</p>
+  <p id="ds" data-state="open">A commit first.</p><p id="ds-later">A commit later.</p>
+  <div id="checked-box"><input id="toggle" type="checkbox">A merge first.</div>
+  <p id="checked-later">A merge later.</p>
+
+  <!-- 子を足すだけで祖先が消える -->
+  <div id="has-box">A rebase first.</div><p id="has-later">A rebase later.</p>
+
+  <!-- CSS の遷移 -->
+  <p id="fade">A revert first.</p><p id="fade-later">A revert later.</p>
+
+  <!-- 画面幅で入れ替わる -->
+  <p id="wide">A fetch wide.</p><p id="narrow">A fetch narrow.</p>
+
+  <!-- head の stylesheet で隠される -->
+  <p id="hs">A webhook first.</p><p id="hs-later">A webhook later.</p>
+
+  <div id="sink"></div>
+</body></html>`;
+
+/* 所有と自己変更。ページ側が同じ class を使う／複製する／こちらの印へ手を出す。
+   と、切り取りの文法（参照ボックス・キーワード半径）。 */
+export const OWNERSHIP_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>ownership</title>
+<style>#clip-box{box-sizing:border-box;width:100px;height:100px;padding:40px;clip-path:inset(50%) content-box}</style>
+</head><body>
+  <p id="orig">A branch first.</p><p id="orig-later">A branch later.</p>
+  <p id="hide-me">A commit first.</p><p id="hide-later">A commit later.</p>
+  <div id="clip-box">A webhook hidden.</div><p id="clip-later">A webhook later.</p>
+  <div id="ellipse" style="width:100px;height:100px;clip-path:ellipse(0 closest-side)">A topic hidden.</div>
+  <p id="ellipse-later">A topic later.</p>
+  <div id="sink"></div>
+</body></html>`;
+
 export function startTestServer(html = REPO_PAGE) {
   const { key, cert } = makeCert();
   const server = https.createServer({ key, cert }, (req, res) => {

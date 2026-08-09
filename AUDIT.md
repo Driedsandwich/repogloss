@@ -1,4 +1,4 @@
-# 監査のための資料（第10回監査用）
+# 監査のための資料（第11回監査用）
 
 このファイルは、外部監査を受けるための入口です。**このリポジトリだけを読めば監査に必要な情報が揃う**ようにしてあります。
 
@@ -12,49 +12,54 @@ RepoGloss は、GitHub の画面に出てくる英語のうち Git / GitHub 固�
 
 | 項目 | 値 |
 |---|---|
-| **監査対象** | **タグ `v1.8.8`** = コミット `6c1351a5b98539a61e854310503fd92ad59a7d24`（PR #18 の merge commit） |
-| 直前の版 | `v1.8.7` = コミット `308bf038efe18f857bf5bb655bce65b991712a93`（**第9回監査の指摘により提出しない**） |
-| 基点コミット | `c3d06fbc210a6349fa28d1be99508267011624c8`（`main`。ここからの差分が今回の変更） |
+| **監査対象** | **v1.8.9 候補（作業ツリー）。まだ commit も tag もしていない** |
+| 直前の版 | `v1.8.8` = コミット `6c1351a5b98539a61e854310503fd92ad59a7d24`（**第10回監査の指摘により提出しない**） |
+| 基点コミット | `041ed1e3a0283b98d274bbc7c263cb8cc620b2d3`（`main`。ここからの差分が今回の変更） |
 | 現在の既定ブランチ | `main` |
-| Manifest | v1.8.8 / Manifest V3 |
+| Manifest | v1.8.9 / Manifest V3 |
 | **最低の Chrome** | **105**（`minimum_chrome_version`。v1.8.6 で追加） |
 | Chrome API 権限 | `storage` のみ |
 | サイトアクセス | `https://github.com/*` |
 | `host_permissions` | 宣言なし |
 | 実行されるコード | [`src/matcher.js`](src/matcher.js) と [`src/content.js`](src/content.js) の2本（同梱のみ・リモートコードなし） |
 | 外部依存パッケージ | **なし**（`package.json` は検証用の scripts だけ。ZIP 生成も Node 標準の `zlib` で自作） |
-| ストア公開中の版 | **v1.7.1**（v1.8.0〜v1.8.8 はいずれも未提出） |
+| ストア公開中の版 | **v1.7.1**（v1.8.0〜v1.8.9 はいずれも未提出） |
 
 差分は次のコマンドで確認できます。
 
 ```sh
-git diff --name-only v1.8.7 v1.8.8     # 直前の版との差分
+git diff --name-only v1.8.8            # 作業ツリーと、直前の版との差分
 # → 配布13ファイルのうち manifest.json・src/content.js・README.md・DESIGN.md・
 #    PRIVACY.md が変わっている（辞書・styles.css・matcher.js・アイコン・LICENSE は無変更）
 # → ほかに scripts/ と tests/ と docs/（配布物には入らない）
 ```
 
-**タグは打ってありますが、ウェブストアへは提出していません。** 監査はタグ `v1.8.8` の内容に対して行ってください。
+**まだ commit していないので、タグも提出候補の ZIP もありません。** 監査は作業ツリーの内容に対して行ってください。
 
-### 1-1. 提出候補
+### 1-1. 提出候補（まだ作っていない）
 
-**v1.8.8 の提出候補 ZIP は、CI が作ったものだけです。** 手元で作ったものは `--release` 検査で落ちます（実測。ローカルの HEAD がタグと違うだけでも落ちます）。
+**v1.8.9 の提出候補 ZIP は、この時点では存在しません。** commit・push・tag をしていないため CI が動いておらず、CI が作る `repogloss-store-zip` もありません。提出するのは、いつも CI が作ったものだけです（手元で作ったものは `--release` 検査で落ちます）。
 
 現在版の事実を、機械で読める形で1か所にまとめます（**ここが正本**。他の節はここを引用します）。
 
 ```yaml
-version:            1.8.8
-state:              tagged             # commit / tag は実施。release / store submission は未実施
-base_commit:        c3d06fbc210a6349fa28d1be99508267011624c8
-commit:             6c1351a5b98539a61e854310503fd92ad59a7d24
-tag:                v1.8.8
-candidate_zip:      repogloss-1.8.8.zip
-candidate_bytes:    97563
-candidate_sha256:   d3a2786ba0f87ac51a75bcb6e9186a6ae3e86ea93ef804905da7fefebcf9bfac
-content_sha256:     6b900e94ca8d1d27742298c5f7e3b64e5c993a7dfa14ff54f25897752e0ddd49
-combined_sha256:    7524616ead29a77ef876d1f6660222d88af93bcfec9580b42d4682fc77c16e2b
-workflow_run:       31245180346
+version:            1.8.9
+state:              uncommitted        # commit / tag / release / store submission いずれも未実施
+base_commit:        041ed1e3a0283b98d274bbc7c263cb8cc620b2d3
+tag:                null
+candidate_zip:      null
+candidate_bytes:    null
+candidate_sha256:   null
+content_sha256:     null
+combined_sha256:    null
+workflow_run:       null
 superseded:
+  - version: 1.8.8
+    tag: v1.8.8
+    commit: 6c1351a5b98539a61e854310503fd92ad59a7d24
+    zip: repogloss-1.8.8.zip
+    sha256: d3a2786ba0f87ac51a75bcb6e9186a6ae3e86ea93ef804905da7fefebcf9bfac
+    reason: 第10回監査の指摘により提出しない
   - version: 1.8.7
     tag: v1.8.7
     commit: 308bf038efe18f857bf5bb655bce65b991712a93
@@ -83,28 +88,27 @@ npm run package:verify-zip                   # 中身と身元の記録を検査
 
 ---
 
-## 2. 今回（v1.8.8）で直したこと
+## 2. 今回（v1.8.9）で直したこと
 
-第9回監査の指摘 **P1 4件・P2 4件**への対応。詳細と証拠は [`docs/audit/v1.8.8-changes.md`](docs/audit/v1.8.8-changes.md)。
+第10回監査の指摘 **P1 3件・P2 4件**への対応。詳細と証拠は [`docs/audit/v1.8.9-changes.md`](docs/audit/v1.8.9-changes.md)。
 
 | ID | 内容 | 主な変更箇所 |
 |---|---|---|
-| RG-9-01 | 印が不可視・無効になっても退役せず、**読める同じ語**が抑止されていた | [`src/content.js`](src/content.js) `isUsable` / `reconcileGlosses(deep)` / 属性の監視 |
-| RG-9-02 | 語のうしろに文字が増えても「整合している」と誤認していた | `isCoherent`（`termNode.length === splitOffset`） |
-| RG-9-03 | `label` の対応先が変わっても、古い入口を正式なものとして保持していた | `isUsable`（`resolvePlacement` の再解決）／`releaseTriggerIfUnused` |
-| RG-9-04 | 注記後に保護領域へ移った本文を、除外判定より前に読んでいた | `isCoherent` の先頭で `closest(SKIP)` |
-| RG-9-05 | 所有の判定が class と属性の値に依存し、ページ側の要素を消す・横取りする | `data-iiyaku-owner` / `ownedIconAt` / 内部の関連付け表 |
-| RG-9-06 | `characterData` を見ていないため、語の書き換え直後は誤った印が残った | `MutationObserver` の設定 |
-| RG-9-07 | 面積0の `clip-path` を複数取りこぼしていた | `insetClipsAll`（箱の寸法へ換算）／`shapeClipsAll` |
-| RG-9-08 | 監査入口が名乗る検査件数が古いままだった | `AUDIT.md` ＋[`scripts/verify.mjs`](scripts/verify.mjs) の件数突き合わせ |
+| RG-10-01 | 見張る属性を絞り込んでいたため、`type`・任意の `data-*`・`checked` で隠されても気づかない | 属性の絞り込みを撤廃。操作イベントと暇なときの確認を追加 |
+| RG-10-02 | 子が増えただけでも祖先が消える（`:has()`）のに、追加は安全とみなしていた | childList でも見え方を確かめ直す |
+| RG-10-03 | CSS の遷移・画面幅の変化・`<head>` の stylesheet を合図にしていない | 共通の予約口へ集約（`transitionend` / `resize` / head の監視） |
+| RG-10-04 | OFF 中の複製が残る。合言葉を消した複製が印として描かれる | ON 復帰時に全体を後始末。CSS でも合言葉を要求 |
+| RG-10-05 | 所有だけで「自分の変更」と決めていた | 自分が書く「要素＋属性名＋値」の予定表と完全一致だけを除外 |
+| RG-10-06 | 参照ボックス付き・キーワード半径の `clip-path` を解けない | `<geometry-box>` を分離し、実寸へ換算。`ellipse` のキーワードに対応 |
+| RG-10-07 | 大規模な属性切替で v1.8.7 より一貫して遅い | 全体走査と変更箇所の走査を重ねない。辞書に当たらない節点を処理済みにする |
 
-**8件すべて、実物と一致することを実測してから直しました。** 通算9巡で 77 件の指摘があり、事実と異なるものは 0 件です。
+**7件すべて、実物と一致することを実測してから直しました。** 通算10巡で 84 件の指摘があり、事実と異なるものは 0 件です。
 
-**RG-9-08 は、こちらで数え直したら記載が1か所ではなく2か所ありました**（§10 の「158項目」と §4-1 の「166項目」）。件数を人が書き写す限り必ずずれるので、**verify 自身の実件数と文書の記載を突き合わせる検査**を足しました。
+### 2-0. 直前（v1.8.8）で直したこと（履歴）
 
-> **第8回監査の指摘のうち1件は撤回されました。** 「`AUDIT.md` に崩れた表が残る」は、第9回監査でも列数の不一致を再現できず、**根拠不足として撤回**されています（こちらの実測でも、列数の合わない行は0件でした）。RG-8-05 の他の4点（最終更新・準備段階の記述・性能節の重複・配布内リンク切れ）は実在したため、対応はそのまま有効です。
+第9回監査の指摘 P1 4件・P2 4件への対応（[`docs/audit/v1.8.8-changes.md`](docs/audit/v1.8.8-changes.md)）。記録の「形が整っている」と「まだ使える」を分け、`characterData` と見え方に関わる属性を見張り、語の末尾を固定し、入口の意味を解き直し、所有を内部の表へ移し、切り取りを箱の寸法で判定するようにした。
 
-### 2-0. 直前（v1.8.7）で直したこと（履歴）
+### 2-0b. さらにその前（v1.8.7）で直したこと（履歴）
 
 第8回監査の指摘 **P1 3件・P2 2件**への対応です。詳細と証拠は [`docs/audit/v1.8.7-changes.md`](docs/audit/v1.8.7-changes.md) にあります。
 
@@ -188,50 +192,40 @@ v1.8.2 と v1.8.3 で、**注記される語の集合は3ページとも完全�
 
 ### 4-1. 手元（macOS 26 / Google Chrome 151.0.7922.76 / Node.js v22.22.3・2026-08-08）
 
-下は手元での実行結果です（CI の結果は §4-2）。
+**commit していないため CI は回っていません。** 下は手元での実行結果です。
 
 | command | exit | 結果 |
 |---|---:|---|
 | `node --check src/matcher.js` / `src/content.js` | 0 | 構文 OK |
-| `npm test` | 0 | 単体 **63件**全成功 / 構成検査 **200項目**・不一致0（辞書61語・version 1.8.8） |
-| `npm run test:e2e` | 0 | **98件**全成功（v1.8.7 は 75件） |
+| `npm test` | 0 | 単体 **63件**全成功 / 構成検査 **209項目**・不一致0（辞書61語・version 1.8.9） |
+| `npm run test:e2e` | 0 | **112件**全成功（v1.8.8 は 98件） |
 | `npm run package:stage` / `:verify` | 0 | 13ファイル一致 |
 | `npm run package:zip -- --allow-uncommitted` / `:verify-zip` | 0 | 13ファイル（名前に `UNCOMMITTED` が入る。**提出候補ではない**） |
 | `npm run package:verify-zip -- --release` | **1** | **意図どおり落ちる**（手元ビルドは提出候補として通さない） |
 
 ### 4-1b. 性能（2026-08-08）
 
-用語の多いページの写しで、v1.8.7 と**交互に**測りました（ページの中で計測。大きな領域を差し込んだときの1バッチ分で、初期走査と同じ経路を通ります）。**順序による偏りを外すため、順番を入れ替えた対照も取っています。**
+監査が指摘した形（2,500段落の祖先 class を非表示／再表示）で、v1.8.7・v1.8.8・v1.8.9 を**実行順を交互に反転して4組**測りました（ページの中で計測。タスク境界まで待って、拡張の処理を含める）。
 
-| 順序 | v1.8.7 中央値 | v1.8.8 中央値 | 組ごとの差の中央値 | v1.8.8 が遅かった組 |
-|---|---:|---:|---:|---:|
-| v1.8.7 が先 | 26.9 ms（SD 7.3） | **21.6 ms**（SD 2.7） | **−2.4 ms** | 2 / 8 |
-| v1.8.8 が先 | 23.1 ms（SD 3.1） | **22.0 ms**（SD 1.7） | **−2.6 ms** | 0 / 8 |
+| 版 | 中央値 | 各組（ms） |
+|---|---:|---|
+| v1.8.7 | 16.5 ms | 20.3 / 17.2 / 15.1 / 15.7 |
+| v1.8.8 | 26.8 ms | 26.4 / 26.9 / 26.7 / 26.9 |
+| **v1.8.9** | **21.6 ms** | 21.8 / 21.0 / 21.5 / 21.7 |
 
-**合計16組のうち、v1.8.8 が遅かったのは2組。両方の順序で差の向きが同じ**なので、順序の偏りではありません。速くなったのは、除外領域の判定（25個ほどの選択子を持つ `closest`）を走査ごとに覚えるようにしたためで、これは v1.8.7 には無かった分です。
+**v1.8.9 は v1.8.8 より4組すべてで速い**（差 −4.6 / −5.9 / −5.2 / −5.2 ms）。50ms を超える long task は3版とも 0 件でした。
 
-退役と選び直しは、属性・文字・削除を混ぜた**50往復で 2.5〜3.1 秒**（単独実行3回：3,145 / 2,529 / 2,654 ms。各往復に 40ms の待ちを入れているので、処理そのものは十分に軽い）。同時に存在する印は常に **0 か 1** で、変更を止めると数が動かなくなります。
+> **v1.8.7 との比較は同じ土俵ではありません。** v1.8.7 はこの属性変更に**反応しない**（記録を確かめ直さない）ので、その分だけ速く見えます。仕事をしたうえでの比較は v1.8.8 対 v1.8.9 です。
+>
+> **計測を一度間違えました。** マイクロタスクを1つだけ待つ形にしたところ、v1.8.9 の予約がさらに後のマイクロタスクで走るため **0ms** と出ました。タスク境界（`setTimeout 0`）まで待つ形へ直しています。
 
-> **途中で二度、実際に遅くなっていました。** ①入口の解き直しを「語が見つかるたび」に走らせて **24.2 → 33.7 ms（10組すべてで遅い）** ②記録ごとに除外判定を呼び足して **+1.4 / +3.4 ms（16組中14組で遅い）**。①は結果を走査ごとに覚えることで、②は除外判定そのものを走査ごとに覚えることで解消しました。**②は、静かな状態で測り直すまで「差は0」と読み違えていました**（最初の計測はばらつきが大きく、分解能が足りていませんでした）。
+### 4-2. CI — **今回は未実行**
 
-> **計測そのものを一度間違えました。** 最初は DOM を差し込む同期部分だけを測っており、**拡張の処理が入っていませんでした**（3.5 ms 前後という小さすぎる値で気づきました）。`MutationObserver` の callback はマイクロタスクとして走るので、差し込んだあとにマイクロタスクを1つ挟んでから止めています。
+commit・push をしていないため、次は**確認できていません**。
 
-### 4-2. CI（2026-08-08 実測）
-
-タグ `v1.8.8` のコミット（`6c1351a5`）に対する `main` の run [`31245180346`](https://github.com/Driedsandwich/repogloss/actions/runs/31245180346) は **8ジョブすべて success** です。
-
-| ジョブ | 結果 |
-|---|---|
-| `verify` | 単体 **63件**全成功 / 構成検査 **196項目**・不一致0（version 1.8.8）。**当時**の値で、現在の `main` は 200 項目 |
-| `e2e`（ubuntu・実 Chrome） | **98件**全成功 |
-| `e2e-windows`（実 Chrome） | **98件**全成功 |
-| `package-hash` ×3（ubuntu / macos / windows） | 13ファイル / 223,803 バイト・合算 `7524616e…` |
-| `hash-compare` | **3 OS すべてで同じ**（`7524616e…`）。手元 macOS を入れて4者一致 |
-| `release-zip` | 成果物 `repogloss-store-zip` を生成。中の `--release` 検査も合格 |
-
-PR #18 の run [`31245016400`](https://github.com/Driedsandwich/repogloss/actions/runs/31245016400) も同じ内容で全ジョブ success（`release-zip` は仕様どおり skipped）。
-
-**この節はタグより後に書いています。** タグの中身に「自分の CI がどうだったか」は書けない（書けばコミットが変わり、そのコミットの CI はまだ無い）ため、`main` 側で記録しています。
+- Linux / Windows / macOS 3 OS での実行
+- 3 OS 間の配布物ハッシュ一致（`hash-compare`）
+- 提出候補 ZIP の生成（`release-zip`）と、その `--release` 検査
 
 #### 4-2-h. 直前の版で確かめたこと（履歴）
 
@@ -322,7 +316,7 @@ E2E は `--remote-debugging-pipe` と `--enable-unsafe-extension-debugging` を�
 
 ---
 
-## 6. 権限・通信・保存データ（v1.8.7 → v1.8.8 の差分）
+## 6. 権限・通信・保存データ（v1.8.8 → v1.8.9 の差分）
 
 ```text
 permissions:                 ['storage'] → ['storage']（差分なし）
@@ -413,12 +407,12 @@ web_accessible_resources:    差分なし（locales/dict.json のみ）
 | 配布物の検査（壊した ZIP を9種ぶつける） | [`tests/package.test.js`](tests/package.test.js) |
 | 提出物の身元の schema と、その検査（28件） | [`scripts/provenance.mjs`](scripts/provenance.mjs) / [`tests/provenance.test.js`](tests/provenance.test.js) |
 | 配布物の一覧（唯一の正本） | [`scripts/package-files.mjs`](scripts/package-files.mjs) |
-| 構成と文書の整合検査（200項目） | [`scripts/verify.mjs`](scripts/verify.mjs) |
+| 構成と文書の整合検査（209項目） | [`scripts/verify.mjs`](scripts/verify.mjs) |
 | ZIP の読み書き（自作） | [`scripts/zip.mjs`](scripts/zip.mjs) |
 | ZIP の検査 | [`scripts/verify-zip.mjs`](scripts/verify-zip.mjs) |
 | CI | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
 | ストア掲載情報と提出記録 | [`STORE_LISTING.md`](STORE_LISTING.md) |
-| **今回の変更の詳細と証拠** | [`docs/audit/v1.8.8-changes.md`](docs/audit/v1.8.8-changes.md) |
+| **今回の変更の詳細と証拠** | [`docs/audit/v1.8.9-changes.md`](docs/audit/v1.8.9-changes.md) |
 
 ---
 

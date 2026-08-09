@@ -1201,6 +1201,7 @@
   let batchScheduled = false;
   let wantDeep = false;                 // 見え方まで確かめ直すか
   let pendingRoots = new Set();         // 走査し直す場所
+  let inBatch = false;                  // まとめ直しの最中（自分の変更で再入しない）
 
   function schedule({ deep = false, root = null } = {}) {
     if (deep) wantDeep = true;
@@ -1220,42 +1221,42 @@
     pendingRoots = new Set();
     if (!observing) return;
 
-    withRenderCache(() => {
-      // ① 記録と DOM の食い違いを片づける。deep なら見え方・到達性・入口の意味まで。
-      let released = reconcileGlosses(deep);
+    inBatch = true;
+    try {
+      withRenderCache(() => {
+        // ① 記録と DOM の食い違いを片づける。deep なら見え方・到達性・入口の意味まで。
+        let released = reconcileGlosses(deep);
 
-      // ② GitHub はページを読み直さずに画面を差し替えることがある。
-      let full = false;
-      if (location.href !== lastUrl) {
-        lastUrl = location.href;
-        hideTip();
-        if (!deep) released = released || reconcileGlosses(true);
-        full = true;
-      }
-      // ③ 正規の印が居なくなったなら、ページ全体から選び直す。
-      if (released) full = true;
-      if (full) {
-        // 全体を走るので、変更のあった場所を別に走る必要はない
-        // （同じ枝を二度歩かない。大きな領域の属性が変わったときに効く）。
-        if (released) reselect();      // generation++ ＋ 全体走査
-        else scan(document.body);
-      } else {
-        // 入れ子になった場所は、いちばん外側だけを走ればよい
-        for (const n of roots) {
-          let covered = false;
-          for (let p = n.parentNode; p && !covered; p = p.parentNode) if (roots.has(p)) covered = true;
-          if (!covered) scanInner(n);
+        // ② GitHub はページを読み直さずに画面を差し替えることがある。
+        //    別のページに移ったら、DOM がそのままでも見え方は変わりうる。
+        let full = false;
+        if (location.href !== lastUrl) {
+          lastUrl = location.href;
+          hideTip();
+          if (!deep) released = released || reconcileGlosses(true);
+          full = true;
         }
-      }
-    });
-  }
+        // ③ 正規の印が居なくなったなら、ページ全体から選び直す。
+        //    既にページにある候補へ引き継ぐには、世代を進めるしかない。
+        if (released) full = true;
 
-  // 自分が出し入れするもの（印・吹き出し・切替ボタン）か
-  function isOurNode(node) {
-    const el = node && (node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement);
-    if (!el) return false;
-    if (ownedIconAt(el)) return true;
-    return !!el.closest('.iiyaku-tooltip, .iiyaku-toggle');
+        if (full) {
+          // 全体を走るので、変更のあった場所を別に走る必要はない
+          // （同じ枝を二度歩かない。大きな領域の属性が変わったときに効く）。
+          if (released) reselect();      // generation++ ＋ 全体走査
+          else scan(document.body);
+        } else {
+          // 入れ子になった場所は、いちばん外側だけを走ればよい
+          for (const n of roots) {
+            let covered = false;
+            for (let p = n.parentNode; p && !covered; p = p.parentNode) if (roots.has(p)) covered = true;
+            if (!covered) scanInner(n);
+          }
+        }
+      });
+    } finally {
+      inBatch = false;
+    }
   }
 
   // その変更は、自分が起こしたものか。
@@ -1270,6 +1271,14 @@
       return isExpectedAttrChange(t, mu.attributeName);
     }
     return false;
+  }
+
+  // 自分が出し入れするもの（印・吹き出し・切替ボタン）か
+  function isOurNode(node) {
+    const el = node && (node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement);
+    if (!el) return false;
+    if (ownedIconAt(el)) return true;
+    return !!el.closest('.iiyaku-tooltip, .iiyaku-toggle');
   }
 
   const observer = new MutationObserver(muts => {
@@ -1296,6 +1305,7 @@
       }
       // childList。**増えただけでも見え方は変わりうる**——`:has()` や構造疑似クラスを
       // 使えば、子を1つ足すだけで祖先が display:none になる（実測で再現）。
+      // 「追加だけなら安全」という前提は置けない。
       for (const n of mu.addedNodes) { if (!isOurNode(n)) { deep = true; } roots.push(n); }
       for (const n of mu.removedNodes) if (!isOurNode(n)) deep = true;
     }
@@ -1307,10 +1317,11 @@
   const OBSERVE_OPTS = {
     childList: true, subtree: true,
     characterData: true,               // 語そのものの書き換えに、その場で気づく
-    attributes: true                   // 属性は絞り込まない（→ 下のコメント）
+    attributes: true                   // 属性は絞り込まない（→ 上のコメント）
   };
 
   // `<head>` の stylesheet が変わると、body には何の変更も出ないまま見え方が変わる。
+  // ここは記録の確認だけでよいので、走査し直す場所は渡さない。
   const headObserver = new MutationObserver(muts => {
     for (const mu of muts) if (!isSelfMutation(mu)) { schedule({ deep: true }); return; }
   });

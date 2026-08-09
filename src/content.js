@@ -446,7 +446,13 @@
     if (!v || !v.trim()) return false;
     // 辞書に当たらないノードで可視性の計算をしないよう、正規表現を先に通す。
     // 逆順にすると全テキストノードでレイアウト計算が走り、ページが重くなる。
-    if (!matcher.test(v)) return false;
+    //
+    // 当たらなかった節点は**処理済みにする**。文字が変わらない限り答えは同じで、
+    // 走査し直すたびに `closest(SKIP)` と正規表現を掛け直す理由が無い。文字が
+    // 変わったときは characterData の合図で記録を消す（→ セクション8）。
+    // 2,500段落の祖先を隠す／戻すを繰り返す試験では、ここが費用の大半だった。
+    // 可視でないだけの節点は**印を付けない**が処理済みにもしない（あとで見えたら注記する）。
+    if (!matcher.test(v)) { markHandled(node); return false; }
     return isVisibleOccurrence(el);
   }
 
@@ -1229,14 +1235,17 @@
       // ③ 正規の印が居なくなったなら、ページ全体から選び直す。
       if (released) full = true;
       if (full) {
+        // 全体を走るので、変更のあった場所を別に走る必要はない
+        // （同じ枝を二度歩かない。大きな領域の属性が変わったときに効く）。
         if (released) reselect();      // generation++ ＋ 全体走査
         else scan(document.body);
-      }
-      // 入れ子になった場所は、いちばん外側だけを走ればよい
-      for (const n of roots) {
-        let covered = false;
-        for (let p = n.parentNode; p && !covered; p = p.parentNode) if (roots.has(p)) covered = true;
-        if (!covered) scanInner(n);
+      } else {
+        // 入れ子になった場所は、いちばん外側だけを走ればよい
+        for (const n of roots) {
+          let covered = false;
+          for (let p = n.parentNode; p && !covered; p = p.parentNode) if (roots.has(p)) covered = true;
+          if (!covered) scanInner(n);
+        }
       }
     });
   }

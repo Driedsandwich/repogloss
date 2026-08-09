@@ -522,7 +522,7 @@
       triggerIdOf.set(trigger, id);
       // ページ側が同じ名前の属性を既に持っていたら、上書きしない。
       // 引き当ては内部の表なので、書けなくても動作は変わらない。
-      if (!trigger.hasAttribute(ENTRANCE_ATTR)) trigger.setAttribute(ENTRANCE_ATTR, id);
+      if (!trigger.hasAttribute(ENTRANCE_ATTR)) setOwnAttr(trigger, ENTRANCE_ATTR, id);
     }
     ownedTriggers.add(trigger);
     return id;
@@ -538,7 +538,7 @@
     triggerIdOf.delete(trigger);
     if (trigger.isConnected &&
         (trigger.getAttribute(ENTRANCE_ATTR) || '').startsWith(UID + '-t')) {
-      trigger.removeAttribute(ENTRANCE_ATTR);
+      setOwnAttr(trigger, ENTRANCE_ATTR, null);
     }
   }
 
@@ -548,6 +548,35 @@
   // 自分が作ったものを控えておき、それ以外は自分のものとして扱わない。
   const ownedIcons = new WeakSet();
   const ownedTriggers = new WeakSet();
+
+  /* ---------- 3-1b. 自分が書いた属性の「予定表」 ---------- */
+  // 「その要素は自分のものか」と「その変更を起こしたのは自分か」は別のこと。
+  // MutationRecord に変更の主体は載らないので、所有だけで自分の変更と決めると、
+  // **ページ側が自分の印へ加えた変更まで無視する**ことになる
+  // （実測: ページが正規の印へ style="display:none" を書くと、見えない印が
+  // 「説明済み」として残り、後ろの読める語が抑止された）。
+  //
+  // そこで、自分が書くつもりの「要素 + 属性名 + 値」を控えておき、
+  // **その3つが完全に一致する変更だけ**を自分の仕業として無視する。
+  // 予定と違う値になっていたら、書いたのは自分ではない。
+  const expectedAttrs = new WeakMap();   // Element -> Map<属性名, 期待する値（null は削除）>
+
+  function setOwnAttr(el, name, value) {
+    let m = expectedAttrs.get(el);
+    if (!m) expectedAttrs.set(el, m = new Map());
+    m.set(name, value);
+    if (value === null) el.removeAttribute(name);
+    else el.setAttribute(name, value);
+  }
+
+  // その属性変更は、自分が予定したとおりのものか
+  function isExpectedAttrChange(el, name) {
+    const m = expectedAttrs.get(el);
+    if (!m || !m.has(name)) return false;
+    const want = m.get(name);
+    const now = el.getAttribute(name);
+    return want === null ? now === null : now === want;
+  }
 
   // 印の祖先をたどって、**自分が作った印**を返す。class だけで見てはいけない。
   // ページ側が `class="iiyaku-icon"` の要素を持っていることがあり、それを
@@ -580,7 +609,7 @@
     for (const t of pick(`[${ENTRANCE_ATTR}]`)) {
       if (ownedTriggers.has(t)) continue;
       if ((t.getAttribute(ENTRANCE_ATTR) || '').startsWith(UID + '-t')) {
-        t.removeAttribute(ENTRANCE_ATTR);
+        setOwnAttr(t, ENTRANCE_ATTR, null);
       }
     }
   }
@@ -608,24 +637,24 @@
     if (placement.kind === 'hosted') {
       // リンク名の後ろへ解説文が丸ごと足されるのを避けるため、装飾として扱う。
       // 説明は、入口となる要素にフォーカス／カーソルが来たときに出す。
-      icon.setAttribute('aria-hidden', 'true');
-      icon.removeAttribute('role');
-      icon.removeAttribute('aria-label');
-      icon.removeAttribute('tabindex');
+      setOwnAttr(icon, 'aria-hidden', 'true');
+      setOwnAttr(icon, 'role', null);
+      setOwnAttr(icon, 'aria-label', null);
+      setOwnAttr(icon, 'tabindex', null);
       // 引き当ては内部の表で行う。属性は「どの入口の装飾か」を人が読めるように
       // 残しているだけで、ここから入口を探すことはしない（ページ側が同じ属性を
       // 持っていても影響を受けないようにするため）。
-      icon.dataset.iiyakuFor = triggerKey(placement.trigger);
+      setOwnAttr(icon, 'data-iiyaku-for', triggerKey(placement.trigger));
       iconTrigger.set(icon, placement.trigger);
     } else {
       // 押して開閉するので、role は img ではなく button にする。
       // 名前は「どの語の解説か」だけの短いものにし、説明文そのものは
       // ツールチップ側（aria-describedby）に置く。名前と説明が同じ全文だと、
       // 読み上げで同じ内容が二度読まれる。
-      icon.setAttribute('role', 'button');
-      icon.setAttribute('aria-label', `「${icon.dataset.iiyakuTerm}」の解説`);
-      icon.setAttribute('aria-expanded', 'false');
-      icon.tabIndex = 0;
+      setOwnAttr(icon, 'role', 'button');
+      setOwnAttr(icon, 'aria-label', `「${icon.dataset.iiyakuTerm}」の解説`);
+      setOwnAttr(icon, 'aria-expanded', 'false');
+      setOwnAttr(icon, 'tabindex', '0');
     }
   }
 
@@ -643,14 +672,14 @@
   function addDescribedBy(el, token) {
     const cur = (el.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean);
     if (!cur.includes(token)) cur.push(token);
-    el.setAttribute('aria-describedby', cur.join(' '));
+    setOwnAttr(el, 'aria-describedby', cur.join(' '));
   }
 
   function removeDescribedBy(el, token) {
     const cur = (el.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean);
     const next = cur.filter(t => t !== token);
-    if (next.length) el.setAttribute('aria-describedby', next.join(' '));
-    else el.removeAttribute('aria-describedby');
+    if (next.length) setOwnAttr(el, 'aria-describedby', next.join(' '));
+    else setOwnAttr(el, 'aria-describedby', null);
   }
 
   // その入口に属する印を、内部の記録から集める。記録は辞書のキーの数（61）で
@@ -682,7 +711,7 @@
   function hideTip() {
     if (tipDescribed) { removeDescribedBy(tipDescribed, TIP_ID); tipDescribed = null; }
     for (const ic of tipIcons) {
-      if (ic.getAttribute('role') === 'button') ic.setAttribute('aria-expanded', 'false');
+      if (ic.getAttribute('role') === 'button') setOwnAttr(ic, 'aria-expanded', 'false');
     }
     if (tip) { tip.remove(); tip = null; }
     tipAnchor = null;
@@ -753,7 +782,7 @@
     tipDescribed = describe || anchor;
     addDescribedBy(tipDescribed, TIP_ID);
     for (const ic of icons) {
-      if (ic.getAttribute('role') === 'button') ic.setAttribute('aria-expanded', 'true');
+      if (ic.getAttribute('role') === 'button') setOwnAttr(ic, 'aria-expanded', 'true');
     }
     placeTip(anchor);
   }
@@ -1175,9 +1204,18 @@
     return !!el.closest('.iiyaku-tooltip, .iiyaku-toggle');
   }
 
-  // その変更は、自分が起こしたものか（この段では所有だけで見る）
+  // その変更は、自分が起こしたものか。
+  // **所有だけでは決められない**——ページ側も自分の印へ手を出せる（実測）。
+  // 属性は「予定表と完全に一致するか」で見る。予定と違えば、書いたのは自分ではない。
   function isSelfMutation(mu) {
-    return mu.type === 'attributes' && isOurNode(mu.target);
+    const t = mu.target;
+    if (mu.type === 'attributes') {
+      // 吹き出しと切替ボタンは自分だけのもので、記録を持たない。
+      // ここの位置合わせで毎回いちばん重い経路へ入らないよう、まとめて除く。
+      if (t.nodeType === Node.ELEMENT_NODE && t.closest('.iiyaku-tooltip, .iiyaku-toggle')) return true;
+      return isExpectedAttrChange(t, mu.attributeName);
+    }
+    return false;
   }
 
   const observer = new MutationObserver(muts => {
@@ -1285,7 +1323,10 @@
   // ON に直しても付き直さない語が出るため。
   function applyEnabled(next) {
     enabled = next;
-    document.documentElement.classList.toggle(OFF_CLASS, !enabled);
+    const root = document.documentElement;
+    const cls = new Set((root.getAttribute('class') || '').split(/\s+/).filter(Boolean));
+    if (enabled) cls.delete(OFF_CLASS); else cls.add(OFF_CLASS);
+    setOwnAttr(root, 'class', [...cls].join(' '));
     if (enabled) startRuntime(); else stopRuntime();
     updateToggle();
   }
@@ -1297,7 +1338,7 @@
     if (!toggleBtn) return;
     // 「意訳」とは書かない。この拡張は英語を置き換えず、説明を添えるだけのため。
     toggleBtn.textContent = enabled ? '解説 ON' : '解説 OFF';
-    toggleBtn.setAttribute('aria-pressed', String(enabled));
+    setOwnAttr(toggleBtn, 'aria-pressed', String(enabled));
     toggleBtn.title = enabled ? 'クリックすると解説の印を隠します' : 'クリックすると解説の印を表示します';
   }
 

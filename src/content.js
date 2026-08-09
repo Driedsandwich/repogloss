@@ -1109,119 +1109,150 @@
     return n;
   }
 
-  /* ---------- 8. DOM 監視 ---------- */
-  // GitHub は画面遷移でページ全体を読み直さないことがあるため、
-  // 後から差し込まれた部分も見張る。自分が挿入した断片は handled で弾く。
+  /* ---------- 8. 変更の検知と、まとめ直しの予約 ---------- */
+  // 見え方が変わる合図は、DOM の変更だけではない。CSS の遷移が終わったとき、
+  // 画面の幅が変わって media query が入れ替わったとき、`<head>` へ stylesheet が
+  // 足されたときも、いま画面に出ている印が使えなくなりうる（すべて実測で再現した）。
+  // 合図の出どころはばらばらでも、やることは同じなので、**1つの予約口**へ集める。
+  //
+  // 1回のまとめ直しでやることの上限（多重に走らせない）:
+  //   複製の除去 1 / 整合の確認 1 / 見え方の確認 1 / 世代を進める 1 / 全体の選び直し 1
   let lastUrl = location.href;
+  let batchScheduled = false;
+  let wantDeep = false;                 // 見え方まで確かめ直すか
+  let pendingRoots = new Set();         // 走査し直す場所
 
-  // 見え方・到達性・入口の意味を変えうる属性だけを見る。全属性を見ると、
-  // GitHub が絶えず書き換えている属性で毎回レイアウト計算が走る。
+  // 見え方・到達性・入口の意味を変えうる属性
   const WATCHED_ATTRS = ['style', 'class', 'hidden', 'inert', 'aria-hidden', 'disabled',
                          'tabindex', 'for', 'href', 'role', 'open', 'contenteditable', 'id'];
 
-  // 自分が起こした変更で deep を誘発しない。印を入れるときに role や tabindex を
-  // 付けるので、そのまま数えると毎回いちばん重い経路へ入ってしまう。
-  function isOurs(node) {
+  function schedule({ deep = false, root = null } = {}) {
+    if (deep) wantDeep = true;
+    if (root) pendingRoots.add(root);
+    if (batchScheduled) return;
+    batchScheduled = true;
+    // MutationObserver の callback はマイクロタスクなので、そこから予約すると
+    // 同じチェックポイントの終わりにまとめて1回だけ走る。
+    queueMicrotask(runBatch);
+  }
+
+  function runBatch() {
+    batchScheduled = false;
+    const deep = wantDeep;
+    const roots = pendingRoots;
+    wantDeep = false;
+    pendingRoots = new Set();
+    if (!observing) return;
+
+    withRenderCache(() => {
+      // ① 記録と DOM の食い違いを片づける。deep なら見え方・到達性・入口の意味まで。
+      let released = reconcileGlosses(deep);
+
+      // ② GitHub はページを読み直さずに画面を差し替えることがある。
+      let full = false;
+      if (location.href !== lastUrl) {
+        lastUrl = location.href;
+        hideTip();
+        if (!deep) released = released || reconcileGlosses(true);
+        full = true;
+      }
+      // ③ 正規の印が居なくなったなら、ページ全体から選び直す。
+      if (released) full = true;
+      if (full) {
+        if (released) reselect();      // generation++ ＋ 全体走査
+        else scan(document.body);
+      }
+      // 入れ子になった場所は、いちばん外側だけを走ればよい
+      for (const n of roots) {
+        let covered = false;
+        for (let p = n.parentNode; p && !covered; p = p.parentNode) if (roots.has(p)) covered = true;
+        if (!covered) scanInner(n);
+      }
+    });
+  }
+
+  // 自分が出し入れするもの（印・吹き出し・切替ボタン）か
+  function isOurNode(node) {
     const el = node && (node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement);
     if (!el) return false;
     if (ownedIconAt(el)) return true;
     return !!el.closest('.iiyaku-tooltip, .iiyaku-toggle');
   }
 
-  // 差し込みが一度に何十件も来るので、1回分の呼び出しでは測定結果を共有する。
-  const observer = new MutationObserver(muts => withRenderCache(() => {
-    // ① 複製された「自分のふり」を先に取り除く。走査より前にやらないと、
-    //    複製された印が引き当てを乱す。
+  // その変更は、自分が起こしたものか（この段では所有だけで見る）
+  function isSelfMutation(mu) {
+    return mu.type === 'attributes' && isOurNode(mu.target);
+  }
+
+  const observer = new MutationObserver(muts => {
+    // 複製された「自分のふり」は、走査より前に取り除く
     for (const mu of muts) for (const n of mu.addedNodes) sanitizeClones(n);
 
-    // ② 見え方まで確かめ直す必要がある変更が混ざっているか。
-    //    属性の変化・文字の書き換え・ノードが外れた形は、記録が整合したままでも
-    //    「使えない印」に変えうる（隠された・無効にされた・入口が別を指した）。
-    //    自分が出し入れする吹き出しや、自分が付ける role / tabindex は数えない。
-    //    数えると、カーソルを動かすたびに全記録のレイアウト計算が走る。
     let deep = false;
+    const roots = [];
     for (const mu of muts) {
-      if (mu.type === 'attributes' || mu.type === 'characterData') {
-        if (!isOurs(mu.target)) { deep = true; break; }
+      if (mu.type === 'attributes') {
+        if (isSelfMutation(mu)) continue;
+        deep = true;
+        roots.push(mu.target);
         continue;
       }
-      for (const n of mu.removedNodes) if (!isOurs(n)) { deep = true; break; }
-      if (deep) break;
+      if (mu.type === 'characterData') {
+        if (isOurNode(mu.target)) continue;
+        deep = true;
+        handled.delete(mu.target);      // 文字が変われば、前の判断の根拠も消えている
+        roots.push(mu.target);
+        continue;
+      }
+      for (const n of mu.addedNodes) roots.push(n);
+      for (const n of mu.removedNodes) if (!isOurNode(n)) deep = true;
     }
-
-    // ③ 記録と DOM の食い違いを片づける。印が外された形だけでなく、語だけが
-    //    消された形・語と印のあいだへ挿し込まれた形もあるので、ノードが
-    //    増えただけの変更でも数え直す。
-    let released = reconcileGlosses(deep);
-
-    // GitHub はページを読み直さずに画面を差し替えることがある。
-    // 別のページに移ったら「印を付けた語」を数え直す。そうしないと、
-    // 前の画面で出た語が新しい画面では一度も説明されないままになる。
-    if (location.href !== lastUrl) {
-      lastUrl = location.href;
-      hideTip();
-      // 画面が変わったときは、DOM がそのままでも見え方は変わりうる。
-      // ここまでが安いほうの確認だけだった場合に備えて、必ず1度は深く見る。
-      if (!deep) { deep = true; released = released || reconcileGlosses(true); }
-      // 画面全体を走査し直す。URL の書き換えより先に内容が差し込まれた分は、
-      // その時点で生きていた印のせいで飛ばされている可能性があるため。
-      //
-      // ここで glossed を空にしてはいけない。GitHub はヘッダーやサイドバーを
-      // 画面遷移をまたいで保持するので、そこに付いた印が残ったまま数え直すと、
-      // 新しい本文に同じ語がもう一度付いて重複する。判定は「いま画面に、
-      // 説明として使える印があるか」（usableGloss）で行う。DOM に残っている
-      // だけでは足りない——隠れた印を「説明済み」と見なすと、後から現れた
-      // 読める同じ語に説明が付かなくなる。使えなくなった印は片づけて付け直す。
-      scan(document.body);
-    }
-    // 走査し直す場所を集める。増えたノードだけでは足りない——
-    // 文字が書き換わった場所・属性が変わった場所は、**それまで対象外だったものが
-    // 対象になる**（触れない領域から戻った、隠れていたものが見えるようになった）。
-    // どちらも addedNodes を伴わないので、集めておかないと取り残される（実測）。
-    const roots = new Set();
-    for (const mu of muts) {
-      if (mu.type === 'childList') { for (const n of mu.addedNodes) roots.add(n); continue; }
-      if (isOurs(mu.target)) continue;
-      // 文字が変わったなら、前に「この節点は見なくてよい」と決めた根拠も消えている
-      if (mu.type === 'characterData') handled.delete(mu.target);
-      roots.add(mu.target);
-    }
-    // 入れ子になった場所は、いちばん外側だけを走ればよい。1回の変更で同じ属性が
-    // 何度も書き換わることがあり、そのたびに同じ枝を歩くと費用が積み上がる。
-    for (const n of roots) {
-      let covered = false;
-      for (let p = n.parentNode; p && !covered; p = p.parentNode) if (roots.has(p)) covered = true;
-      if (!covered) scanInner(n);
-    }
-    // ④ 正規の印が居なくなっていたら、ページ全体から選び直す。
-    //    既にページにある候補へ引き継ぐには、ここで世代を進めるしかない。
-    //    **1回の変更のかたまりにつき、選び直しは最大1回**。ここを回数制限せずに
-    //    書くと、選び直しが起こす変更でまた選び直す形が作れてしまう。
-    if (released) reselect();
-  }));
+    if (!deep && roots.length === 0) return;
+    for (const r of roots) pendingRoots.add(r);
+    schedule({ deep });
+  });
 
   const OBSERVE_OPTS = {
     childList: true, subtree: true,
-    characterData: true,               // 語そのものの書き換えに、その場で気づく
+    characterData: true,
     attributes: true, attributeFilter: WATCHED_ATTRS
   };
+
+  // `<head>` の stylesheet が変わると、body には何の変更も出ないまま見え方が変わる。
+  const headObserver = new MutationObserver(muts => {
+    for (const mu of muts) if (!isSelfMutation(mu)) { schedule({ deep: true }); return; }
+  });
+  const HEAD_OPTS = { childList: true, subtree: true, attributes: true };
+
+  // DOM の変更を伴わない合図。CSS の遷移・アニメーションの終わり、画面の大きさの変化。
+  const EXTERNAL_SIGNALS = ['transitionend', 'transitioncancel', 'animationend', 'animationcancel'];
+  const onExternal = e => { if (!isOurNode(e.target)) schedule({ deep: true }); };
+  const onViewport = () => schedule({ deep: true });
 
   /* ---------- 9. ON / OFF の切り替え ---------- */
   let observing = false;
 
   function startRuntime() {
     if (observing) return;
+    observing = true;
     // OFF のあいだにページが変わっていることがある。先に記録を見え方まで
     // 確かめ直してから走査する（隠された印を「説明済み」として残さない）。
     withRenderCache(() => { if (reconcileGlosses(true)) generation++; });
     scan(document.body);
     observer.observe(document.body, OBSERVE_OPTS);
-    observing = true;
+    if (document.head) headObserver.observe(document.head, HEAD_OPTS);
+    for (const t of EXTERNAL_SIGNALS) document.addEventListener(t, onExternal, true);
+    window.addEventListener('resize', onViewport);
+    window.addEventListener('orientationchange', onViewport);
   }
 
   function stopRuntime() {
     if (!observing) return;
     observer.disconnect();
+    headObserver.disconnect();
+    for (const t of EXTERNAL_SIGNALS) document.removeEventListener(t, onExternal, true);
+    window.removeEventListener('resize', onViewport);
+    window.removeEventListener('orientationchange', onViewport);
     observing = false;
     hideTip();
   }

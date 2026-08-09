@@ -222,8 +222,15 @@
 
   // circle() / ellipse() は半径が 0 なら面積も 0。
   // 中心（at …）は面積に関係しないので落とす。
+  //
+  // 半径にはキーワードも書ける（closest-side / farthest-side）。実測の computed 値は
+  // `ellipse(0px closest-side)` のように**数値とキーワードが混ざる**。混在を
+  // 「解けない」として捨てていたため、全面が隠れているのに可視と答えていた。
+  // キーワード側は 0 ではない（辺までの距離）ので、**片方が 0 なら面積は 0**。
+  const SHAPE_KEYWORD = /^(closest|farthest)-side$/;
   function shapeClipsAll(v) {
     const zero = s => s === '0' || /^0(\.0+)?(px|%)$/.test(s);
+    const known = s => zero(s) || LEN_PX.test(s) || LEN_PCT.test(s) || SHAPE_KEYWORD.test(s);
     let m = /^circle\((.*)\)$/.exec(v);
     if (m) {
       const r = m[1].split(/\s+at\s+/)[0].trim();
@@ -233,9 +240,43 @@
     if (m) {
       const rr = m[1].split(/\s+at\s+/)[0].trim().split(/\s+/).filter(Boolean);
       // 縦横どちらかが 0 なら、その時点で面積は 0
-      return rr.length > 0 && rr.length <= 2 && rr.some(zero) && rr.every(x => zero(x) || LEN_PX.test(x) || LEN_PCT.test(x));
+      return rr.length > 0 && rr.length <= 2 && rr.some(zero) && rr.every(known);
     }
     return false;
+  }
+
+  // clip-path は `<basic-shape> || <geometry-box>` を取る。実測の computed 値は
+  // `inset(50%) content-box` のように**参照ボックスが後ろに付く**。これを外して
+  // 形だけを解き、百分率はその参照ボックスの実寸に対して解決する
+  // （content-box の 50% は、padding を除いた内側の 50%）。
+  // 付いていなければ border-box が既定。
+  const GEOMETRY_BOX = /\s+(border-box|padding-box|content-box|margin-box|fill-box|stroke-box|view-box)$/;
+
+  function splitGeometryBox(v) {
+    const m = GEOMETRY_BOX.exec(v);
+    return m ? { shape: v.slice(0, m.index).trim(), box: m[1] } : { shape: v, box: 'border-box' };
+  }
+
+  // 参照ボックスの実寸。取れなければ null を返す（＝箱の大きさを使わない判定へ）。
+  const px = s => { const n = parseFloat(s); return Number.isFinite(n) ? n : 0; };
+  function refBoxSize(el, cs, box) {
+    const bw = el.offsetWidth, bh = el.offsetHeight;   // border box
+    if (!(bw > 0 && bh > 0)) return null;
+    if (box === 'border-box' || box === 'view-box' || box === 'stroke-box') return { w: bw, h: bh };
+    const bl = px(cs.borderLeftWidth), br = px(cs.borderRightWidth);
+    const bt = px(cs.borderTopWidth), bb = px(cs.borderBottomWidth);
+    if (box === 'padding-box') return { w: bw - bl - br, h: bh - bt - bb };
+    if (box === 'content-box' || box === 'fill-box') {
+      const pl = px(cs.paddingLeft), pr = px(cs.paddingRight);
+      const pt = px(cs.paddingTop), pb = px(cs.paddingBottom);
+      return { w: bw - bl - br - pl - pr, h: bh - bt - bb - pt - pb };
+    }
+    if (box === 'margin-box') {
+      const ml = px(cs.marginLeft), mr = px(cs.marginRight);
+      const mt = px(cs.marginTop), mb = px(cs.marginBottom);
+      return { w: bw + ml + mr, h: bh + mt + mb };
+    }
+    return { w: bw, h: bh };
   }
 
   let clipCache = null;   // 走査1回のあいだだけ有効
@@ -263,8 +304,12 @@
     const path = cs.clipPath && cs.clipPath !== 'none' ? cs.clipPath.trim() : '';
     if (clip || path) {
       // 1px 四方まで潰したうえで切り取る書き方（読み上げ専用の定番）か、
-      // 面積が 0 になる書き方か。inset は箱の寸法へ換算して面積で決める。
-      v = tiny || rectClipsAll(clip) || insetClipsAll(path, bw, bh) || shapeClipsAll(path);
+      // 面積が 0 になる書き方か。inset は参照ボックスの実寸へ換算して面積で決める。
+      const { shape, box } = splitGeometryBox(path);
+      const ref = path ? refBoxSize(n, cs, box) : null;
+      v = tiny || rectClipsAll(clip)
+        || insetClipsAll(shape, ref ? ref.w : null, ref ? ref.h : null)
+        || shapeClipsAll(shape);
     }
     if (clipCache) clipCache.set(n, v);
     return v;
@@ -401,7 +446,13 @@
     if (!v || !v.trim()) return false;
     // 辞書に当たらないノードで可視性の計算をしないよう、正規表現を先に通す。
     // 逆順にすると全テキストノードでレイアウト計算が走り、ページが重くなる。
-    if (!matcher.test(v)) return false;
+    //
+    // 当たらなかった節点は**処理済みにする**。文字が変わらない限り答えは同じで、
+    // 走査し直すたびに `closest(SKIP)` と正規表現を掛け直す理由が無い。文字が
+    // 変わったときは characterData の合図で記録を消す（→ セクション8）。
+    // 2,500段落の祖先を隠す／戻すを繰り返す試験では、ここが費用の大半だった。
+    // 可視でないだけの節点は**印を付けない**が処理済みにもしない（あとで見えたら注記する）。
+    if (!matcher.test(v)) { markHandled(node); return false; }
     return isVisibleOccurrence(el);
   }
 
@@ -522,7 +573,7 @@
       triggerIdOf.set(trigger, id);
       // ページ側が同じ名前の属性を既に持っていたら、上書きしない。
       // 引き当ては内部の表なので、書けなくても動作は変わらない。
-      if (!trigger.hasAttribute(ENTRANCE_ATTR)) trigger.setAttribute(ENTRANCE_ATTR, id);
+      if (!trigger.hasAttribute(ENTRANCE_ATTR)) setOwnAttr(trigger, ENTRANCE_ATTR, id);
     }
     ownedTriggers.add(trigger);
     return id;
@@ -538,7 +589,7 @@
     triggerIdOf.delete(trigger);
     if (trigger.isConnected &&
         (trigger.getAttribute(ENTRANCE_ATTR) || '').startsWith(UID + '-t')) {
-      trigger.removeAttribute(ENTRANCE_ATTR);
+      setOwnAttr(trigger, ENTRANCE_ATTR, null);
     }
   }
 
@@ -548,6 +599,35 @@
   // 自分が作ったものを控えておき、それ以外は自分のものとして扱わない。
   const ownedIcons = new WeakSet();
   const ownedTriggers = new WeakSet();
+
+  /* ---------- 3-1b. 自分が書いた属性の「予定表」 ---------- */
+  // 「その要素は自分のものか」と「その変更を起こしたのは自分か」は別のこと。
+  // MutationRecord に変更の主体は載らないので、所有だけで自分の変更と決めると、
+  // **ページ側が自分の印へ加えた変更まで無視する**ことになる
+  // （実測: ページが正規の印へ style="display:none" を書くと、見えない印が
+  // 「説明済み」として残り、後ろの読める語が抑止された）。
+  //
+  // そこで、自分が書くつもりの「要素 + 属性名 + 値」を控えておき、
+  // **その3つが完全に一致する変更だけ**を自分の仕業として無視する。
+  // 予定と違う値になっていたら、書いたのは自分ではない。
+  const expectedAttrs = new WeakMap();   // Element -> Map<属性名, 期待する値（null は削除）>
+
+  function setOwnAttr(el, name, value) {
+    let m = expectedAttrs.get(el);
+    if (!m) expectedAttrs.set(el, m = new Map());
+    m.set(name, value);
+    if (value === null) el.removeAttribute(name);
+    else el.setAttribute(name, value);
+  }
+
+  // その属性変更は、自分が予定したとおりのものか
+  function isExpectedAttrChange(el, name) {
+    const m = expectedAttrs.get(el);
+    if (!m || !m.has(name)) return false;
+    const want = m.get(name);
+    const now = el.getAttribute(name);
+    return want === null ? now === null : now === want;
+  }
 
   // 印の祖先をたどって、**自分が作った印**を返す。class だけで見てはいけない。
   // ページ側が `class="iiyaku-icon"` の要素を持っていることがあり、それを
@@ -580,7 +660,7 @@
     for (const t of pick(`[${ENTRANCE_ATTR}]`)) {
       if (ownedTriggers.has(t)) continue;
       if ((t.getAttribute(ENTRANCE_ATTR) || '').startsWith(UID + '-t')) {
-        t.removeAttribute(ENTRANCE_ATTR);
+        setOwnAttr(t, ENTRANCE_ATTR, null);
       }
     }
   }
@@ -608,24 +688,24 @@
     if (placement.kind === 'hosted') {
       // リンク名の後ろへ解説文が丸ごと足されるのを避けるため、装飾として扱う。
       // 説明は、入口となる要素にフォーカス／カーソルが来たときに出す。
-      icon.setAttribute('aria-hidden', 'true');
-      icon.removeAttribute('role');
-      icon.removeAttribute('aria-label');
-      icon.removeAttribute('tabindex');
+      setOwnAttr(icon, 'aria-hidden', 'true');
+      setOwnAttr(icon, 'role', null);
+      setOwnAttr(icon, 'aria-label', null);
+      setOwnAttr(icon, 'tabindex', null);
       // 引き当ては内部の表で行う。属性は「どの入口の装飾か」を人が読めるように
       // 残しているだけで、ここから入口を探すことはしない（ページ側が同じ属性を
       // 持っていても影響を受けないようにするため）。
-      icon.dataset.iiyakuFor = triggerKey(placement.trigger);
+      setOwnAttr(icon, 'data-iiyaku-for', triggerKey(placement.trigger));
       iconTrigger.set(icon, placement.trigger);
     } else {
       // 押して開閉するので、role は img ではなく button にする。
       // 名前は「どの語の解説か」だけの短いものにし、説明文そのものは
       // ツールチップ側（aria-describedby）に置く。名前と説明が同じ全文だと、
       // 読み上げで同じ内容が二度読まれる。
-      icon.setAttribute('role', 'button');
-      icon.setAttribute('aria-label', `「${icon.dataset.iiyakuTerm}」の解説`);
-      icon.setAttribute('aria-expanded', 'false');
-      icon.tabIndex = 0;
+      setOwnAttr(icon, 'role', 'button');
+      setOwnAttr(icon, 'aria-label', `「${icon.dataset.iiyakuTerm}」の解説`);
+      setOwnAttr(icon, 'aria-expanded', 'false');
+      setOwnAttr(icon, 'tabindex', '0');
     }
   }
 
@@ -643,14 +723,14 @@
   function addDescribedBy(el, token) {
     const cur = (el.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean);
     if (!cur.includes(token)) cur.push(token);
-    el.setAttribute('aria-describedby', cur.join(' '));
+    setOwnAttr(el, 'aria-describedby', cur.join(' '));
   }
 
   function removeDescribedBy(el, token) {
     const cur = (el.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean);
     const next = cur.filter(t => t !== token);
-    if (next.length) el.setAttribute('aria-describedby', next.join(' '));
-    else el.removeAttribute('aria-describedby');
+    if (next.length) setOwnAttr(el, 'aria-describedby', next.join(' '));
+    else setOwnAttr(el, 'aria-describedby', null);
   }
 
   // その入口に属する印を、内部の記録から集める。記録は辞書のキーの数（61）で
@@ -682,7 +762,7 @@
   function hideTip() {
     if (tipDescribed) { removeDescribedBy(tipDescribed, TIP_ID); tipDescribed = null; }
     for (const ic of tipIcons) {
-      if (ic.getAttribute('role') === 'button') ic.setAttribute('aria-expanded', 'false');
+      if (ic.getAttribute('role') === 'button') setOwnAttr(ic, 'aria-expanded', 'false');
     }
     if (tip) { tip.remove(); tip = null; }
     tipAnchor = null;
@@ -753,7 +833,7 @@
     tipDescribed = describe || anchor;
     addDescribedBy(tipDescribed, TIP_ID);
     for (const ic of icons) {
-      if (ic.getAttribute('role') === 'button') ic.setAttribute('aria-expanded', 'true');
+      if (ic.getAttribute('role') === 'button') setOwnAttr(ic, 'aria-expanded', 'true');
     }
     placeTip(anchor);
   }
@@ -1109,119 +1189,202 @@
     return n;
   }
 
-  /* ---------- 8. DOM 監視 ---------- */
-  // GitHub は画面遷移でページ全体を読み直さないことがあるため、
-  // 後から差し込まれた部分も見張る。自分が挿入した断片は handled で弾く。
+  /* ---------- 8. 変更の検知と、まとめ直しの予約 ---------- */
+  // 見え方が変わる合図は、DOM の変更だけではない。CSS の遷移が終わったとき、
+  // 画面の幅が変わって media query が入れ替わったとき、`<head>` へ stylesheet が
+  // 足されたときも、いま画面に出ている印が使えなくなりうる（すべて実測で再現した）。
+  // 合図の出どころはばらばらでも、やることは同じなので、**1つの予約口**へ集める。
+  //
+  // 1回のまとめ直しでやることの上限（多重に走らせない）:
+  //   複製の除去 1 / 整合の確認 1 / 見え方の確認 1 / 世代を進める 1 / 全体の選び直し 1
   let lastUrl = location.href;
+  let batchScheduled = false;
+  let wantDeep = false;                 // 見え方まで確かめ直すか
+  let pendingRoots = new Set();         // 走査し直す場所
+  let inBatch = false;                  // まとめ直しの最中（自分の変更で再入しない）
 
-  // 見え方・到達性・入口の意味を変えうる属性だけを見る。全属性を見ると、
-  // GitHub が絶えず書き換えている属性で毎回レイアウト計算が走る。
-  const WATCHED_ATTRS = ['style', 'class', 'hidden', 'inert', 'aria-hidden', 'disabled',
-                         'tabindex', 'for', 'href', 'role', 'open', 'contenteditable', 'id'];
+  function schedule({ deep = false, root = null } = {}) {
+    if (deep) wantDeep = true;
+    if (root) pendingRoots.add(root);
+    if (batchScheduled) return;
+    batchScheduled = true;
+    // MutationObserver の callback はマイクロタスクなので、そこから予約すると
+    // 同じチェックポイントの終わりにまとめて1回だけ走る。
+    queueMicrotask(runBatch);
+  }
 
-  // 自分が起こした変更で deep を誘発しない。印を入れるときに role や tabindex を
-  // 付けるので、そのまま数えると毎回いちばん重い経路へ入ってしまう。
-  function isOurs(node) {
+  function runBatch() {
+    batchScheduled = false;
+    const deep = wantDeep;
+    const roots = pendingRoots;
+    wantDeep = false;
+    pendingRoots = new Set();
+    if (!observing) return;
+
+    inBatch = true;
+    try {
+      withRenderCache(() => {
+        // ① 記録と DOM の食い違いを片づける。deep なら見え方・到達性・入口の意味まで。
+        let released = reconcileGlosses(deep);
+
+        // ② GitHub はページを読み直さずに画面を差し替えることがある。
+        //    別のページに移ったら、DOM がそのままでも見え方は変わりうる。
+        let full = false;
+        if (location.href !== lastUrl) {
+          lastUrl = location.href;
+          hideTip();
+          if (!deep) released = released || reconcileGlosses(true);
+          full = true;
+        }
+        // ③ 正規の印が居なくなったなら、ページ全体から選び直す。
+        //    既にページにある候補へ引き継ぐには、世代を進めるしかない。
+        if (released) full = true;
+
+        if (full) {
+          // 全体を走るので、変更のあった場所を別に走る必要はない
+          // （同じ枝を二度歩かない。大きな領域の属性が変わったときに効く）。
+          if (released) reselect();      // generation++ ＋ 全体走査
+          else scan(document.body);
+        } else {
+          // 入れ子になった場所は、いちばん外側だけを走ればよい
+          for (const n of roots) {
+            let covered = false;
+            for (let p = n.parentNode; p && !covered; p = p.parentNode) if (roots.has(p)) covered = true;
+            if (!covered) scanInner(n);
+          }
+        }
+      });
+    } finally {
+      inBatch = false;
+    }
+  }
+
+  // その変更は、自分が起こしたものか。
+  // **所有だけでは決められない**——ページ側も自分の印へ手を出せる（実測）。
+  // 属性は「予定表と完全に一致するか」で見る。予定と違えば、書いたのは自分ではない。
+  function isSelfMutation(mu) {
+    const t = mu.target;
+    if (mu.type === 'attributes') {
+      // 吹き出しと切替ボタンは自分だけのもので、記録を持たない。
+      // ここの位置合わせで毎回いちばん重い経路へ入らないよう、まとめて除く。
+      if (t.nodeType === Node.ELEMENT_NODE && t.closest('.iiyaku-tooltip, .iiyaku-toggle')) return true;
+      return isExpectedAttrChange(t, mu.attributeName);
+    }
+    return false;
+  }
+
+  // 自分が出し入れするもの（印・吹き出し・切替ボタン）か
+  function isOurNode(node) {
     const el = node && (node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement);
     if (!el) return false;
     if (ownedIconAt(el)) return true;
     return !!el.closest('.iiyaku-tooltip, .iiyaku-toggle');
   }
 
-  // 差し込みが一度に何十件も来るので、1回分の呼び出しでは測定結果を共有する。
-  const observer = new MutationObserver(muts => withRenderCache(() => {
-    // ① 複製された「自分のふり」を先に取り除く。走査より前にやらないと、
-    //    複製された印が引き当てを乱す。
+  const observer = new MutationObserver(muts => {
+    // 複製された「自分のふり」は、走査より前に取り除く
     for (const mu of muts) for (const n of mu.addedNodes) sanitizeClones(n);
 
-    // ② 見え方まで確かめ直す必要がある変更が混ざっているか。
-    //    属性の変化・文字の書き換え・ノードが外れた形は、記録が整合したままでも
-    //    「使えない印」に変えうる（隠された・無効にされた・入口が別を指した）。
-    //    自分が出し入れする吹き出しや、自分が付ける role / tabindex は数えない。
-    //    数えると、カーソルを動かすたびに全記録のレイアウト計算が走る。
     let deep = false;
+    const roots = [];
     for (const mu of muts) {
-      if (mu.type === 'attributes' || mu.type === 'characterData') {
-        if (!isOurs(mu.target)) { deep = true; break; }
+      if (mu.type === 'attributes') {
+        if (isSelfMutation(mu)) continue;
+        // 属性は絞り込まない。`type` や任意の `data-*` でも、CSS 次第で
+        // 見え方は変わる（実測: data-state ひとつで display:none になった）。
+        deep = true;
+        roots.push(mu.target);
         continue;
       }
-      for (const n of mu.removedNodes) if (!isOurs(n)) { deep = true; break; }
-      if (deep) break;
+      if (mu.type === 'characterData') {
+        if (isOurNode(mu.target)) continue;
+        deep = true;
+        handled.delete(mu.target);      // 文字が変われば、前の判断の根拠も消えている
+        roots.push(mu.target);
+        continue;
+      }
+      // childList。**増えただけでも見え方は変わりうる**——`:has()` や構造疑似クラスを
+      // 使えば、子を1つ足すだけで祖先が display:none になる（実測で再現）。
+      // 「追加だけなら安全」という前提は置けない。
+      for (const n of mu.addedNodes) { if (!isOurNode(n)) { deep = true; } roots.push(n); }
+      for (const n of mu.removedNodes) if (!isOurNode(n)) deep = true;
     }
-
-    // ③ 記録と DOM の食い違いを片づける。印が外された形だけでなく、語だけが
-    //    消された形・語と印のあいだへ挿し込まれた形もあるので、ノードが
-    //    増えただけの変更でも数え直す。
-    let released = reconcileGlosses(deep);
-
-    // GitHub はページを読み直さずに画面を差し替えることがある。
-    // 別のページに移ったら「印を付けた語」を数え直す。そうしないと、
-    // 前の画面で出た語が新しい画面では一度も説明されないままになる。
-    if (location.href !== lastUrl) {
-      lastUrl = location.href;
-      hideTip();
-      // 画面が変わったときは、DOM がそのままでも見え方は変わりうる。
-      // ここまでが安いほうの確認だけだった場合に備えて、必ず1度は深く見る。
-      if (!deep) { deep = true; released = released || reconcileGlosses(true); }
-      // 画面全体を走査し直す。URL の書き換えより先に内容が差し込まれた分は、
-      // その時点で生きていた印のせいで飛ばされている可能性があるため。
-      //
-      // ここで glossed を空にしてはいけない。GitHub はヘッダーやサイドバーを
-      // 画面遷移をまたいで保持するので、そこに付いた印が残ったまま数え直すと、
-      // 新しい本文に同じ語がもう一度付いて重複する。判定は「いま画面に、
-      // 説明として使える印があるか」（usableGloss）で行う。DOM に残っている
-      // だけでは足りない——隠れた印を「説明済み」と見なすと、後から現れた
-      // 読める同じ語に説明が付かなくなる。使えなくなった印は片づけて付け直す。
-      scan(document.body);
-    }
-    // 走査し直す場所を集める。増えたノードだけでは足りない——
-    // 文字が書き換わった場所・属性が変わった場所は、**それまで対象外だったものが
-    // 対象になる**（触れない領域から戻った、隠れていたものが見えるようになった）。
-    // どちらも addedNodes を伴わないので、集めておかないと取り残される（実測）。
-    const roots = new Set();
-    for (const mu of muts) {
-      if (mu.type === 'childList') { for (const n of mu.addedNodes) roots.add(n); continue; }
-      if (isOurs(mu.target)) continue;
-      // 文字が変わったなら、前に「この節点は見なくてよい」と決めた根拠も消えている
-      if (mu.type === 'characterData') handled.delete(mu.target);
-      roots.add(mu.target);
-    }
-    // 入れ子になった場所は、いちばん外側だけを走ればよい。1回の変更で同じ属性が
-    // 何度も書き換わることがあり、そのたびに同じ枝を歩くと費用が積み上がる。
-    for (const n of roots) {
-      let covered = false;
-      for (let p = n.parentNode; p && !covered; p = p.parentNode) if (roots.has(p)) covered = true;
-      if (!covered) scanInner(n);
-    }
-    // ④ 正規の印が居なくなっていたら、ページ全体から選び直す。
-    //    既にページにある候補へ引き継ぐには、ここで世代を進めるしかない。
-    //    **1回の変更のかたまりにつき、選び直しは最大1回**。ここを回数制限せずに
-    //    書くと、選び直しが起こす変更でまた選び直す形が作れてしまう。
-    if (released) reselect();
-  }));
+    if (!deep && roots.length === 0) return;
+    for (const r of roots) pendingRoots.add(r);
+    schedule({ deep });
+  });
 
   const OBSERVE_OPTS = {
     childList: true, subtree: true,
     characterData: true,               // 語そのものの書き換えに、その場で気づく
-    attributes: true, attributeFilter: WATCHED_ATTRS
+    attributes: true                   // 属性は絞り込まない（→ 上のコメント）
   };
+
+  // `<head>` の stylesheet が変わると、body には何の変更も出ないまま見え方が変わる。
+  // ここは記録の確認だけでよいので、走査し直す場所は渡さない。
+  const headObserver = new MutationObserver(muts => {
+    for (const mu of muts) if (!isSelfMutation(mu)) { schedule({ deep: true }); return; }
+  });
+  const HEAD_OPTS = { childList: true, subtree: true, attributes: true };
+
+  // DOM の変更を伴わない合図。CSS の遷移・アニメーションの終わり、画面の大きさの変化。
+  const EXTERNAL_SIGNALS = ['transitionend', 'transitioncancel', 'animationend', 'animationcancel'];
+  const onExternal = e => { if (!isOurNode(e.target)) schedule({ deep: true }); };
+  const onViewport = () => schedule({ deep: true });
+  // 利用者の操作は、属性に出ない状態（checked など）を変えうる
+  const onInteraction = () => schedule({ deep: true });
+
+  // 属性にも DOM にも出ない変化（property だけの書き換え）は、どの合図にも乗らない。
+  // 暇なときにだけ、記録の見え方を確かめ直す。画面が見えていないときは何もしない。
+  const IDLE_GAP = 2000;
+  let idleTimer = null;
+  const canIdle = typeof requestIdleCallback === 'function';
+  function scheduleIdleCheck() {
+    if (!observing || idleTimer !== null) return;
+    idleTimer = setTimeout(() => {
+      idleTimer = null;
+      if (!observing) return;
+      if (document.hidden || glossed.size === 0) { scheduleIdleCheck(); return; }
+      const run = () => { schedule({ deep: true }); scheduleIdleCheck(); };
+      if (canIdle) requestIdleCallback(run, { timeout: IDLE_GAP });
+      else run();
+    }, IDLE_GAP);
+  }
 
   /* ---------- 9. ON / OFF の切り替え ---------- */
   let observing = false;
 
   function startRuntime() {
     if (observing) return;
-    // OFF のあいだにページが変わっていることがある。先に記録を見え方まで
-    // 確かめ直してから走査する（隠された印を「説明済み」として残さない）。
-    withRenderCache(() => { if (reconcileGlosses(true)) generation++; });
+    observing = true;
+    // OFF のあいだは見張っていないので、その間の複製はそのまま残っている。
+    // **走査より前に、ページ全体から複製を取り除く**（実測: OFF 中に注記済みの
+    // 領域を複製して ON へ戻すと、正規の印と複製の印が2つ並んだ）。
+    withRenderCache(() => {
+      sanitizeClones(document.body);
+      // OFF のあいだにページが変わっていることがある。先に記録を見え方まで
+      // 確かめ直してから走査する（隠された印を「説明済み」として残さない）。
+      if (reconcileGlosses(true)) generation++;
+    });
     scan(document.body);
     observer.observe(document.body, OBSERVE_OPTS);
-    observing = true;
+    if (document.head) headObserver.observe(document.head, HEAD_OPTS);
+    for (const t of EXTERNAL_SIGNALS) document.addEventListener(t, onExternal, true);
+    window.addEventListener('resize', onViewport);
+    window.addEventListener('orientationchange', onViewport);
+    for (const t of ['input', 'change', 'click']) document.addEventListener(t, onInteraction, true);
+    scheduleIdleCheck();
   }
 
   function stopRuntime() {
     if (!observing) return;
     observer.disconnect();
+    headObserver.disconnect();
+    for (const t of EXTERNAL_SIGNALS) document.removeEventListener(t, onExternal, true);
+    window.removeEventListener('resize', onViewport);
+    window.removeEventListener('orientationchange', onViewport);
+    for (const t of ['input', 'change', 'click']) document.removeEventListener(t, onInteraction, true);
+    if (idleTimer !== null) { clearTimeout(idleTimer); idleTimer = null; }
     observing = false;
     hideTip();
   }
@@ -1231,7 +1394,10 @@
   // ON に直しても付き直さない語が出るため。
   function applyEnabled(next) {
     enabled = next;
-    document.documentElement.classList.toggle(OFF_CLASS, !enabled);
+    const root = document.documentElement;
+    const cls = new Set((root.getAttribute('class') || '').split(/\s+/).filter(Boolean));
+    if (enabled) cls.delete(OFF_CLASS); else cls.add(OFF_CLASS);
+    setOwnAttr(root, 'class', [...cls].join(' '));
     if (enabled) startRuntime(); else stopRuntime();
     updateToggle();
   }
@@ -1243,7 +1409,7 @@
     if (!toggleBtn) return;
     // 「意訳」とは書かない。この拡張は英語を置き換えず、説明を添えるだけのため。
     toggleBtn.textContent = enabled ? '解説 ON' : '解説 OFF';
-    toggleBtn.setAttribute('aria-pressed', String(enabled));
+    setOwnAttr(toggleBtn, 'aria-pressed', String(enabled));
     toggleBtn.title = enabled ? 'クリックすると解説の印を隠します' : 'クリックすると解説の印を表示します';
   }
 

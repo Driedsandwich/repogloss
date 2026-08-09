@@ -200,16 +200,63 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     badSelector.test(`document.querySelector('[data-iiyaku-trigger="' + id + '"]')`));
 }
 
-/* ---------- 変更の見張りが、見え方を変える入力まで見ているか（RG-9-01 / RG-9-06） ---------- */
+/* ---------- 変更の見張りが、見え方を変える入力まで見ているか（RG-9-01 / RG-9-06 / RG-10-01〜03） ---------- */
 {
   check('MutationObserver が文字の書き換えを見ている', /characterData:\s*true/.test(content));
-  check('MutationObserver が属性の変化を見ている',
-    /attributes:\s*true/.test(content) && /attributeFilter/.test(content));
-  for (const attr of ['style', 'hidden', 'inert', 'aria-hidden', 'disabled', 'tabindex', 'for']) {
-    check(`見張る属性に ${attr} が入っている`, new RegExp(`'${attr}'`).test(content));
-  }
+  check('MutationObserver が属性の変化を見ている', /attributes:\s*true/.test(content));
+  // 属性を絞り込むと、列挙していない属性（type や任意の data-*）で隠されたことに
+  // 気づけない（第10回 RG-10-01。実測で3通り再現）。絞り込みは置かない。
+  check('見張る属性を絞り込んでいない', !/attributeFilter/.test(content),
+    'attributeFilter があると、列挙外の属性で隠されたことに気づけない');
   check('記録の確かめ直しに、見え方まで見る深い経路がある',
     /function isUsable\(rec\)/.test(content) && /reconcileGlosses\(deep\)/.test(content));
+
+  // DOM の変更として出ない合図（CSS の遷移・画面幅・head の stylesheet）も拾うこと
+  for (const sig of ['transitionend', 'animationend', 'resize', 'orientationchange']) {
+    check(`見え方の合図に ${sig} が入っている`, content.includes(sig));
+  }
+  check('head の stylesheet の変化を見ている', /headObserver/.test(content));
+  check('利用者の操作（input / change / click）も合図にしている',
+    /'input', 'change', 'click'/.test(content));
+  // 子が増えただけでも祖先が消えることがある（:has）ので、追加でも深く確かめる。
+  // 判定はコードだけを見る。**コメントの文言を条件にすると、説明を書いた側が
+  // 自分の検査に引っかかる**（実際にここで一度そうなった）。
+  {
+    const code = stripComments(content);
+    const m = /addedNodes\)\s*\{[^}]*deep\s*=\s*true/.test(code);
+    check('childList の追加でも deep になる（追加だけを安全とみなさない）', m,
+      '子の追加で deep にならない書き方に戻っている');
+    // 陽性対照: この探し方が、実際にその書き方を捕まえること
+    check('childList の検査が、実際にその書き方を捕まえる（陽性対照）',
+      /addedNodes\)\s*\{[^}]*deep\s*=\s*true/.test('for (const n of mu.addedNodes) { if (!x(n)) { deep = true; } }'));
+  }
+}
+
+/* ---------- 自分の変更かどうかを、所有ではなく予定表で決めているか（RG-10-05） ---------- */
+{
+  check('自分が書く属性の予定表がある',
+    /const expectedAttrs = new WeakMap\(\)/.test(content) && /function setOwnAttr/.test(content));
+  check('自分の仕業かどうかを、予定表との一致で決めている',
+    /function isExpectedAttrChange/.test(content) && /isExpectedAttrChange\(t, mu\.attributeName\)/.test(content));
+  // 所有だけで無視すると、ページ側が自分の印へ加えた変更まで見落とす
+  check('所有だけを根拠に属性変更を無視していない',
+    !/if \(isOurNode\(mu\.target\)\) continue;[\s\S]{0,80}attributes/.test(content));
+  // 自分が書く属性は、すべて予定表を通ること（素の setAttribute を残さない）
+  const rawWrites = [...content.matchAll(/^\s*(icon|trigger|el|t|root|toggleBtn)\.(setAttribute|removeAttribute)\(/gm)];
+  check('自分が書く属性に、予定表を通らない書き込みが無い', rawWrites.length === 0,
+    rawWrites.map(m => m[0].trim()).join(' / '));
+  // 陽性対照: この探し方が、実際に素の書き込みを捕まえる
+  check('素の書き込みを探す検査が、実際に捕まえる（陽性対照）',
+    /^\s*(icon|trigger|el|t|root|toggleBtn)\.(setAttribute|removeAttribute)\(/m.test('    icon.setAttribute("role", "button");'));
+}
+
+/* ---------- 複製の後始末と、印の見た目の条件（RG-10-04） ---------- */
+{
+  check('ON へ戻すときに、ページ全体から複製を取り除く',
+    /sanitizeClones\(document\.body\)/.test(content));
+  check('印の見た目に、自分の合言葉を要求している',
+    /\.iiyaku-icon\[data-iiyaku-owner\]/.test(read('styles.css')),
+    '合言葉を消した複製が、印として描かれてしまう');
 }
 
 /* ---------- 可視性の判定が祖先まで見ているか ---------- */

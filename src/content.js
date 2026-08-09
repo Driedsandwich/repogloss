@@ -1122,10 +1122,6 @@
   let wantDeep = false;                 // 見え方まで確かめ直すか
   let pendingRoots = new Set();         // 走査し直す場所
 
-  // 見え方・到達性・入口の意味を変えうる属性
-  const WATCHED_ATTRS = ['style', 'class', 'hidden', 'inert', 'aria-hidden', 'disabled',
-                         'tabindex', 'for', 'href', 'role', 'open', 'contenteditable', 'id'];
-
   function schedule({ deep = false, root = null } = {}) {
     if (deep) wantDeep = true;
     if (root) pendingRoots.add(root);
@@ -1193,6 +1189,8 @@
     for (const mu of muts) {
       if (mu.type === 'attributes') {
         if (isSelfMutation(mu)) continue;
+        // 属性は絞り込まない。`type` や任意の `data-*` でも、CSS 次第で
+        // 見え方は変わる（実測: data-state ひとつで display:none になった）。
         deep = true;
         roots.push(mu.target);
         continue;
@@ -1204,7 +1202,9 @@
         roots.push(mu.target);
         continue;
       }
-      for (const n of mu.addedNodes) roots.push(n);
+      // childList。**増えただけでも見え方は変わりうる**——`:has()` や構造疑似クラスを
+      // 使えば、子を1つ足すだけで祖先が display:none になる（実測で再現）。
+      for (const n of mu.addedNodes) { if (!isOurNode(n)) { deep = true; } roots.push(n); }
       for (const n of mu.removedNodes) if (!isOurNode(n)) deep = true;
     }
     if (!deep && roots.length === 0) return;
@@ -1214,8 +1214,8 @@
 
   const OBSERVE_OPTS = {
     childList: true, subtree: true,
-    characterData: true,
-    attributes: true, attributeFilter: WATCHED_ATTRS
+    characterData: true,               // 語そのものの書き換えに、その場で気づく
+    attributes: true                   // 属性は絞り込まない（→ 下のコメント）
   };
 
   // `<head>` の stylesheet が変わると、body には何の変更も出ないまま見え方が変わる。
@@ -1228,6 +1228,25 @@
   const EXTERNAL_SIGNALS = ['transitionend', 'transitioncancel', 'animationend', 'animationcancel'];
   const onExternal = e => { if (!isOurNode(e.target)) schedule({ deep: true }); };
   const onViewport = () => schedule({ deep: true });
+  // 利用者の操作は、属性に出ない状態（checked など）を変えうる
+  const onInteraction = () => schedule({ deep: true });
+
+  // 属性にも DOM にも出ない変化（property だけの書き換え）は、どの合図にも乗らない。
+  // 暇なときにだけ、記録の見え方を確かめ直す。画面が見えていないときは何もしない。
+  const IDLE_GAP = 2000;
+  let idleTimer = null;
+  const canIdle = typeof requestIdleCallback === 'function';
+  function scheduleIdleCheck() {
+    if (!observing || idleTimer !== null) return;
+    idleTimer = setTimeout(() => {
+      idleTimer = null;
+      if (!observing) return;
+      if (document.hidden || glossed.size === 0) { scheduleIdleCheck(); return; }
+      const run = () => { schedule({ deep: true }); scheduleIdleCheck(); };
+      if (canIdle) requestIdleCallback(run, { timeout: IDLE_GAP });
+      else run();
+    }, IDLE_GAP);
+  }
 
   /* ---------- 9. ON / OFF の切り替え ---------- */
   let observing = false;
@@ -1244,6 +1263,8 @@
     for (const t of EXTERNAL_SIGNALS) document.addEventListener(t, onExternal, true);
     window.addEventListener('resize', onViewport);
     window.addEventListener('orientationchange', onViewport);
+    for (const t of ['input', 'change', 'click']) document.addEventListener(t, onInteraction, true);
+    scheduleIdleCheck();
   }
 
   function stopRuntime() {
@@ -1253,6 +1274,8 @@
     for (const t of EXTERNAL_SIGNALS) document.removeEventListener(t, onExternal, true);
     window.removeEventListener('resize', onViewport);
     window.removeEventListener('orientationchange', onViewport);
+    for (const t of ['input', 'change', 'click']) document.removeEventListener(t, onInteraction, true);
+    if (idleTimer !== null) { clearTimeout(idleTimer); idleTimer = null; }
     observing = false;
     hideTip();
   }

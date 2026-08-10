@@ -711,7 +711,9 @@ check('content.js が保存キー iiyakuEnabled を変えていない', content.
     // タグが引けない環境では**通さない**。ここを素通りにすると、
     // 「一致していた」と「確かめていない」が同じ見た目になる。
     check(`監査対象のタグ ${tag} が手元に在る`, has.ok,
-      'CI では checkout に fetch-tags を付ける（付けないとタグを取らない）');
+      '浅いクローンにはタグが入らない（`git clone --depth 1` は既定でも0本。実測）。' +
+      '通常の `git clone` を使うか、CI では checkout に fetch-tags を付ける。' +
+      '**`npm test` を走らせるジョブすべて**に付ける（1つ忘れて3 OS とも赤にした）');
     if (has.ok) {
       const diff = git(['diff', '--name-only', `${tag}`, '--', ...PACKAGE_FILES]);
       check('配布物の diff を取れている', diff.ok, diff.out.slice(0, 120));

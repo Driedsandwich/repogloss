@@ -6,6 +6,7 @@
 // 権限まわりは「増えていないこと」ではなく「この形と完全に同じこと」を見る。
 // 増分だけを見ると、2つ目の content_scripts を足すような広げ方に気づけない。
 import { readFileSync, existsSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, extname } from 'node:path';
 import { PACKAGE_FILES } from './package-files.mjs';
@@ -223,12 +224,19 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   // 自分の検査に引っかかる**（実際にここで一度そうなった）。
   {
     const code = stripComments(content);
-    const m = /addedNodes\)\s*\{[^}]*deep\s*=\s*true/.test(code);
-    check('childList の追加でも deep になる（追加だけを安全とみなさない）', m,
+    // 中に別の if を挟んでも見つかるよう、範囲を区切って探す（`[^}]*` だと
+    // 最初の閉じ括弧で止まり、書き方を足した瞬間に**黙って何も見なくなる**）。
+    const ADDED_DEEP = /for \(const n of mu\.addedNodes\)[\s\S]{0,300}?deep = true/;
+    check('childList の追加でも deep になる（追加だけを安全とみなさない）', ADDED_DEEP.test(code),
       '子の追加で deep にならない書き方に戻っている');
-    // 陽性対照: この探し方が、実際にその書き方を捕まえること
-    check('childList の検査が、実際にその書き方を捕まえる（陽性対照）',
-      /addedNodes\)\s*\{[^}]*deep\s*=\s*true/.test('for (const n of mu.addedNodes) { if (!x(n)) { deep = true; } }'));
+    // 陽性対照: 古い書き方と、いまの書き方の両方を捕まえること
+    check('childList の検査が、単純な書き方を捕まえる（陽性対照）',
+      ADDED_DEEP.test('for (const n of mu.addedNodes) { if (!x(n)) { deep = true; } }'));
+    check('childList の検査が、入れ子のある書き方も捕まえる（陽性対照）',
+      ADDED_DEEP.test('for (const n of mu.addedNodes) {\n if (s.has(n)) { s.delete(n); continue; }\n if (!x(n)) { deep = true; }\n}'));
+    // 陰性対照: 追加を無条件に安全とみなす書き方は、捕まえないこと
+    check('childList の検査が、安全とみなす書き方を通さない（陰性対照）',
+      !ADDED_DEEP.test('for (const n of mu.addedNodes) { roots.push(n); }'));
   }
 }
 
@@ -257,6 +265,62 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   check('印の見た目に、自分の合言葉を要求している',
     /\.iiyaku-icon\[data-iiyaku-owner\]/.test(read('styles.css')),
     '合言葉を消した複製が、印として描かれてしまう');
+}
+
+/* ---------- 見えるようになった語を探す仕掛け（RG-11-01） ---------- */
+// 見え方の合図で「既にある印を確かめ直す」だけだと、初回に隠れていた語は
+// そのタブを開いているあいだ永久に説明されない（4通りで実測）。
+{
+  check('初回に見えなかった節点を控えている',
+    /const latent = new Set\(\)/.test(content) && /function rememberLatent/.test(content));
+  check('見えるようになった語を探す経路がある', /function discoverLatent/.test(content));
+  const code = stripComments(content);
+  check('見え方が変わったまとめ直しで、その経路を通る',
+    /if \(deep\) discoverLatent\(\)/.test(code),
+    'deep なのに控えを見直していない');
+  check('印が0件でも、控えがあれば暇なときの確認を止めない',
+    /glossed\.size === 0 && latent\.size === 0/.test(code),
+    '印が0件になった時点で、あとから見えた語を拾えなくなる');
+  // 控えを見直す前に、文字列だけで足切りしていること（見え方の測定は高い）
+  check('控えの見直しが、見え方を測る前に文字列で足切りしている',
+    /matcher\.findHits\(v, key => usableGloss\(key\) !== null\)\.length === 0\) continue/.test(code),
+    '控えが多いページで、毎回すべての見え方を測ることになる');
+}
+
+/* ---------- 退役で所有を取り消しているか（RG-11-02） ---------- */
+{
+  check('退役のときに、印の所有を取り消している',
+    /ownedIcons\.delete\(rec\.icon\)/.test(content),
+    'ページが退役した領域を戻すと、古い印が正規のまま生き返る');
+  check('記録の不変条件に、合言葉の値が入っている',
+    /rec\.icon\.getAttribute\('data-iiyaku-owner'\) !== UID/.test(content),
+    '合言葉を外された印が、見えない停止点として残る');
+  check('複製の判定が、合言葉の値ではなく自分の説明文で行われている',
+    /ic\.dataset\.iiyaku === DICT\[key\]/.test(content),
+    '合言葉を書き換えた複製・消した複製がすり抜ける');
+  check('見た目の側でも、合言葉の値まで見ている',
+    /function scopeOwnStyle/.test(content) && /:not\(\[data-iiyaku-owner=/.test(content));
+  // 「作ったもの」と「いま正規のもの」を分けていること
+  check('作ったものと、いま正規のものを別に持っている',
+    /const madeIcons = new WeakSet\(\)/.test(content) && /function madeIconAt/.test(content));
+}
+
+/* ---------- 自分の起こした変更を数えていないか（RG-11-03 / RG-11-05） ---------- */
+{
+  const code = stripComments(content);
+  check('吹き出しと切替ボタンを、class 名ではなく要素そのもので見分けている',
+    /function isOurChrome/.test(content) && !/closest\('\.iiyaku-tooltip, \.iiyaku-toggle'\)/.test(code),
+    'ページ側が同じ class を使うと、その要素を自分のものとして扱ってしまう');
+  check('除外一覧に、自分の吹き出しと切替ボタンの class を並べていない',
+    !/'\.iiyaku-toggle', '\.iiyaku-tooltip'/.test(code),
+    'ページ側の同名 class の中を、永久に走査しなくなる');
+  check('本文を割ったときの変更を、自分のものとして数えていない',
+    /const expectedSplit = new WeakSet\(\)/.test(content) &&
+    /expectedSplit\.has\(n\)\) \{ expectedSplit\.delete\(n\)/.test(code) &&
+    /expectedTrim\.has\(mu\.target\)\) \{ expectedTrim\.delete\(mu\.target\)/.test(code),
+    '印を1つ動かすたびに、空のまとめ直しがもう1回走る');
+  // 読まれない旗を残さない（守っているつもりの不変条件が誰も見ていない状態になる）
+  check('読まれない再入防止の旗が残っていない', !/inBatch/.test(code));
 }
 
 /* ---------- 可視性の判定が祖先まで見ているか ---------- */
@@ -611,8 +675,59 @@ for (const cls of ['iiyaku-icon', 'iiyaku-toggle', 'iiyaku-tooltip', 'iiyaku-off
   check(`content.js が ${cls} を使っている`, content.includes(cls));
 }
 check('content.js が保存キー iiyakuEnabled を変えていない', content.includes("'iiyakuEnabled'"));
-check('ツールチップが狭い画面でも収まる指定を持つ',
-  /max-width:\s*min\(/.test(css) && /box-sizing:\s*border-box/.test(css.split('.iiyaku-tooltip {')[1] ?? ''));
+// 選択子を書き換えたときに、この検査が黙って何も見なくなることがあった
+// （`.iiyaku-tooltip {` で切っていたので、合言葉を足した瞬間に空文字列を見ていた）。
+// 規則の本体を取り出す形にし、取り出せたこと自体も確かめる。
+{
+  const body = (/\.iiyaku-tooltip\[data-iiyaku-owner\]\s*\{([^}]*)\}/.exec(css) || [])[1];
+  check('CSS からツールチップの規則本体を取り出せる', !!body,
+    'styles.css の選択子を変えたなら、この検査も直す');
+  check('ツールチップが狭い画面でも収まる指定を持つ',
+    /max-width:\s*min\(/.test(css) && /box-sizing:\s*border-box/.test(body ?? ''));
+}
+
+/* ---------- 監査対象のタグと、いまの配布物がずれていないか（RG-11-06） ---------- */
+// 「main の先頭」のような**相対的な言い方**は、次のコミットを積んだ瞬間に嘘になる
+// （実測: 提出候補の SHA を記録した1件で、監査入口の対象行が事実と食い違った）。
+// 対象はタグとコミットだけを名乗り、いまの main との関係は
+// 「配布13ファイルが同じか」という、機械で確かめられる形にする。
+{
+  const audit = read('AUDIT.md');
+  const RELATIVE = /main の先頭/;
+  check('AUDIT.md が、対象を「main の先頭」と相対的に名乗っていない', !RELATIVE.test(audit),
+    'main へ1つ commit した瞬間に、この記述は事実でなくなる');
+  check('相対表現を探す検査が、実際に捕まえる（陽性対照）',
+    RELATIVE.test('| 監査対象 | v1.8.9（main の先頭。タグ済み） |'));
+
+  const st = (/^state:\s*(\S+)/m.exec(audit) || [])[1];
+  const tag = (/^tag:\s*(\S+)/m.exec(audit) || [])[1];
+  if (st && st !== 'uncommitted' && tag && tag !== 'null') {
+    const git = args => {
+      try {
+        return { ok: true, out: execFileSync('git', ['-C', ROOT, ...args], { encoding: 'utf8' }) };
+      } catch (e) { return { ok: false, out: String(e.message || e) }; }
+    };
+    const has = git(['rev-parse', '--verify', `${tag}^{commit}`]);
+    // タグが引けない環境では**通さない**。ここを素通りにすると、
+    // 「一致していた」と「確かめていない」が同じ見た目になる。
+    check(`監査対象のタグ ${tag} が手元に在る`, has.ok,
+      'CI では checkout に fetch-tags を付ける（付けないとタグを取らない）');
+    if (has.ok) {
+      const diff = git(['diff', '--name-only', `${tag}`, '--', ...PACKAGE_FILES]);
+      check('配布物の diff を取れている', diff.ok, diff.out.slice(0, 120));
+      const changed = diff.ok ? diff.out.split('\n').filter(Boolean) : ['(取れていない)'];
+      check(`配布13ファイルが、タグ ${tag} と同じ`, changed.length === 0,
+        `違うファイル: ${changed.join(', ')}（監査対象を打ち直すか、AUDIT.md の tag を直す）`);
+      // 陽性対照: この突き合わせが、実際に差を見つけられること
+      const ctrl = git(['diff', '--name-only', `${tag}~1`, `${tag}`, '--', ...PACKAGE_FILES]);
+      check('配布物の突き合わせが、実際に差を見つけられる（陽性対照）',
+        ctrl.ok && ctrl.out.trim().length > 0,
+        'ひとつ前との差が0件＝比較が効いていない可能性がある');
+    }
+  } else {
+    check('state が uncommitted のときは、タグとの突き合わせを求めない', true);
+  }
+}
 
 /* ---------- 監査入口が名乗る検査件数が、実際の件数と合っているか（RG-9-08） ---------- */
 // 版・SHA・タグは検査していたのに、**検査の件数だけ**が同期の外に在った。

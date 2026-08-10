@@ -507,6 +507,59 @@ export const OWNERSHIP_PAGE = `<!doctype html><html lang="en"><head><meta charse
   <div id="sink"></div>
 </body></html>`;
 
+/* 初回の走査では見えていない語。あとから見えるようになったときに、
+   **まだ印の無い語**を見つけられるか（第11回 RG-11-01）。
+   見えている語を1つ置いてあるのは、記録が0件のときに暇なときの確認が
+   止まる形にしないため（止まる形だと、何を測っているか分からなくなる）。 */
+export const LATENT_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>latent</title>
+<style>
+  @media(min-width:700px){#narrow-only{display:none}}
+  @media(max-width:699px){#narrow-only{display:block}}
+  #fade-in{opacity:0;transition:opacity .08s linear}
+  #fade-in.shown{opacity:1}
+  #checked-only{display:none}
+  body:has(#tgl:checked) #checked-only{display:block}
+</style>
+<style id="hide-style">#style-only{display:none}</style>
+</head><body>
+  <p id="keep">A repository stays visible.</p>
+  <p id="narrow-only">A clone appears when narrow.</p>
+  <p id="style-only">A fork appears when the sheet goes.</p>
+  <p id="fade-in">A milestone appears by fading in.</p>
+  <input id="tgl" type="checkbox">
+  <p id="checked-only">An artifact appears when ticked.</p>
+  <!-- 同じ語が既に読める場所にある。あとで見えても増やしてはいけない -->
+  <p id="dup-shown">A webhook is already readable.</p>
+  <p id="dup-hidden" style="display:none">A webhook is hidden here.</p>
+</body></html>`;
+
+/* 自分の署名を持つ複製、退役した印の作り直し、ページ側の同名 class、
+   そして切り取りの残り2形（第11回 RG-11-02 / RG-11-03 / RG-11-04）。 */
+export const SIGNATURE_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>signature</title>
+<style>
+  #circle-box{width:100px;height:100px;clip-path:circle(closest-side at 0 50%)}
+  #box-only{box-sizing:border-box;width:100px;height:100px;padding:50px;clip-path:content-box}
+  #box-normal{box-sizing:border-box;width:100px;height:100px;padding:10px;clip-path:content-box}
+</style></head><body>
+  <a href="#" id="before">before</a>
+  <p id="retire-src">A branch first.</p><p id="retire-dst">A branch later.</p>
+  <p id="strip">A commit first.</p><p id="strip-later">A commit later.</p>
+  <p id="tip-class">A merge first.</p><p id="tip-class-later">A merge later.</p>
+  <div id="circle-box">A rebase hidden.</div><p id="circle-later">A rebase later.</p>
+  <div id="box-only">A revert hidden.</div><p id="box-later">A revert later.</p>
+  <div id="box-normal">A fetch shown.</div><p id="normal-later">A fetch later.</p>
+  <p id="clone-src">A milestone first.</p>
+  <!-- ページ側が同じ class を自分の本文へ使っている。ここは走査してよい -->
+  <p id="page-tip" class="iiyaku-tooltip">An upstream inside a page element.</p>
+  <p id="tip-later">An upstream later.</p>
+  <!-- ページ側が同じ class と属性を自分で使っている。中身は自分のものではない -->
+  <span id="page-own" class="iiyaku-icon" data-iiyaku-owner="page">page</span>
+  <div id="sink"></div>
+  <a href="#" id="after">after</a>
+</body></html>`;
+
 export function startTestServer(html = REPO_PAGE) {
   const { key, cert } = makeCert();
   const server = https.createServer({ key, cert }, (req, res) => {

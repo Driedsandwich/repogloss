@@ -57,7 +57,9 @@
     '.react-code-lines', '.react-code-line-contents', '.react-blob-print-hide',
     '.cm-editor', '.CodeMirror', '.highlight', '.snippet-clipboard-content',
     '[data-testid="code-cell"]', '[data-testid="blob-viewer-file-content"]',
-    '.iiyaku-icon', '.iiyaku-toggle', '.iiyaku-tooltip',
+    // 自分の吹き出しと切替ボタンは、ここ（class 名）ではなく要素そのもので除く
+    // （→ isOurChrome）。名前で除くと、ページ側の同名 class まで巻き込む。
+    '.iiyaku-icon',
     '[aria-hidden="true"]', '.sr-only', '.visually-hidden'
   ].join(',');
 
@@ -88,6 +90,23 @@
   let generation = 0;
   const isHandled = n => handled.get(n) === generation;
   const markHandled = n => handled.set(n, generation);
+
+  // 辞書には当たったが、そのときは見えていなかった節点。
+  //
+  // 見え方が変わる合図（遷移・画面幅・stylesheet・操作・暇なとき）を受けても、
+  // v1.8.9 は**既にある印を確かめ直すだけ**で、まだ印の無い語は探さなかった。
+  // 走査し直す場所も、退役した記録も無いからである。その結果、最初に隠れていた
+  // 語は、そのタブを開いているあいだ永久に説明されなかった（4通りで実測）。
+  // 合図のたびにページ全体を走り直すのは高いので、ここだけを見直す。
+  const latent = new Set();          // Text ノード（自分で掃除する）
+  const LATENT_MAX = 2000;           // これを超えたら控えるのをやめ、全体走査へ落とす
+  let latentOverflow = false;
+
+  function rememberLatent(node) {
+    if (latentOverflow) return;
+    if (latent.size >= LATENT_MAX) { latent.clear(); latentOverflow = true; return; }
+    latent.add(node);
+  }
   // このページで印を付けた辞書キー -> そのとき自分が何を作ったかの記録。
   //
   // 印の要素だけを覚えるのでは足りない。片づけるときに「印の隣にあるもの」を見て
@@ -228,17 +247,49 @@
   // 「解けない」として捨てていたため、全面が隠れているのに可視と答えていた。
   // キーワード側は 0 ではない（辺までの距離）ので、**片方が 0 なら面積は 0**。
   const SHAPE_KEYWORD = /^(closest|farthest)-side$/;
-  function shapeClipsAll(v) {
+  // 位置を、参照ボックスの中の px へ直す。解けなければ null。
+  function posToPx(s, size) {
+    if (s === '0') return 0;
+    if (LEN_PX.test(s)) return parseFloat(s);
+    if (LEN_PCT.test(s)) return parseFloat(s) / 100 * size;
+    return null;
+  }
+  // 引数を「半径の並び」と「中心の位置」に分ける。
+  // 半径を省くと、computed 値は `circle(at 0px 50%)` のように **at から始まる**。
+  // `\s+at\s+` で切ると、この形では at の前に空白が無いので切れず、半径の側へ
+  // 丸ごと入ってしまう（実測で取りこぼした）。行頭の at も切れるようにする。
+  function splitShapeArgs(inner) {
+    const m = /(^|\s)at\s+/.exec(inner);
+    if (!m) return { radii: inner.trim(), pos: null };
+    return { radii: inner.slice(0, m.index).trim(), pos: inner.slice(m.index + m[0].length).trim() };
+  }
+
+  // 半径を省いたときの既定は closest-side——中心から参照ボックスのいちばん近い辺
+  // までの距離が半径になる。中心が辺の上にあれば 0 で、全面が切り取られる
+  // （実測: `circle(closest-side at 0 50%)` は computed 値から半径が消え、
+  // 当たり判定でも文字に触れなかった）。中心が箱の外なら負になり、やはり 0。
+  function defaultRadiusClipsAll(pos, w, h) {
+    if (!(w > 0 && h > 0) || !pos) return false;
+    const at = pos.split(/\s+/);
+    if (at.length !== 2) return false;
+    const cx = posToPx(at[0], w), cy = posToPx(at[1], h);
+    if (cx === null || cy === null) return false;
+    return Math.min(cx, w - cx, cy, h - cy) <= 0;
+  }
+
+  function shapeClipsAll(v, w = null, h = null) {
     const zero = s => s === '0' || /^0(\.0+)?(px|%)$/.test(s);
     const known = s => zero(s) || LEN_PX.test(s) || LEN_PCT.test(s) || SHAPE_KEYWORD.test(s);
     let m = /^circle\((.*)\)$/.exec(v);
     if (m) {
-      const r = m[1].split(/\s+at\s+/)[0].trim();
-      return r !== '' && zero(r);
+      const { radii, pos } = splitShapeArgs(m[1]);
+      return radii !== '' ? zero(radii) : defaultRadiusClipsAll(pos, w, h);
     }
     m = /^ellipse\((.*)\)$/.exec(v);
     if (m) {
-      const rr = m[1].split(/\s+at\s+/)[0].trim().split(/\s+/).filter(Boolean);
+      const { radii, pos } = splitShapeArgs(m[1]);
+      if (radii === '') return defaultRadiusClipsAll(pos, w, h);   // 縦横とも省略＝closest-side
+      const rr = radii.split(/\s+/).filter(Boolean);
       // 縦横どちらかが 0 なら、その時点で面積は 0
       return rr.length > 0 && rr.length <= 2 && rr.some(zero) && rr.every(known);
     }
@@ -250,7 +301,11 @@
   // 形だけを解き、百分率はその参照ボックスの実寸に対して解決する
   // （content-box の 50% は、padding を除いた内側の 50%）。
   // 付いていなければ border-box が既定。
-  const GEOMETRY_BOX = /\s+(border-box|padding-box|content-box|margin-box|fill-box|stroke-box|view-box)$/;
+  //
+  // **参照ボックスだけを書くこともできる**（`clip-path: content-box`）。そのときは
+  // その箱の辺がそのまま切り取り線になるので、箱の幅か高さが 0 なら全面が消える。
+  // 先頭一致も認めないと、形が無い書き方をまるごと取りこぼす（実測で再現）。
+  const GEOMETRY_BOX = /(?:^|\s+)(border-box|padding-box|content-box|margin-box|fill-box|stroke-box|view-box)$/;
 
   function splitGeometryBox(v) {
     const m = GEOMETRY_BOX.exec(v);
@@ -307,9 +362,12 @@
       // 面積が 0 になる書き方か。inset は参照ボックスの実寸へ換算して面積で決める。
       const { shape, box } = splitGeometryBox(path);
       const ref = path ? refBoxSize(n, cs, box) : null;
+      // 参照ボックスだけを書いた場合。その箱が潰れていれば、中身は全部消える。
+      const boxOnly = path !== '' && shape === '';
       v = tiny || rectClipsAll(clip)
+        || (boxOnly && ref !== null && (ref.w <= 0 || ref.h <= 0))
         || insetClipsAll(shape, ref ? ref.w : null, ref ? ref.h : null)
-        || shapeClipsAll(shape);
+        || shapeClipsAll(shape, ref ? ref.w : null, ref ? ref.h : null);
     }
     if (clipCache) clipCache.set(n, v);
     return v;
@@ -430,7 +488,7 @@
       const hit = skipCache.get(el);
       if (hit !== undefined) return hit;
     }
-    const v = !!el.closest(SKIP);
+    const v = isOurChrome(el) || !!el.closest(SKIP);
     if (skipCache) skipCache.set(el, v);
     return v;
   }
@@ -453,7 +511,10 @@
     // 2,500段落の祖先を隠す／戻すを繰り返す試験では、ここが費用の大半だった。
     // 可視でないだけの節点は**印を付けない**が処理済みにもしない（あとで見えたら注記する）。
     if (!matcher.test(v)) { markHandled(node); return false; }
-    return isVisibleOccurrence(el);
+    if (isVisibleOccurrence(el)) return true;
+    // 見えないだけの節点は処理済みにしない。あとで見えたときに拾えるよう控える。
+    rememberLatent(node);
+    return false;
   }
 
   /* ---------- 3. 入口（trigger）の解決 ---------- */
@@ -597,8 +658,14 @@
   // ページ側が、注記済みの領域を丸ごと cloneNode で複製することがある。
   // 複製された印は class も data 属性もそのままなので、見た目には区別が付かない。
   // 自分が作ったものを控えておき、それ以外は自分のものとして扱わない。
+  // 「いま自分の正規の印か」。退役したら取り消す（下の retireGloss）。
   const ownedIcons = new WeakSet();
   const ownedTriggers = new WeakSet();
+  // 「自分が作った要素か」。こちらは取り消さない。
+  // 2つを分けるのは、問いが別だからである。所有を取り消した印を DOM から外すと、
+  // その削除は「ページが起こした変更」に見えてしまい、余計なまとめ直しを呼ぶ。
+  // 変更の出どころを言うにはこちらを、正規かどうかを言うには上の表を使う。
+  const madeIcons = new WeakSet();
 
   /* ---------- 3-1b. 自分が書いた属性の「予定表」 ---------- */
   // 「その要素は自分のものか」と「その変更を起こしたのは自分か」は別のこと。
@@ -611,6 +678,14 @@
   // **その3つが完全に一致する変更だけ**を自分の仕業として無視する。
   // 予定と違う値になっていたら、書いたのは自分ではない。
   const expectedAttrs = new WeakMap();   // Element -> Map<属性名, 期待する値（null は削除）>
+
+  // 本文を割るのも自分である。1回割ると、右側の節点が増える（childList）と同時に、
+  // 左側の中身が短くなる（characterData）。どちらも自分の変更なので数え直しの
+  // 合図にしない。**1回だけ**受け取って消す（属性の予定表と同じ考え方）。
+  // 消さずに覚えっぱなしにすると、そのあとページがその節点を書き換えても
+  // 気づけなくなる。実測では、この2つが「1回の変更で2回のまとめ直し」の正体だった。
+  const expectedSplit = new WeakSet();   // 割ってできた右側（増える）
+  const expectedTrim = new WeakSet();    // 割られた左側（短くなる）
 
   function setOwnAttr(el, name, value) {
     let m = expectedAttrs.get(el);
@@ -637,6 +712,24 @@
     return null;
   }
 
+  // 自分が作った印か（退役したものも含む）。変更の出どころを言うときに使う。
+  function madeIconAt(el) {
+    for (let n = el; n; n = n.parentElement) if (madeIcons.has(n)) return n;
+    return null;
+  }
+
+  // 吹き出しと切替ボタンは、**その要素そのもの**で見分ける。
+  // class 名で見分けていたときは、ページ側が同じ class を自分の段落へ付けただけで、
+  // その段落を自分の持ち物として扱っていた（実測: ページが `.iiyaku-tooltip` を
+  // 付けてから自分で隠すと、その変更が「自分の変更」として無視され、中の印が
+  // 退役せず、後ろの読める語が抑止された）。名前は誰でも名乗れる。
+  function isOurChrome(el) {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
+    if (tip && (el === tip || tip.contains(el))) return true;
+    if (toggleBtn && (el === toggleBtn || toggleBtn.contains(el))) return true;
+    return false;
+  }
+
   // 追加された領域を走査する前に、複製された「自分のふり」を取り除く。
   //
   // 判定は class だけではしない。class は誰でも付けられる。自分が作った印には
@@ -650,9 +743,17 @@
       if (root.querySelectorAll) out.push(...root.querySelectorAll(sel));
       return out;
     };
-    // 自分の合言葉を持つのに自分が作ったものではない＝複製された印
-    for (const ic of pick(`[data-iiyaku-owner="${CSS.escape(UID)}"]`)) {
-      if (!ownedIcons.has(ic)) ic.remove();
+    // 複製かどうかは、**自分が書いた説明文そのもの**で決める。
+    // 合言葉の値で決めていたときは、値を書き換えた複製も、値を消した複製も
+    // すり抜けた（実測: 前者は印として描かれ、後者は幅0のまま Tab で止まった）。
+    // 辞書のキーと、そのキーの説明文が一致していれば、それは自分の作ったものの
+    // 複製である。ページ側が同じ class を使っているだけの要素には当たらない。
+    for (const ic of pick('[data-iiyaku-key]')) {
+      if (ownedIcons.has(ic)) continue;
+      const key = ic.dataset ? ic.dataset.iiyakuKey : null;
+      if (key && Object.prototype.hasOwnProperty.call(DICT, key) && ic.dataset.iiyaku === DICT[key]) {
+        ic.remove();
+      }
     }
     // 入口の目印も複製される。引き当てには使っていないので実害は無いが、
     // ページに自分の合言葉だけが残るのは紛らわしいので外す。
@@ -681,6 +782,7 @@
     // 「合言葉あり かつ 自分の作ったものではない」を複製の判定に使う。
     icon.dataset.iiyakuOwner = UID;
     ownedIcons.add(icon);   // 複製された印と区別するため、自分の作ったものを控える
+    madeIcons.add(icon);
     return icon;
   }
 
@@ -823,6 +925,7 @@
 
     tip = document.createElement('div');
     tip.className = 'iiyaku-tooltip';
+    tip.dataset.iiyakuOwner = UID;   // 見た目は合言葉つきの要素にだけ与える
     tip.id = TIP_ID;
     tip.setAttribute('role', 'tooltip');
     tip.appendChild(buildTipBody(icons));
@@ -954,6 +1057,12 @@
   function isCoherent(rec) {
     if (!rec.icon.isConnected || !rec.termNode.isConnected) return false;
     if (rec.icon.parentNode !== rec.parent || rec.termNode.parentNode !== rec.parent) return false;
+    // 合言葉は、印の見た目と複製の判定の両方が拠り所にしている。ページ側が外したり
+    // 別の値へ書き換えたりできる以上、**記録の不変条件として毎回確かめる**。
+    // 確かめないと、見えないまま Tab で止まる印が残り、後ろの読める語が抑止される
+    // （実測: 合言葉を外された印は幅0になるが、role=button と tabindex=0 は残った）。
+    if (!ownedIcons.has(rec.icon)) return false;
+    if (rec.icon.getAttribute('data-iiyaku-owner') !== UID) return false;
 
     // ---- 本文の文字に触れる前に、いまも触れてよい場所かを確かめる ----
     // 注記したあとで、ページ側がその場所を編集領域・コード・aria-hidden・inert・
@@ -1048,6 +1157,12 @@
     const rec = glossed.get(key);
     if (!rec) return null;
     glossed.delete(key);
+    // 所有をその場で取り消す。取り消さないと、ページが退役した領域を保持していて
+    // あとから DOM へ戻したとき、その印が「自分の正規の印」のまま生き返る
+    // （実測: 同じ語の、押せる印が2つ並んだ）。
+    ownedIcons.delete(rec.icon);
+    iconTrigger.delete(rec.icon);
+    expectedAttrs.delete(rec.icon);
     if (rec.icon.isConnected) {
       // その印について説明を出している最中なら、先に閉じる
       if (tip && tipIcons.includes(rec.icon)) hideTip();
@@ -1126,7 +1241,11 @@
       // 用語が末尾ちょうどで終わるときは割らない。割ると空の節点が1つ増え、
       // 片づけと付け直しを繰り返すたびに増え続ける（往復のたびに1つずつ）。
       const tail = at < cur.length ? cur.splitText(at) : null;
-      if (tail) markHandled(tail);                          // 断片を再処理しない
+      if (tail) {
+        markHandled(tail);                                  // 断片を再処理しない
+        expectedSplit.add(tail);                            // 増えるのも短くなるのも自分
+        expectedTrim.add(cur);
+      }
       const icon = makeIcon(hit.key, hit.match, DICT[hit.key]);
       parent.insertBefore(icon, tail ?? cur.nextSibling);
       applyIconSemantics(icon, placement);                  // 入った場所を見てから決める
@@ -1189,6 +1308,27 @@
     return n;
   }
 
+  // 見えるようになった語を探す。
+  //
+  // 全体を走り直さず、控えてある候補（初回に見えていなかった節点）だけを見る。
+  // 同じキーに使える印が別の場所にあるなら `findHits` が落とすので、
+  // ここで印が2つになることはない（移動もしない。読める説明が1つあれば足りる）。
+  function discoverLatent() {
+    if (latentOverflow) { latentOverflow = false; return scanInner(document.body); }
+    let n = 0;
+    for (const node of latent) {
+      if (!node.isConnected || isHandled(node)) { latent.delete(node); continue; }
+      // 見え方を測る前に、「まだ読める説明が無い語」を含むかだけを見る。
+      // ここは文字列の照合だけで、レイアウトを起こさない。印は1語につき1つなので、
+      // 既に読める印がある語しか入っていない節点は、見えるようになっても何も足せない。
+      // 控えからは外さない——その印があとで退役すれば、また候補に戻るからである。
+      const v = node.nodeValue;
+      if (!v || matcher.findHits(v, key => usableGloss(key) !== null).length === 0) continue;
+      if (isTarget(node)) { latent.delete(node); n += annotate(node); }
+    }
+    return n;
+  }
+
   /* ---------- 8. 変更の検知と、まとめ直しの予約 ---------- */
   // 見え方が変わる合図は、DOM の変更だけではない。CSS の遷移が終わったとき、
   // 画面の幅が変わって media query が入れ替わったとき、`<head>` へ stylesheet が
@@ -1201,7 +1341,9 @@
   let batchScheduled = false;
   let wantDeep = false;                 // 見え方まで確かめ直すか
   let pendingRoots = new Set();         // 走査し直す場所
-  let inBatch = false;                  // まとめ直しの最中（自分の変更で再入しない）
+  // まとめ直し中の再入は、旗ではなく「自分が起こした変更は数えない」で防いでいる
+  // （isSelfMutation / isOurNode）。読まれない旗を残すと、守っているつもりの
+  // 不変条件が実際には誰も見ていない、という状態になる。
 
   function schedule({ deep = false, root = null } = {}) {
     if (deep) wantDeep = true;
@@ -1221,42 +1363,40 @@
     pendingRoots = new Set();
     if (!observing) return;
 
-    inBatch = true;
-    try {
-      withRenderCache(() => {
-        // ① 記録と DOM の食い違いを片づける。deep なら見え方・到達性・入口の意味まで。
-        let released = reconcileGlosses(deep);
+    withRenderCache(() => {
+      // ① 記録と DOM の食い違いを片づける。deep なら見え方・到達性・入口の意味まで。
+      let released = reconcileGlosses(deep);
 
-        // ② GitHub はページを読み直さずに画面を差し替えることがある。
-        //    別のページに移ったら、DOM がそのままでも見え方は変わりうる。
-        let full = false;
-        if (location.href !== lastUrl) {
-          lastUrl = location.href;
-          hideTip();
-          if (!deep) released = released || reconcileGlosses(true);
-          full = true;
-        }
-        // ③ 正規の印が居なくなったなら、ページ全体から選び直す。
-        //    既にページにある候補へ引き継ぐには、世代を進めるしかない。
-        if (released) full = true;
+      // ② GitHub はページを読み直さずに画面を差し替えることがある。
+      //    別のページに移ったら、DOM がそのままでも見え方は変わりうる。
+      let full = false;
+      if (location.href !== lastUrl) {
+        lastUrl = location.href;
+        hideTip();
+        if (!deep) released = released || reconcileGlosses(true);
+        full = true;
+      }
+      // ③ 正規の印が居なくなったなら、ページ全体から選び直す。
+      //    既にページにある候補へ引き継ぐには、世代を進めるしかない。
+      if (released) full = true;
 
-        if (full) {
-          // 全体を走るので、変更のあった場所を別に走る必要はない
-          // （同じ枝を二度歩かない。大きな領域の属性が変わったときに効く）。
-          if (released) reselect();      // generation++ ＋ 全体走査
-          else scan(document.body);
-        } else {
-          // 入れ子になった場所は、いちばん外側だけを走ればよい
-          for (const n of roots) {
-            let covered = false;
-            for (let p = n.parentNode; p && !covered; p = p.parentNode) if (roots.has(p)) covered = true;
-            if (!covered) scanInner(n);
-          }
+      if (full) {
+        // 全体を走るので、変更のあった場所を別に走る必要はない
+        // （同じ枝を二度歩かない。大きな領域の属性が変わったときに効く）。
+        if (released) reselect();      // generation++ ＋ 全体走査
+        else scan(document.body);
+      } else {
+        // 入れ子になった場所は、いちばん外側だけを走ればよい
+        for (const n of roots) {
+          let covered = false;
+          for (let p = n.parentNode; p && !covered; p = p.parentNode) if (roots.has(p)) covered = true;
+          if (!covered) scanInner(n);
         }
-      });
-    } finally {
-      inBatch = false;
-    }
+        // ④ 見え方が変わったのなら、まだ印の無い語も見直す。
+        //    全体を走ったときは、そこで既に拾えている（同じ枝を二度歩かない）。
+        if (deep) discoverLatent();
+      }
+    });
   }
 
   // その変更は、自分が起こしたものか。
@@ -1267,7 +1407,7 @@
     if (mu.type === 'attributes') {
       // 吹き出しと切替ボタンは自分だけのもので、記録を持たない。
       // ここの位置合わせで毎回いちばん重い経路へ入らないよう、まとめて除く。
-      if (t.nodeType === Node.ELEMENT_NODE && t.closest('.iiyaku-tooltip, .iiyaku-toggle')) return true;
+      if (isOurChrome(t)) return true;
       return isExpectedAttrChange(t, mu.attributeName);
     }
     return false;
@@ -1277,8 +1417,10 @@
   function isOurNode(node) {
     const el = node && (node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement);
     if (!el) return false;
-    if (ownedIconAt(el)) return true;
-    return !!el.closest('.iiyaku-tooltip, .iiyaku-toggle');
+    // 退役させた印の削除も「自分が起こした変更」である。所有を取り消したあとに
+    // 外すので、ここで所有だけを見ると自分の後始末がページの変更に見えてしまう。
+    if (madeIconAt(el)) return true;
+    return isOurChrome(el);
   }
 
   const observer = new MutationObserver(muts => {
@@ -1298,6 +1440,10 @@
       }
       if (mu.type === 'characterData') {
         if (isOurNode(mu.target)) continue;
+        // 自分が割ったことで短くなった分は、自分の変更。1回だけ受け取って消す
+        // （ここを数えていたので、注記した直後にその節点の処理済み印を自分で
+        //   外し、同じ節点をもう一度走査していた）。
+        if (expectedTrim.has(mu.target)) { expectedTrim.delete(mu.target); continue; }
         deep = true;
         handled.delete(mu.target);      // 文字が変われば、前の判断の根拠も消えている
         roots.push(mu.target);
@@ -1306,7 +1452,14 @@
       // childList。**増えただけでも見え方は変わりうる**——`:has()` や構造疑似クラスを
       // 使えば、子を1つ足すだけで祖先が display:none になる（実測で再現）。
       // 「追加だけなら安全」という前提は置けない。
-      for (const n of mu.addedNodes) { if (!isOurNode(n)) { deep = true; } roots.push(n); }
+      // 自分が入れた印と、自分が割ってできた節点は、走査し直す場所に**入れない**。
+      // 入れると、印を1つ動かすたびに空のまとめ直しがもう1回走った（実測: 1回の
+      // hide で2回。語が節点の末尾で終わる形＝割らない形では1回だったので、
+      // 割ったことが原因だと切り分けられた）。
+      for (const n of mu.addedNodes) {
+        if (expectedSplit.has(n)) { expectedSplit.delete(n); continue; }
+        if (!isOurNode(n)) { deep = true; roots.push(n); }
+      }
       for (const n of mu.removedNodes) if (!isOurNode(n)) deep = true;
     }
     if (!deep && roots.length === 0) return;
@@ -1344,7 +1497,9 @@
     idleTimer = setTimeout(() => {
       idleTimer = null;
       if (!observing) return;
-      if (document.hidden || glossed.size === 0) { scheduleIdleCheck(); return; }
+      // 印が1つも無くても、あとで見えるかもしれない候補があるなら見に行く
+      // （property だけの変化は、この経路でしか気づけない）。
+      if (document.hidden || (glossed.size === 0 && latent.size === 0)) { scheduleIdleCheck(); return; }
       const run = () => { schedule({ deep: true }); scheduleIdleCheck(); };
       if (canIdle) requestIdleCallback(run, { timeout: IDLE_GAP });
       else run();
@@ -1416,6 +1571,7 @@
   function createToggle() {
     const btn = document.createElement('button');
     btn.className = 'iiyaku-toggle';
+    btn.dataset.iiyakuOwner = UID;   // 見た目は合言葉つきの要素にだけ与える
     btn.type = 'button';
     toggleBtn = btn;
     updateToggle();
@@ -1444,7 +1600,28 @@
     console.error('[iiyaku] 設定の変更を受け取れません:', e);
   }
 
+  /* ---------- 10-2. 合言葉の値まで見る（見た目の側） ---------- */
+  // `styles.css` は合言葉の**有無**しか見られない。読み込みごとに変わる値を
+  // 静的なファイルへ書けないためである。そこで、値が自分のものでない要素からは
+  // 自分の装飾を引き上げる規則を、走り出しに1つだけ足す。
+  // 消すのではなく「与えない」だけなので、ページ側の要素を壊さない。
+  function scopeOwnStyle() {
+    try {
+      const st = document.createElement('style');
+      const not = `.iiyaku-icon[data-iiyaku-owner]:not([data-iiyaku-owner="${CSS.escape(UID)}"])`;
+      st.textContent =
+        `${not}{display:inline;width:auto;height:auto;border:0;margin-left:0;` +
+        `background:none;opacity:1;cursor:auto}` +
+        `${not}::after{content:none}`;
+      (document.head || document.documentElement).appendChild(st);
+    } catch (e) {
+      // 足せなくても本体の動作は変わらない（複製は sanitizeClones が取り除く）
+      console.error('[iiyaku] 見た目の絞り込みを足せません:', e);
+    }
+  }
+
   /* ---------- 11. 実行 ---------- */
+  scopeOwnStyle();
   bindTip();        // 監視の ON / OFF に関わらず、入口は一度だけ張る
   createToggle();
   applyEnabled(enabled);

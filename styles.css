@@ -68,7 +68,7 @@
    ブラウザ標準の title 属性は表示までに1秒前後の待ちがあり、こちらから
    短くできない。自前で描いて、カーソルが乗った瞬間に出す。
    transition を付けないのは、フェードインでも「遅い」と感じられるため。 */
-.iiyaku-tooltip {
+.iiyaku-tooltip[data-iiyaku-owner] {
   /* 画面（viewport）の座標で置く。狭い画面や 200%／400% の拡大表示でも
      上下左右を余白の内側へ収めたいので、絶対座標ではなく固定座標にする。
      スクロールや画面の変化では、消さずに位置を追従させる（キーボードで画面外の
@@ -114,20 +114,20 @@
 
 /* 1つのリンクに複数の用語があるとき、説明をまとめて出す。
    どの語の説明かが分かるよう、2件以上のときだけ見出しを付ける。 */
-.iiyaku-tooltip-item + .iiyaku-tooltip-item {
+.iiyaku-tooltip[data-iiyaku-owner] .iiyaku-tooltip-item + .iiyaku-tooltip-item {
   margin-top: 8px;
   padding-top: 8px;
   border-top: 1px solid rgba(255, 255, 255, 0.22);
 }
 
-.iiyaku-tooltip-term {
+.iiyaku-tooltip[data-iiyaku-owner] .iiyaku-tooltip-term {
   display: block;
   font-weight: 700;
   opacity: 0.85;
 }
 
 /* ③ トグルボタン – ON/OFF */
-.iiyaku-toggle {
+.iiyaku-toggle[data-iiyaku-owner] {
   position: fixed;
   bottom: 20px;
   right: 20px;
@@ -146,11 +146,11 @@
   transition: background-color 0.2s ease, color 0.2s ease;
 }
 
-.iiyaku-toggle:hover {
+.iiyaku-toggle[data-iiyaku-owner]:hover {
   background: var(--bgColor-neutral-muted, var(--color-neutral-muted, #e5e7eb));
 }
 
-.iiyaku-toggle:focus-visible {
+.iiyaku-toggle[data-iiyaku-owner]:focus-visible {
   outline: 2px solid var(--fgColor-accent, var(--color-accent-fg, #2563eb));
   outline-offset: 2px;
 }
@@ -166,13 +166,13 @@
     color: var(--bgColor-default, var(--color-canvas-default, #0d1117));
   }
 
-  .iiyaku-toggle {
+  .iiyaku-toggle[data-iiyaku-owner] {
     background: var(--bgColor-muted, var(--color-canvas-subtle, #1f2937));
     color: var(--fgColor-default, var(--color-fg-default, #f3f4f6));
     border: 1px solid var(--borderColor-default, var(--color-border-default, #4b5563));
   }
 
-  .iiyaku-toggle:hover {
+  .iiyaku-toggle[data-iiyaku-owner]:hover {
     background: var(--bgColor-neutral-muted, var(--color-neutral-muted, #374151));
   }
 }
@@ -180,14 +180,14 @@
 /* 動きを減らす設定にしている人には、装飾のための変化を出さない。 */
 @media (prefers-reduced-motion: reduce) {
   .iiyaku-icon[data-iiyaku-owner],
-  .iiyaku-toggle {
+  .iiyaku-toggle[data-iiyaku-owner] {
     transition: none;
   }
 }
 
 /* PWA（standalone）モード時は少し内側に寄せる */
 @media (display-mode: standalone) {
-  .iiyaku-toggle {
+  .iiyaku-toggle[data-iiyaku-owner] {
     bottom: 80px; /* タスクバーやアプリバーと被らないように */
     right: 24px;
   }

@@ -57,7 +57,9 @@
     '.react-code-lines', '.react-code-line-contents', '.react-blob-print-hide',
     '.cm-editor', '.CodeMirror', '.highlight', '.snippet-clipboard-content',
     '[data-testid="code-cell"]', '[data-testid="blob-viewer-file-content"]',
-    '.iiyaku-icon', '.iiyaku-toggle', '.iiyaku-tooltip',
+    // 自分の吹き出しと切替ボタンは、ここ（class 名）ではなく要素そのもので除く
+    // （→ isOurChrome）。名前で除くと、ページ側の同名 class まで巻き込む。
+    '.iiyaku-icon',
     '[aria-hidden="true"]', '.sr-only', '.visually-hidden'
   ].join(',');
 
@@ -447,7 +449,7 @@
       const hit = skipCache.get(el);
       if (hit !== undefined) return hit;
     }
-    const v = !!el.closest(SKIP);
+    const v = isOurChrome(el) || !!el.closest(SKIP);
     if (skipCache) skipCache.set(el, v);
     return v;
   }
@@ -668,6 +670,19 @@
     for (let n = el; n; n = n.parentElement) if (madeIcons.has(n)) return n;
     return null;
   }
+
+  // 吹き出しと切替ボタンは、**その要素そのもの**で見分ける。
+  // class 名で見分けていたときは、ページ側が同じ class を自分の段落へ付けただけで、
+  // その段落を自分の持ち物として扱っていた（実測: ページが `.iiyaku-tooltip` を
+  // 付けてから自分で隠すと、その変更が「自分の変更」として無視され、中の印が
+  // 退役せず、後ろの読める語が抑止された）。名前は誰でも名乗れる。
+  function isOurChrome(el) {
+    if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
+    if (tip && (el === tip || tip.contains(el))) return true;
+    if (toggleBtn && (el === toggleBtn || toggleBtn.contains(el))) return true;
+    return false;
+  }
+
   // 追加された領域を走査する前に、複製された「自分のふり」を取り除く。
   //
   // 判定は class だけではしない。class は誰でも付けられる。自分が作った印には
@@ -863,6 +878,7 @@
 
     tip = document.createElement('div');
     tip.className = 'iiyaku-tooltip';
+    tip.dataset.iiyakuOwner = UID;   // 見た目は合言葉つきの要素にだけ与える
     tip.id = TIP_ID;
     tip.setAttribute('role', 'tooltip');
     tip.appendChild(buildTipBody(icons));
@@ -1343,7 +1359,7 @@
     if (mu.type === 'attributes') {
       // 吹き出しと切替ボタンは自分だけのもので、記録を持たない。
       // ここの位置合わせで毎回いちばん重い経路へ入らないよう、まとめて除く。
-      if (t.nodeType === Node.ELEMENT_NODE && t.closest('.iiyaku-tooltip, .iiyaku-toggle')) return true;
+      if (isOurChrome(t)) return true;
       return isExpectedAttrChange(t, mu.attributeName);
     }
     return false;
@@ -1356,7 +1372,7 @@
     // 退役させた印の削除も「自分が起こした変更」である。所有を取り消したあとに
     // 外すので、ここで所有だけを見ると自分の後始末がページの変更に見えてしまう。
     if (madeIconAt(el)) return true;
-    return !!el.closest('.iiyaku-tooltip, .iiyaku-toggle');
+    return isOurChrome(el);
   }
 
   const observer = new MutationObserver(muts => {
@@ -1496,6 +1512,7 @@
   function createToggle() {
     const btn = document.createElement('button');
     btn.className = 'iiyaku-toggle';
+    btn.dataset.iiyakuOwner = UID;   // 見た目は合言葉つきの要素にだけ与える
     btn.type = 'button';
     toggleBtn = btn;
     updateToggle();

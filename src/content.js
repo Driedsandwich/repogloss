@@ -617,8 +617,14 @@
   // ページ側が、注記済みの領域を丸ごと cloneNode で複製することがある。
   // 複製された印は class も data 属性もそのままなので、見た目には区別が付かない。
   // 自分が作ったものを控えておき、それ以外は自分のものとして扱わない。
+  // 「いま自分の正規の印か」。退役したら取り消す（下の retireGloss）。
   const ownedIcons = new WeakSet();
   const ownedTriggers = new WeakSet();
+  // 「自分が作った要素か」。こちらは取り消さない。
+  // 2つを分けるのは、問いが別だからである。所有を取り消した印を DOM から外すと、
+  // その削除は「ページが起こした変更」に見えてしまい、余計なまとめ直しを呼ぶ。
+  // 変更の出どころを言うにはこちらを、正規かどうかを言うには上の表を使う。
+  const madeIcons = new WeakSet();
 
   /* ---------- 3-1b. 自分が書いた属性の「予定表」 ---------- */
   // 「その要素は自分のものか」と「その変更を起こしたのは自分か」は別のこと。
@@ -657,6 +663,11 @@
     return null;
   }
 
+  // 自分が作った印か（退役したものも含む）。変更の出どころを言うときに使う。
+  function madeIconAt(el) {
+    for (let n = el; n; n = n.parentElement) if (madeIcons.has(n)) return n;
+    return null;
+  }
   // 追加された領域を走査する前に、複製された「自分のふり」を取り除く。
   //
   // 判定は class だけではしない。class は誰でも付けられる。自分が作った印には
@@ -701,6 +712,7 @@
     // 「合言葉あり かつ 自分の作ったものではない」を複製の判定に使う。
     icon.dataset.iiyakuOwner = UID;
     ownedIcons.add(icon);   // 複製された印と区別するため、自分の作ったものを控える
+    madeIcons.add(icon);
     return icon;
   }
 
@@ -974,6 +986,12 @@
   function isCoherent(rec) {
     if (!rec.icon.isConnected || !rec.termNode.isConnected) return false;
     if (rec.icon.parentNode !== rec.parent || rec.termNode.parentNode !== rec.parent) return false;
+    // 合言葉は、印の見た目と複製の判定の両方が拠り所にしている。ページ側が外したり
+    // 別の値へ書き換えたりできる以上、**記録の不変条件として毎回確かめる**。
+    // 確かめないと、見えないまま Tab で止まる印が残り、後ろの読める語が抑止される
+    // （実測: 合言葉を外された印は幅0になるが、role=button と tabindex=0 は残った）。
+    if (!ownedIcons.has(rec.icon)) return false;
+    if (rec.icon.getAttribute('data-iiyaku-owner') !== UID) return false;
 
     // ---- 本文の文字に触れる前に、いまも触れてよい場所かを確かめる ----
     // 注記したあとで、ページ側がその場所を編集領域・コード・aria-hidden・inert・
@@ -1068,6 +1086,12 @@
     const rec = glossed.get(key);
     if (!rec) return null;
     glossed.delete(key);
+    // 所有をその場で取り消す。取り消さないと、ページが退役した領域を保持していて
+    // あとから DOM へ戻したとき、その印が「自分の正規の印」のまま生き返る
+    // （実測: 同じ語の、押せる印が2つ並んだ）。
+    ownedIcons.delete(rec.icon);
+    iconTrigger.delete(rec.icon);
+    expectedAttrs.delete(rec.icon);
     if (rec.icon.isConnected) {
       // その印について説明を出している最中なら、先に閉じる
       if (tip && tipIcons.includes(rec.icon)) hideTip();
@@ -1321,7 +1345,9 @@
   function isOurNode(node) {
     const el = node && (node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement);
     if (!el) return false;
-    if (ownedIconAt(el)) return true;
+    // 退役させた印の削除も「自分が起こした変更」である。所有を取り消したあとに
+    // 外すので、ここで所有だけを見ると自分の後始末がページの変更に見えてしまう。
+    if (madeIconAt(el)) return true;
     return !!el.closest('.iiyaku-tooltip, .iiyaku-toggle');
   }
 

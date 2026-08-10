@@ -247,17 +247,49 @@
   // 「解けない」として捨てていたため、全面が隠れているのに可視と答えていた。
   // キーワード側は 0 ではない（辺までの距離）ので、**片方が 0 なら面積は 0**。
   const SHAPE_KEYWORD = /^(closest|farthest)-side$/;
-  function shapeClipsAll(v) {
+  // 位置を、参照ボックスの中の px へ直す。解けなければ null。
+  function posToPx(s, size) {
+    if (s === '0') return 0;
+    if (LEN_PX.test(s)) return parseFloat(s);
+    if (LEN_PCT.test(s)) return parseFloat(s) / 100 * size;
+    return null;
+  }
+  // 引数を「半径の並び」と「中心の位置」に分ける。
+  // 半径を省くと、computed 値は `circle(at 0px 50%)` のように **at から始まる**。
+  // `\s+at\s+` で切ると、この形では at の前に空白が無いので切れず、半径の側へ
+  // 丸ごと入ってしまう（実測で取りこぼした）。行頭の at も切れるようにする。
+  function splitShapeArgs(inner) {
+    const m = /(^|\s)at\s+/.exec(inner);
+    if (!m) return { radii: inner.trim(), pos: null };
+    return { radii: inner.slice(0, m.index).trim(), pos: inner.slice(m.index + m[0].length).trim() };
+  }
+
+  // 半径を省いたときの既定は closest-side——中心から参照ボックスのいちばん近い辺
+  // までの距離が半径になる。中心が辺の上にあれば 0 で、全面が切り取られる
+  // （実測: `circle(closest-side at 0 50%)` は computed 値から半径が消え、
+  // 当たり判定でも文字に触れなかった）。中心が箱の外なら負になり、やはり 0。
+  function defaultRadiusClipsAll(pos, w, h) {
+    if (!(w > 0 && h > 0) || !pos) return false;
+    const at = pos.split(/\s+/);
+    if (at.length !== 2) return false;
+    const cx = posToPx(at[0], w), cy = posToPx(at[1], h);
+    if (cx === null || cy === null) return false;
+    return Math.min(cx, w - cx, cy, h - cy) <= 0;
+  }
+
+  function shapeClipsAll(v, w = null, h = null) {
     const zero = s => s === '0' || /^0(\.0+)?(px|%)$/.test(s);
     const known = s => zero(s) || LEN_PX.test(s) || LEN_PCT.test(s) || SHAPE_KEYWORD.test(s);
     let m = /^circle\((.*)\)$/.exec(v);
     if (m) {
-      const r = m[1].split(/\s+at\s+/)[0].trim();
-      return r !== '' && zero(r);
+      const { radii, pos } = splitShapeArgs(m[1]);
+      return radii !== '' ? zero(radii) : defaultRadiusClipsAll(pos, w, h);
     }
     m = /^ellipse\((.*)\)$/.exec(v);
     if (m) {
-      const rr = m[1].split(/\s+at\s+/)[0].trim().split(/\s+/).filter(Boolean);
+      const { radii, pos } = splitShapeArgs(m[1]);
+      if (radii === '') return defaultRadiusClipsAll(pos, w, h);   // 縦横とも省略＝closest-side
+      const rr = radii.split(/\s+/).filter(Boolean);
       // 縦横どちらかが 0 なら、その時点で面積は 0
       return rr.length > 0 && rr.length <= 2 && rr.some(zero) && rr.every(known);
     }
@@ -269,7 +301,11 @@
   // 形だけを解き、百分率はその参照ボックスの実寸に対して解決する
   // （content-box の 50% は、padding を除いた内側の 50%）。
   // 付いていなければ border-box が既定。
-  const GEOMETRY_BOX = /\s+(border-box|padding-box|content-box|margin-box|fill-box|stroke-box|view-box)$/;
+  //
+  // **参照ボックスだけを書くこともできる**（`clip-path: content-box`）。そのときは
+  // その箱の辺がそのまま切り取り線になるので、箱の幅か高さが 0 なら全面が消える。
+  // 先頭一致も認めないと、形が無い書き方をまるごと取りこぼす（実測で再現）。
+  const GEOMETRY_BOX = /(?:^|\s+)(border-box|padding-box|content-box|margin-box|fill-box|stroke-box|view-box)$/;
 
   function splitGeometryBox(v) {
     const m = GEOMETRY_BOX.exec(v);
@@ -326,9 +362,12 @@
       // 面積が 0 になる書き方か。inset は参照ボックスの実寸へ換算して面積で決める。
       const { shape, box } = splitGeometryBox(path);
       const ref = path ? refBoxSize(n, cs, box) : null;
+      // 参照ボックスだけを書いた場合。その箱が潰れていれば、中身は全部消える。
+      const boxOnly = path !== '' && shape === '';
       v = tiny || rectClipsAll(clip)
+        || (boxOnly && ref !== null && (ref.w <= 0 || ref.h <= 0))
         || insetClipsAll(shape, ref ? ref.w : null, ref ? ref.h : null)
-        || shapeClipsAll(shape);
+        || shapeClipsAll(shape, ref ? ref.w : null, ref ? ref.h : null);
     }
     if (clipCache) clipCache.set(n, v);
     return v;

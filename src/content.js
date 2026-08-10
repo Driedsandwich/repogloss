@@ -681,9 +681,17 @@
       if (root.querySelectorAll) out.push(...root.querySelectorAll(sel));
       return out;
     };
-    // 自分の合言葉を持つのに自分が作ったものではない＝複製された印
-    for (const ic of pick(`[data-iiyaku-owner="${CSS.escape(UID)}"]`)) {
-      if (!ownedIcons.has(ic)) ic.remove();
+    // 複製かどうかは、**自分が書いた説明文そのもの**で決める。
+    // 合言葉の値で決めていたときは、値を書き換えた複製も、値を消した複製も
+    // すり抜けた（実測: 前者は印として描かれ、後者は幅0のまま Tab で止まった）。
+    // 辞書のキーと、そのキーの説明文が一致していれば、それは自分の作ったものの
+    // 複製である。ページ側が同じ class を使っているだけの要素には当たらない。
+    for (const ic of pick('[data-iiyaku-key]')) {
+      if (ownedIcons.has(ic)) continue;
+      const key = ic.dataset ? ic.dataset.iiyakuKey : null;
+      if (key && Object.prototype.hasOwnProperty.call(DICT, key) && ic.dataset.iiyaku === DICT[key]) {
+        ic.remove();
+      }
     }
     // 入口の目印も複製される。引き当てには使っていないので実害は無いが、
     // ページに自分の合言葉だけが残るのは紛らわしいので外す。
@@ -1516,7 +1524,28 @@
     console.error('[iiyaku] 設定の変更を受け取れません:', e);
   }
 
+  /* ---------- 10-2. 合言葉の値まで見る（見た目の側） ---------- */
+  // `styles.css` は合言葉の**有無**しか見られない。読み込みごとに変わる値を
+  // 静的なファイルへ書けないためである。そこで、値が自分のものでない要素からは
+  // 自分の装飾を引き上げる規則を、走り出しに1つだけ足す。
+  // 消すのではなく「与えない」だけなので、ページ側の要素を壊さない。
+  function scopeOwnStyle() {
+    try {
+      const st = document.createElement('style');
+      const not = `.iiyaku-icon[data-iiyaku-owner]:not([data-iiyaku-owner="${CSS.escape(UID)}"])`;
+      st.textContent =
+        `${not}{display:inline;width:auto;height:auto;border:0;margin-left:0;` +
+        `background:none;opacity:1;cursor:auto}` +
+        `${not}::after{content:none}`;
+      (document.head || document.documentElement).appendChild(st);
+    } catch (e) {
+      // 足せなくても本体の動作は変わらない（複製は sanitizeClones が取り除く）
+      console.error('[iiyaku] 見た目の絞り込みを足せません:', e);
+    }
+  }
+
   /* ---------- 11. 実行 ---------- */
+  scopeOwnStyle();
   bindTip();        // 監視の ON / OFF に関わらず、入口は一度だけ張る
   createToggle();
   applyEnabled(enabled);

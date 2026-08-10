@@ -12,7 +12,7 @@ RepoGloss は、GitHub の画面に出てくる英語のうち Git / GitHub 固�
 
 | 項目 | 値 |
 |---|---|
-| **監査対象** | **v1.8.10 候補（作業ツリー）。まだ commit も tag もしていない** |
+| **監査対象** | **`v1.8.10` = コミット `aaa770d687ed5861785f629e494662823ba7d875`**（タグ済み・提出前） |
 | 直前の版 | `v1.8.9` = コミット `cea7a29590747f110d6cda68c162d339499c5fdf`（**第11回監査の指摘により提出しない**） |
 | 基点コミット | `105e8b03a562f119225ccaf4cfc7f9f99d11f338`（ここからの差分が今回の変更） |
 | 現在の既定ブランチ | `main` |
@@ -28,33 +28,35 @@ RepoGloss は、GitHub の画面に出てくる英語のうち Git / GitHub 固�
 差分は次のコマンドで確認できます。
 
 ```sh
-git diff --name-only v1.8.9            # 作業ツリーと、直前の版との差分
+git checkout v1.8.10                    # 監査対象を手元に出す
+git diff --name-only v1.8.9 v1.8.10     # 直前の版との差分
 # → 配布13ファイルのうち manifest.json・src/content.js・styles.css・README.md・
 #    DESIGN.md・PRIVACY.md が変わっている（辞書・matcher.js・アイコン・LICENSE は無変更）
 # → ほかに scripts/ と tests/ と docs/ と .github/（配布物には入らない）
 ```
 
-**この時点では commit も tag もしていません。** 監査は作業ツリーの内容に対して行ってください。
+**タグ `v1.8.10` を打ち、CI が提出候補 ZIP を作るところまで済んでいます。ストアへは未提出です。**
 
 > **監査対象と `main` の関係について（第11回 RG-11-06 の是正）。** 前回まで、監査対象を「`main` の先頭」と**相対的に**書いていました。提出候補の SHA を記録するコミットを1つ積んだ時点で、その記述は事実でなくなります（実際にそうなりました）。いまは対象をタグとコミットだけで名乗り、**現在の `main` の SHA はここに書きません**——書けば、その値もまた次のコミットで古くなるためです。両者の関係は文章ではなく検査で担保します。`state` が `uncommitted` でないとき、`verify` が「ここが名乗るタグと、いまの配布13ファイルが同じか」を `git diff` で突き合わせ、タグを引けない環境では**通しません**。
 
-### 1-1. 提出候補（まだ作っていない）
+### 1-1. 提出候補
 
-**v1.8.10 の提出候補 ZIP は、この時点では存在しません。** 提出するのは、いつも `main` の CI が作ったものだけです（手元で作ったものは `--release` 検査で落ちます）。
+**提出候補は、`main` の CI が作った成果物です。** 手元で作ったものは `--release` 検査で落ちるようにしてあり、提出するのは常に CI が出したものだけです。
 
 現在版の事実を、機械で読める形で1か所にまとめます（**ここが正本**。他の節はここを引用します）。
 
 ```yaml
 version:            1.8.10
-state:              uncommitted        # commit / tag / release / store submission いずれも未実施
+state:              tagged             # commit / push / tag / CI 済み。Release とストア提出は未実施
 base_commit:        105e8b03a562f119225ccaf4cfc7f9f99d11f338
-tag:                null
-candidate_zip:      null
-candidate_bytes:    null
-candidate_sha256:   null
-content_sha256:     null
-combined_sha256:    null
-workflow_run:       null
+commit:             aaa770d687ed5861785f629e494662823ba7d875
+tag:                v1.8.10
+candidate_zip:      repogloss-1.8.10.zip
+candidate_bytes:    107631
+candidate_sha256:   c194a9cbabd6496fc97d056b5713fcc2036e258745b43cfae29ecc874ce32fce
+content_sha256:     3b81332cd60cb4c7de930803a32283c24700794aa159b6ae1af1c0526a25fb23
+combined_sha256:    f327e22f9efc91a9ee447a52d6425b70ad8478653a87ff419dd96ea825ddcb5b
+workflow_run:       31443666381
 superseded:
   - version: 1.8.9
     tag: v1.8.9
@@ -83,11 +85,11 @@ superseded:
 store_published:    1.7.1
 ```
 
-取り下げた版のタグと ZIP は、すべて保存したまま動かしていません（`v1.8.9` を打った前後で、既存13本のタグが1文字も動いていないことを `refs/tags` 一覧の突き合わせで確認済み。1文字の改変なら検出できることも対照で確かめてあります）。
+取り下げた版のタグと ZIP は、すべて保存したまま動かしていません（`v1.8.10` を打った前後で、既存14本のタグが1文字も動いていないことを `refs/tags` 一覧の突き合わせで確認済み。1文字の改変なら検出できることも対照で確かめてあります）。
 
-**提出候補は、タグの中身と1バイトも違いません。** CI の run `31318907971` の `release-zip` が出した成果物を落として展開し、13ファイルを `git show v1.8.9:<path>` と突き合わせて **13/13 一致**（対照の `v1.8.8` とは6ファイルで相違）。`--release` 検査にも合格しています（`EXIT=0`。中身を1バイト足した ZIP では `EXIT=1` で落ちることも同じ実行で確かめました）。
+**提出候補は、タグの中身と1バイトも違いません。** CI の run `31443666381` の `release-zip` が出した成果物を落として展開し、13ファイルを `git show v1.8.10:<path>` と突き合わせて **13/13 一致**（対照の `v1.8.9` とは6ファイルで相違）。`--release` 検査にも合格しています（`EXIT=0`。中身を1バイト足した ZIP では `EXIT=1` で落ちることも同じ実行で確かめました）。
 
-**ZIP は誰でも再現できます。** 日時を 1980-01-01 に固定し、並び順を配布一覧の順に固定してあるため、同じ内容からは1バイト違わない同じものができます。配布13ファイルの合算ハッシュは **ubuntu / macos / windows / 手元 macOS の4者で完全に一致**しています（`1979bbe2…`）。
+**ZIP は誰でも再現できます。** 日時を 1980-01-01 に固定し、並び順を配布一覧の順に固定してあるため、同じ内容からは1バイト違わない同じものができます。配布13ファイルの合算ハッシュは **ubuntu / macos / windows / 手元 macOS の4者で完全に一致**しています（`f327e22f…`）。
 
 ```sh
 npm run package:zip -- --allow-uncommitted   # commit 前に試す場合。名前に UNCOMMITTED が入る
@@ -205,16 +207,20 @@ v1.8.2 と v1.8.3 で、**注記される語の集合は3ページとも完全�
 
 ### 4-1. 手元（macOS 26 / Google Chrome 151.0.7922.76 / Node.js v22.22.3・2026-08-10）
 
-**この版はまだ commit していないので、CI は回っていません。** 下は手元での実行結果です。
+下は手元での実行結果です（CI の結果は §4-2）。
 
 | command | exit | 結果 |
 |---|---:|---|
 | `node --check src/matcher.js` / `src/content.js` | 0 | 構文 OK |
-| `npm test` | 0 | 単体 **63件**全成功 / 構成検査 **229項目**・不一致0（辞書61語・version 1.8.10） |
+| `npm test` | 0 | 単体 **63件**全成功 / 構成検査 **232項目**・不一致0（辞書61語・version 1.8.10） |
 | `npm run test:e2e` | 0 | **136件**全成功（v1.8.9 は 112件） |
 | `npm run package:stage` / `:verify` | 0 | 13ファイル一致 |
 | `npm run package:zip -- --allow-uncommitted` / `:verify-zip` | 0 | 13ファイル（名前に `UNCOMMITTED` が入る。**提出候補ではない**） |
 | `npm run package:verify-zip -- --release` | **1** | **意図どおり落ちる**（手元ビルドは提出候補として通さない） |
+
+CI が出した提出候補 ZIP を落としてきて同じ検査へ通すと `EXIT=0` で合格します。**この検査に判別力があることも同じ実行で確かめました** — その ZIP の `styles.css` に8バイト足しただけで `EXIT=1`・`NG: styles.css の中身が今のファイルと違う` になります（2026-08-11 実測）。
+
+> **検査の件数が 229 から 232 へ増えたのは、コードを足したからではありません。** §1-1 の `state` が `uncommitted` から `tagged` へ進んだため、タグとの突き合わせ（タグが手元に在るか／`git diff` を取れたか／配布13ファイルが同じか／その突き合わせが差を見つけられるかの陽性対照）の4件が走り、代わりに「この状態では求めない」の1件が走らなくなった差です。
 
 **新しい試験に判別力があることも確かめています。** v1.8.9 の `src/content.js` と `styles.css` へぶつけると、**24件中17件が失敗**します（通るのは前提1・対照2・退行の見張り4の計7件です）。
 
@@ -242,17 +248,26 @@ v1.8.2 と v1.8.3 で、**注記される語の集合は3ページとも完全�
 
 > **①の結果を「速くなった」と読むことはしません。** 中央値だけを見れば速く見えますが、組ごとの符号が揃っていません。前回、同じ形のばらつきで +1.4 ms の後退を「差は0」と読み違えたことがあるので、符号が揃わないうちは結論を出しません。
 
-### 4-2. CI — **この版ではまだ回していません**
+### 4-2. CI（`main` の run [`31443666381`](https://github.com/Driedsandwich/repogloss/actions/runs/31443666381)・2026-08-11）
 
-commit・push をしていないため、次は確認できていません。
+**8ジョブすべて success。** マージコミット `aaa770d6…`（＝タグ `v1.8.10` が指すもの）に対する実行です。
 
-- Linux / Windows / macOS 3 OS での実行
-- 3 OS 間の配布物ハッシュ一致（`hash-compare`）
-- 提出候補 ZIP の生成（`release-zip`）と、その `--release` 検査
+| ジョブ | 結果 |
+|---|---|
+| `verify` | success — 単体63件＋構成検査229項目・不一致0（**当時**は `state` が `uncommitted` だったので229。いまは232 → §4-1 の注記） |
+| `e2e`（ubuntu） | success — **136件**全成功 |
+| `e2e-windows` | success — **136件**全成功（実 Chrome） |
+| `package-hash`（ubuntu / macos / windows） | 3ジョブとも success |
+| `hash-compare` | success — `集まった数: 3` → `OK: 3 OS すべてで同じ（f327e22f9efc91a9…25ddcb5b）` |
+| `release-zip` | success — 13ファイル / 107,631 バイト・`c194a9cb…`。CI 内の `--release` 検査にも合格 |
 
-今回、`verify` の `checkout` に `fetch-tags` を足しました（監査入口が名乗るタグと配布物を突き合わせる検査が、タグを必要とするため）。**この設定変更が CI で効くかは未確認です。**
+3 OS が出した `COMBINED_SHA256.txt` は3件とも `f327e22f9efc91a9ee447a52d6425b70ad8478653a87ff419dd96ea825ddcb5b` で、手元 macOS の `package:stage` と合わせて**4者一致**です。
 
-#### 4-2-h. 直前の版で確かめたこと（履歴）
+PR（run `31440375839`）では `release-zip` が skipped になり、成果物は `package-hash-*` の3件だけでした（`main` への push のときだけ提出候補を作る、という条件が効いていることの対照）。
+
+**`verify` の `checkout` に足した `fetch-tags` は効いています。** 同じ run の中で fetch 引数を比べると、`verify` は `+refs/tags/*:refs/tags/*` を伴い `--depth` を付けず、対照の `e2e` は `--depth=1` でタグの refspec を持ちません。検査側も、タグ0本の浅いクローンでは「監査対象のタグが手元に在る」で**落ちる**ことを実測してあります（素通りしません）。
+
+#### 4-2-h. さらに前の版で確かめたこと（履歴）
 
 v1.8.9 では、`main` の run `31318907971` で8ジョブすべてが success でした。ubuntu と windows の E2E が 112 件全成功、3 OS の配布物ハッシュが `1979bbe2…` で一致（手元 macOS を入れて4者一致）、`release-zip` が 13 ファイル / 101,806 バイト・`4f1f3166…` を出し、CI 内の `--release` 検査にも合格しています。
 
@@ -436,7 +451,7 @@ web_accessible_resources:    差分なし（locales/dict.json のみ）
 | 配布物の検査（壊した ZIP を9種ぶつける） | [`tests/package.test.js`](tests/package.test.js) |
 | 提出物の身元の schema と、その検査（28件） | [`scripts/provenance.mjs`](scripts/provenance.mjs) / [`tests/provenance.test.js`](tests/provenance.test.js) |
 | 配布物の一覧（唯一の正本） | [`scripts/package-files.mjs`](scripts/package-files.mjs) |
-| 構成と文書の整合検査（229項目） | [`scripts/verify.mjs`](scripts/verify.mjs) |
+| 構成と文書の整合検査（232項目） | [`scripts/verify.mjs`](scripts/verify.mjs) |
 | ZIP の読み書き（自作） | [`scripts/zip.mjs`](scripts/zip.mjs) |
 | ZIP の検査 | [`scripts/verify-zip.mjs`](scripts/verify-zip.mjs) |
 | CI | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |

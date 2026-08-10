@@ -286,17 +286,26 @@ v1.8.2 までは全項目を「収集しない」とする方針だったが、�
 
 ### 8-2. v1.8.10 の作り方（現在の提出候補）
 
-**v1.8.10 はまだ commit していないため、提出候補の ZIP はありません。** 作り方は v1.8.9 と同じで、**提出するのは CI が作った成果物**だけです。手元で作ったものは `--release` 検査で落ちます。
+**提出するのは CI が作った成果物**だけです。手元で作ったものは `--release` 検査で落ちます。
+
+#### 8-2-1. v1.8.10 の提出物（2026-08-11 実測）
 
 | 項目 | 値 |
 |---|---|
-| ZIP | **未作成**（`repogloss-1.8.10.zip` になる予定） |
-| SHA-256 | **未確定** |
+| ZIP | `repogloss-1.8.10.zip`（105.11 KiB＝107,631 バイト・13ファイル・展開後 256,095 バイト） |
+| **SHA-256** | **`c194a9cbabd6496fc97d056b5713fcc2036e258745b43cfae29ecc874ce32fce`** |
+| 中身の合算ハッシュ | `3b81332cd60cb4c7de930803a32283c24700794aa159b6ae1af1c0526a25fb23` |
+| 配布13ファイルの合算 | `f327e22f9efc91a9ee447a52d6425b70ad8478653a87ff419dd96ea825ddcb5b`（ubuntu / macos / windows / 手元 macOS の4者で一致） |
+| 出どころ | CI の run [`31443666381`](https://github.com/Driedsandwich/repogloss/actions/runs/31443666381) の `release-zip` ジョブ（artifact `repogloss-store-zip`） |
+| 対象コミット | `aaa770d687ed5861785f629e494662823ba7d875`（タグ `v1.8.10`） |
 | 変更点 | `manifest.json`／`src/content.js`／`styles.css`／`README.md`／`DESIGN.md`／`PRIVACY.md` の6ファイル。辞書・`src/matcher.js`・アイコン・`LICENSE` は無変更 |
+| 置き場所 | 掲載用素材フォルダの直下（`repogloss-1.8.9.zip` は `_superseded/` へ退避済み） |
+
+**照合済み**: ダウンロードした成果物の SHA-256 が同梱の身元 JSON と一致し（107,631 バイト・13ファイルも一致）、展開した13ファイルがタグ `v1.8.10` と **1バイトも違わない**（対照の `v1.8.9` とは6ファイルで相違。1バイト変えれば検出できることも同じ実行で確認）。`npm run package:verify-zip -- --release` にも合格します（`EXIT=0`）。**この検査に判別力があることも実測しました** — ZIP の `styles.css` に8バイト足すと `EXIT=1`・`NG: styles.css の中身が今のファイルと違う` になります。
 
 **掲載文で差し替えが要る箇所（v1.8.10）**: なし（動作環境・権限・データの扱いは v1.8.9 から変わらない）。
 
-**⚠️ v1.8.9 は提出しません**（第11回監査の指摘）。`repogloss-1.8.9.zip`（`4f1f3166…`）は `_superseded/` へ退避します。
+**⚠️ v1.8.9 は提出しません**（第11回監査の指摘）。`repogloss-1.8.9.zip`（`4f1f3166…`）は `_superseded/` へ退避済みです。
 
 ### 8-2w. v1.8.9 の作り方（履歴）
 
@@ -311,7 +320,7 @@ v1.8.2 までは全項目を「収集しない」とする方針だったが、�
 | 出どころ | CI の run [`31318907971`](https://github.com/Driedsandwich/repogloss/actions/runs/31318907971) の `release-zip` ジョブ（artifact `repogloss-store-zip`） |
 | 対象コミット | `cea7a29590747f110d6cda68c162d339499c5fdf`（タグ `v1.8.9`） |
 | 変更点 | `manifest.json`／`src/content.js`／`styles.css`／`README.md`／`DESIGN.md`／`PRIVACY.md` の6ファイル。辞書・`src/matcher.js`・アイコン・`LICENSE` は無変更 |
-| 置き場所 | `_superseded/` へ退避予定（第11回監査の指摘で提出しないため） |
+| 置き場所 | `_superseded/` へ退避済み（第11回監査の指摘で提出しないため） |
 
 **照合済み**: ダウンロードした成果物の SHA-256 が同梱の身元 JSON と一致し（101,806 バイト・13ファイルも一致）、展開した13ファイルがタグ `v1.8.9` と **1バイトも違わない**（対照の `v1.8.8` とは6ファイルで相違。1バイト変えれば検出できることも同じ実行で確認）。`npm run package:verify-zip -- --release` にも合格します（`EXIT=0`）。**この検査に判別力があることも実測しました** — ZIP の `styles.css` に8バイト足すと `EXIT=1`・`NG: 1 件` になります。
 

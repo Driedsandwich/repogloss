@@ -679,6 +679,14 @@
   // 予定と違う値になっていたら、書いたのは自分ではない。
   const expectedAttrs = new WeakMap();   // Element -> Map<属性名, 期待する値（null は削除）>
 
+  // 本文を割るのも自分である。1回割ると、右側の節点が増える（childList）と同時に、
+  // 左側の中身が短くなる（characterData）。どちらも自分の変更なので数え直しの
+  // 合図にしない。**1回だけ**受け取って消す（属性の予定表と同じ考え方）。
+  // 消さずに覚えっぱなしにすると、そのあとページがその節点を書き換えても
+  // 気づけなくなる。実測では、この2つが「1回の変更で2回のまとめ直し」の正体だった。
+  const expectedSplit = new WeakSet();   // 割ってできた右側（増える）
+  const expectedTrim = new WeakSet();    // 割られた左側（短くなる）
+
   function setOwnAttr(el, name, value) {
     let m = expectedAttrs.get(el);
     if (!m) expectedAttrs.set(el, m = new Map());
@@ -1233,7 +1241,11 @@
       // 用語が末尾ちょうどで終わるときは割らない。割ると空の節点が1つ増え、
       // 片づけと付け直しを繰り返すたびに増え続ける（往復のたびに1つずつ）。
       const tail = at < cur.length ? cur.splitText(at) : null;
-      if (tail) markHandled(tail);                          // 断片を再処理しない
+      if (tail) {
+        markHandled(tail);                                  // 断片を再処理しない
+        expectedSplit.add(tail);                            // 増えるのも短くなるのも自分
+        expectedTrim.add(cur);
+      }
       const icon = makeIcon(hit.key, hit.match, DICT[hit.key]);
       parent.insertBefore(icon, tail ?? cur.nextSibling);
       applyIconSemantics(icon, placement);                  // 入った場所を見てから決める
@@ -1329,7 +1341,9 @@
   let batchScheduled = false;
   let wantDeep = false;                 // 見え方まで確かめ直すか
   let pendingRoots = new Set();         // 走査し直す場所
-  let inBatch = false;                  // まとめ直しの最中（自分の変更で再入しない）
+  // まとめ直し中の再入は、旗ではなく「自分が起こした変更は数えない」で防いでいる
+  // （isSelfMutation / isOurNode）。読まれない旗を残すと、守っているつもりの
+  // 不変条件が実際には誰も見ていない、という状態になる。
 
   function schedule({ deep = false, root = null } = {}) {
     if (deep) wantDeep = true;
@@ -1349,45 +1363,40 @@
     pendingRoots = new Set();
     if (!observing) return;
 
-    inBatch = true;
-    try {
-      withRenderCache(() => {
-        // ① 記録と DOM の食い違いを片づける。deep なら見え方・到達性・入口の意味まで。
-        let released = reconcileGlosses(deep);
+    withRenderCache(() => {
+      // ① 記録と DOM の食い違いを片づける。deep なら見え方・到達性・入口の意味まで。
+      let released = reconcileGlosses(deep);
 
-        // ② GitHub はページを読み直さずに画面を差し替えることがある。
-        //    別のページに移ったら、DOM がそのままでも見え方は変わりうる。
-        let full = false;
-        if (location.href !== lastUrl) {
-          lastUrl = location.href;
-          hideTip();
-          if (!deep) released = released || reconcileGlosses(true);
-          full = true;
-        }
-        // ③ 正規の印が居なくなったなら、ページ全体から選び直す。
-        //    既にページにある候補へ引き継ぐには、世代を進めるしかない。
-        if (released) full = true;
+      // ② GitHub はページを読み直さずに画面を差し替えることがある。
+      //    別のページに移ったら、DOM がそのままでも見え方は変わりうる。
+      let full = false;
+      if (location.href !== lastUrl) {
+        lastUrl = location.href;
+        hideTip();
+        if (!deep) released = released || reconcileGlosses(true);
+        full = true;
+      }
+      // ③ 正規の印が居なくなったなら、ページ全体から選び直す。
+      //    既にページにある候補へ引き継ぐには、世代を進めるしかない。
+      if (released) full = true;
 
-        if (full) {
-          // 全体を走るので、変更のあった場所を別に走る必要はない
-          // （同じ枝を二度歩かない。大きな領域の属性が変わったときに効く）。
-          if (released) reselect();      // generation++ ＋ 全体走査
-          else scan(document.body);
-        } else {
-          // 入れ子になった場所は、いちばん外側だけを走ればよい
-          for (const n of roots) {
-            let covered = false;
-            for (let p = n.parentNode; p && !covered; p = p.parentNode) if (roots.has(p)) covered = true;
-            if (!covered) scanInner(n);
-          }
-          // ④ 見え方が変わったのなら、まだ印の無い語も見直す。
-          //    全体を走ったときは、そこで既に拾えている（同じ枝を二度歩かない）。
-          if (deep) discoverLatent();
+      if (full) {
+        // 全体を走るので、変更のあった場所を別に走る必要はない
+        // （同じ枝を二度歩かない。大きな領域の属性が変わったときに効く）。
+        if (released) reselect();      // generation++ ＋ 全体走査
+        else scan(document.body);
+      } else {
+        // 入れ子になった場所は、いちばん外側だけを走ればよい
+        for (const n of roots) {
+          let covered = false;
+          for (let p = n.parentNode; p && !covered; p = p.parentNode) if (roots.has(p)) covered = true;
+          if (!covered) scanInner(n);
         }
-      });
-    } finally {
-      inBatch = false;
-    }
+        // ④ 見え方が変わったのなら、まだ印の無い語も見直す。
+        //    全体を走ったときは、そこで既に拾えている（同じ枝を二度歩かない）。
+        if (deep) discoverLatent();
+      }
+    });
   }
 
   // その変更は、自分が起こしたものか。
@@ -1431,6 +1440,10 @@
       }
       if (mu.type === 'characterData') {
         if (isOurNode(mu.target)) continue;
+        // 自分が割ったことで短くなった分は、自分の変更。1回だけ受け取って消す
+        // （ここを数えていたので、注記した直後にその節点の処理済み印を自分で
+        //   外し、同じ節点をもう一度走査していた）。
+        if (expectedTrim.has(mu.target)) { expectedTrim.delete(mu.target); continue; }
         deep = true;
         handled.delete(mu.target);      // 文字が変われば、前の判断の根拠も消えている
         roots.push(mu.target);
@@ -1439,7 +1452,14 @@
       // childList。**増えただけでも見え方は変わりうる**——`:has()` や構造疑似クラスを
       // 使えば、子を1つ足すだけで祖先が display:none になる（実測で再現）。
       // 「追加だけなら安全」という前提は置けない。
-      for (const n of mu.addedNodes) { if (!isOurNode(n)) { deep = true; } roots.push(n); }
+      // 自分が入れた印と、自分が割ってできた節点は、走査し直す場所に**入れない**。
+      // 入れると、印を1つ動かすたびに空のまとめ直しがもう1回走った（実測: 1回の
+      // hide で2回。語が節点の末尾で終わる形＝割らない形では1回だったので、
+      // 割ったことが原因だと切り分けられた）。
+      for (const n of mu.addedNodes) {
+        if (expectedSplit.has(n)) { expectedSplit.delete(n); continue; }
+        if (!isOurNode(n)) { deep = true; roots.push(n); }
+      }
       for (const n of mu.removedNodes) if (!isOurNode(n)) deep = true;
     }
     if (!deep && roots.length === 0) return;

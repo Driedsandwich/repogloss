@@ -88,6 +88,23 @@
   let generation = 0;
   const isHandled = n => handled.get(n) === generation;
   const markHandled = n => handled.set(n, generation);
+
+  // 辞書には当たったが、そのときは見えていなかった節点。
+  //
+  // 見え方が変わる合図（遷移・画面幅・stylesheet・操作・暇なとき）を受けても、
+  // v1.8.9 は**既にある印を確かめ直すだけ**で、まだ印の無い語は探さなかった。
+  // 走査し直す場所も、退役した記録も無いからである。その結果、最初に隠れていた
+  // 語は、そのタブを開いているあいだ永久に説明されなかった（4通りで実測）。
+  // 合図のたびにページ全体を走り直すのは高いので、ここだけを見直す。
+  const latent = new Set();          // Text ノード（自分で掃除する）
+  const LATENT_MAX = 2000;           // これを超えたら控えるのをやめ、全体走査へ落とす
+  let latentOverflow = false;
+
+  function rememberLatent(node) {
+    if (latentOverflow) return;
+    if (latent.size >= LATENT_MAX) { latent.clear(); latentOverflow = true; return; }
+    latent.add(node);
+  }
   // このページで印を付けた辞書キー -> そのとき自分が何を作ったかの記録。
   //
   // 印の要素だけを覚えるのでは足りない。片づけるときに「印の隣にあるもの」を見て
@@ -453,7 +470,10 @@
     // 2,500段落の祖先を隠す／戻すを繰り返す試験では、ここが費用の大半だった。
     // 可視でないだけの節点は**印を付けない**が処理済みにもしない（あとで見えたら注記する）。
     if (!matcher.test(v)) { markHandled(node); return false; }
-    return isVisibleOccurrence(el);
+    if (isVisibleOccurrence(el)) return true;
+    // 見えないだけの節点は処理済みにしない。あとで見えたときに拾えるよう控える。
+    rememberLatent(node);
+    return false;
   }
 
   /* ---------- 3. 入口（trigger）の解決 ---------- */
@@ -1189,6 +1209,27 @@
     return n;
   }
 
+  // 見えるようになった語を探す。
+  //
+  // 全体を走り直さず、控えてある候補（初回に見えていなかった節点）だけを見る。
+  // 同じキーに使える印が別の場所にあるなら `findHits` が落とすので、
+  // ここで印が2つになることはない（移動もしない。読める説明が1つあれば足りる）。
+  function discoverLatent() {
+    if (latentOverflow) { latentOverflow = false; return scanInner(document.body); }
+    let n = 0;
+    for (const node of latent) {
+      if (!node.isConnected || isHandled(node)) { latent.delete(node); continue; }
+      // 見え方を測る前に、「まだ読める説明が無い語」を含むかだけを見る。
+      // ここは文字列の照合だけで、レイアウトを起こさない。印は1語につき1つなので、
+      // 既に読める印がある語しか入っていない節点は、見えるようになっても何も足せない。
+      // 控えからは外さない——その印があとで退役すれば、また候補に戻るからである。
+      const v = node.nodeValue;
+      if (!v || matcher.findHits(v, key => usableGloss(key) !== null).length === 0) continue;
+      if (isTarget(node)) { latent.delete(node); n += annotate(node); }
+    }
+    return n;
+  }
+
   /* ---------- 8. 変更の検知と、まとめ直しの予約 ---------- */
   // 見え方が変わる合図は、DOM の変更だけではない。CSS の遷移が終わったとき、
   // 画面の幅が変わって media query が入れ替わったとき、`<head>` へ stylesheet が
@@ -1252,6 +1293,9 @@
             for (let p = n.parentNode; p && !covered; p = p.parentNode) if (roots.has(p)) covered = true;
             if (!covered) scanInner(n);
           }
+          // ④ 見え方が変わったのなら、まだ印の無い語も見直す。
+          //    全体を走ったときは、そこで既に拾えている（同じ枝を二度歩かない）。
+          if (deep) discoverLatent();
         }
       });
     } finally {
@@ -1344,7 +1388,9 @@
     idleTimer = setTimeout(() => {
       idleTimer = null;
       if (!observing) return;
-      if (document.hidden || glossed.size === 0) { scheduleIdleCheck(); return; }
+      // 印が1つも無くても、あとで見えるかもしれない候補があるなら見に行く
+      // （property だけの変化は、この経路でしか気づけない）。
+      if (document.hidden || (glossed.size === 0 && latent.size === 0)) { scheduleIdleCheck(); return; }
       const run = () => { schedule({ deep: true }); scheduleIdleCheck(); };
       if (canIdle) requestIdleCallback(run, { timeout: IDLE_GAP });
       else run();

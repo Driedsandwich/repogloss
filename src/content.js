@@ -57,9 +57,10 @@
     '.react-code-lines', '.react-code-line-contents', '.react-blob-print-hide',
     '.cm-editor', '.CodeMirror', '.highlight', '.snippet-clipboard-content',
     '[data-testid="code-cell"]', '[data-testid="blob-viewer-file-content"]',
-    // 自分の吹き出しと切替ボタンは、ここ（class 名）ではなく要素そのもので除く
-    // （→ isOurChrome）。名前で除くと、ページ側の同名 class まで巻き込む。
-    '.iiyaku-icon',
+    // 自分の印・吹き出し・切替ボタンは、ここ（class 名）ではなく要素そのもので除く
+    // （→ isOurChrome / madeIconAt）。名前で除くと、ページ側の同名 class まで巻き込み、
+    // そのページ本文を一度も走査しなくなる（実測: `class="iiyaku-icon"` の段落が
+    // まるごと説明されなかった）。
     '[aria-hidden="true"]', '.sr-only', '.visually-hidden'
   ].join(',');
 
@@ -499,7 +500,7 @@
       const hit = skipCache.get(el);
       if (hit !== undefined) return hit;
     }
-    const v = isOurChrome(el) || !!el.closest(SKIP);
+    const v = isOurChrome(el) || !!madeIconAt(el) || !!el.closest(SKIP);
     if (skipCache) skipCache.set(el, v);
     return v;
   }
@@ -983,9 +984,12 @@
   }
 
   const show = req => req && showTip(req.icons, req.anchor, req.describe);
+  // 吹き出しの中か。**いま出している吹き出しそのもの**で見分ける。
+  // class 名で見分けると、ページ側が同じ class を使った要素へカーソルが移っただけで
+  // 「吹き出しの中へ移った」と誤認し、説明が閉じないまま残る（実測）。
   const inTooltip = target => {
     const el = asElement(target);
-    return !!(el && el.closest('.iiyaku-tooltip'));
+    return !!(el && tip && (el === tip || tip.contains(el)));
   };
 
   function bindTip() {

@@ -1546,8 +1546,12 @@
       // 確かめ直してから走査する（隠された印を「説明済み」として残さない）。
       if (reconcileGlosses(true)) generation++;
     });
-    scan(document.body);
+    // **走査より先に見張り始める。** 走査の途中で自分が起こす変更（本文の分割）は
+    // 「次に1回だけ起きるはず」として控えてある。見張っていなければ、その控えは
+    // 消費されないまま残り、**そのあとページが起こした最初の文字変更を自分のものと
+    // して捨てる**（実測: 語を消しても、次に暇なときの確認が来るまで印が動かなかった）。
     observer.observe(document.body, OBSERVE_OPTS);
+    scan(document.body);
     if (document.head) headObserver.observe(document.head, HEAD_OPTS);
     for (const t of EXTERNAL_SIGNALS) document.addEventListener(t, onExternal, true);
     window.addEventListener('resize', onViewport);

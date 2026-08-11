@@ -1,4 +1,4 @@
-# 監査のための資料（第14回監査用）
+# 監査のための資料（第15回監査用）
 
 このファイルは、外部監査を受けるための入口です。**このリポジトリだけを読めば監査に必要な情報が揃う**ようにしてあります。
 
@@ -12,30 +12,30 @@ RepoGloss は、GitHub の画面に出てくる英語のうち Git / GitHub 固�
 
 | 項目 | 値 |
 |---|---|
-| **監査対象** | **`v1.8.13` = コミット `54f98991b3bf3838012484e4a9c4ce1462fab8d5`**（タグ済み・提出前） |
-| 直前の版 | `v1.8.12` = コミット `5afa0e284a199377902067df9c3cb582ec9b2051`（**第14回監査の指摘により提出しない**） |
-| 基点コミット | `44004a108e76366e8e9f51fd33e4c6b702672c1b`（ここからの差分が今回の変更。PR #22 の8コミット） |
+| **監査対象** | **`v1.8.14` 候補（未コミット）**。基点は `v1.8.13` = コミット `54f98991b3bf3838012484e4a9c4ce1462fab8d5` |
+| 直前の版 | `v1.8.13` = コミット `54f98991b3bf3838012484e4a9c4ce1462fab8d5`（**第15回監査の指摘により提出しない**） |
+| 基点コミット | `50026b45934e79406fb8c7abbf17e5d4946568a4`（ここからの差分が今回の変更） |
 | 現在の既定ブランチ | `main` |
-| Manifest | v1.8.13 / Manifest V3 |
+| Manifest | v1.8.14 / Manifest V3 |
 | **最低の Chrome** | **105**（`minimum_chrome_version`。v1.8.6 で追加） |
 | Chrome API 権限 | `storage` のみ |
 | サイトアクセス | `https://github.com/*` |
 | `host_permissions` | 宣言なし |
 | 実行されるコード | [`src/matcher.js`](src/matcher.js) と [`src/content.js`](src/content.js) の2本（同梱のみ・リモートコードなし） |
 | 外部依存パッケージ | **なし**（`package.json` は検証用の scripts だけ。ZIP 生成も Node 標準の `zlib` で自作） |
-| ストア公開中の版 | **v1.7.1**（v1.8.0〜v1.8.13 はいずれも未提出） |
+| ストア公開中の版 | **v1.7.1**（v1.8.0〜v1.8.14 はいずれも未提出） |
 
 差分は次のコマンドで確認できます。
 
 ```sh
-git checkout v1.8.13                     # 監査対象を手元に出す
-git diff --name-only v1.8.12 v1.8.13     # 直前の版との差分
+git checkout v1.8.14                     # 監査対象を手元に出す
+git diff --name-only v1.8.13 v1.8.14     # 直前の版との差分
 # → 配布13ファイルのうち manifest.json・src/content.js・README.md・DESIGN.md・
 #    PRIVACY.md が変わっている（辞書・matcher.js・styles.css・アイコン・LICENSE は無変更）
 # → ほかに scripts/ と tests/ と docs/（配布物には入らない）
 ```
 
-**タグ `v1.8.13` を打ち、CI が提出候補 ZIP を作るところまで済んでいます。ストアへは未提出です。**
+**この時点では commit も push もタグ付けもしていません。** 提出候補 ZIP は、タグを打ったあとに `main` の CI が作ります。ストアへは未提出です。
 
 > **監査対象と `main` の関係について（第11回 RG-11-06 の是正）。** 前回まで、監査対象を「`main` の先頭」と**相対的に**書いていました。提出候補の SHA を記録するコミットを1つ積んだ時点で、その記述は事実でなくなります（実際にそうなりました）。いまは対象をタグとコミットだけで名乗り、**現在の `main` の SHA はここに書きません**——書けば、その値もまた次のコミットで古くなるためです。両者の関係は文章ではなく検査で担保します。`state` が `uncommitted` でないとき、`verify` が「ここが名乗るタグと、いまの配布13ファイルが同じか」を `git diff` で突き合わせ、タグを引けない環境では**通しません**。
 
@@ -46,18 +46,24 @@ git diff --name-only v1.8.12 v1.8.13     # 直前の版との差分
 現在版の事実を、機械で読める形で1か所にまとめます（**ここが正本**。他の節はここを引用します）。
 
 ```yaml
-version:            1.8.13
-state:              tagged             # commit / push / tag / CI 済み。Release とストア提出は未実施
-base_commit:        9d21b95eec87910045e2b80f7d9fd0fc614a6d48
-commit:             54f98991b3bf3838012484e4a9c4ce1462fab8d5
-tag:                v1.8.13
-candidate_zip:      repogloss-1.8.13.zip
-candidate_bytes:    122474
-candidate_sha256:   f8ad0962f151b7c3bea3922c16bfcf8d821add065c0f926e2951b9dd022eefbf
-content_sha256:     e581692f2ae1b63b585719e2dda4a00634308ae2b6874d8cda6979d0a0994917
-combined_sha256:    1386abe94a2e668a7c91c8279abf4a9b97352fa68c81c23a46c9bfd4bbff17b0
-workflow_run:       31490364915
+version:            1.8.14
+state:              uncommitted        # commit / push / tag / CI・Release・ストア提出は未実施
+base_commit:        50026b45934e79406fb8c7abbf17e5d4946568a4
+commit:             null               # 未コミット
+tag:                null               # 未作成
+candidate_zip:      null               # タグ後に main の CI が作る
+candidate_bytes:    null
+candidate_sha256:   null
+content_sha256:     null
+combined_sha256:    null
+workflow_run:       null
 superseded:
+  - version: 1.8.13
+    tag: v1.8.13
+    commit: 54f98991b3bf3838012484e4a9c4ce1462fab8d5
+    zip: repogloss-1.8.13.zip
+    sha256: f8ad0962f151b7c3bea3922c16bfcf8d821add065c0f926e2951b9dd022eefbf
+    reason: 第15回監査の指摘により提出しない
   - version: 1.8.12
     tag: v1.8.12
     commit: 5afa0e284a199377902067df9c3cb582ec9b2051
@@ -116,25 +122,24 @@ npm run package:verify-zip                   # 中身と身元の記録を検査
 
 ---
 
-## 2. 今回（v1.8.13）で直したこと
+## 2. 今回（v1.8.14）で直したこと
 
-第14回監査の指摘 **P1 3件・P2 6件**への対応。詳細と証拠は [`docs/audit/v1.8.13-changes.md`](docs/audit/v1.8.13-changes.md)。
+第15回監査の指摘 **P1 4件・P2 5件**のうち **7件**への対応。詳細と証拠は [`docs/audit/v1.8.14-changes.md`](docs/audit/v1.8.14-changes.md)。
 
-| ID | 内容 | 主な変更箇所 |
+| ID | 内容 | 対応 |
 |---|---|---|
-| RG-14-01 | 一致した語ではなく、**親要素まるごと**の見え方を測っていた（**P1**） | 語の文字範囲で Range を作り、その矩形で決める（`visibleHits` / `isPaintedRange`） |
-| RG-14-02 | 絶対配置の逃げを `clip-path` にも適用していた（**P1**） | 逃げてよいのは `overflow` だけ。形は子孫へ累積する（`ownClips`） |
-| RG-14-03 | 形を外接矩形へ近似し、円や角丸の外を可視扱い（**P1**） | 形そのものと交差判定する（`rectHitsEllipse` / `rectHitsRounded`）。root の形も無視しない |
-| RG-14-04 | 複製の後始末が空判定で抜けられ、ページ所有の要素も壊す | 「空」を Comment・空 Text を数えずに判定。名札が2つ以上そろったものだけ扱う |
-| RG-14-05 | 正規の印の意味論・空の不変条件が足りない | `isCoherent` が `aria-hidden` の不在と、印が空であることを要求する |
-| RG-14-06 | 見張り始める前の予定が残る | `startRuntime` の入口で予定を捨てる |
-| RG-14-07 | 全体 `revert` がページ所有要素の見た目を変える | `styles.css` をカスケードレイヤーへ入れ、走り出しの規則は乗っ取る3つだけへ |
-| RG-14-08 | カーソルのたびに控え全体を見直す | 150ms で間引く |
-| RG-14-09 | 監査入口の表題が第13回のまま | 第14回へ |
+| RG-15-01（P1） | 同じ節点で1つ目が隠れていると、読める2つ目が候補から消える | 見え方で絞ってから、キーを1つにする（`findHits(..., {all:true})`） |
+| RG-15-02（P1） | `inset(... round …)` の角ごとの半径を先頭1値へ縮約 | 1〜4値と `/` を角ごとの `rx`/`ry` へ展開（`cornerRadii`） |
+| RG-15-03（P1） | 別々の断片が別々の形を通るだけで合格する | **同じ断片が全部の条件を通る**ことを要求 |
+| RG-15-04（P1） | 画面外へ固定された語に、見えない Tab の停止点を作る | 画面／スクロールで出せる範囲との交差を要求（入れ子のスクロール領域は除く） |
+| RG-15-05 | 透明な文字を可視として扱う | `color` / `-webkit-text-fill-color` が透明で縁取りが無ければ不可視 |
+| RG-15-07 | 150ms の間引きに trailing が無い | 窓が明けたあとに最後の1回を必ず処理する |
+| RG-15-08 | 名札を全部消された複製が停止点として残る | 自分が書く読み上げ名（`「…」の解説`）でも見分ける |
+| RG-15-09 | 監査入口の表題・基点が前巡のまま | 第15回・基点 `50026b45…` へ |
 
-**9件すべて、実物で再現してから直しました。** 通算14巡で 112 件の指摘があり、事実と異なるものは 0 件です。
+**⚠️ 未対応が2件あります。** **RG-15-06**（カスケードレイヤーの名前衝突・`iiyaku-off` の衝突）と、**RG-15-05 の後半**（`filter` の並び順を解いていない）は、この版では直していません（本人の判断で次の版へ）。残る影響は [`docs/audit/v1.8.14-changes.md`](docs/audit/v1.8.14-changes.md) に書きました。
 
-**既存の試験3件を、実測に基づいて期待値ごと直しました。** いずれも「要素まるごとで測っていた頃の答え」を固定していたものです（`#zero-neg` の `commit`・`#c-part` の `tags` は、**語の矩形の画素がどちらも 0**）。検査を緩めたのではなく、**測り方が細かくなった分だけ正しい答えが変わった**ものです。
+**7件すべて、直す前に v1.8.13 の実物で再現しました。** 通算15巡で 121 件の指摘があり、事実と異なるものは 0 件です。
 
 ### 2-0b. 直前（v1.8.12）で直したこと（履歴）
 
@@ -247,12 +252,12 @@ v1.8.2 と v1.8.3 で、**注記される語の集合は3ページとも完全�
 
 ### 4-1. 手元（macOS 26 / Google Chrome 151.0.7922.76 / Node.js v22.22.3・2026-08-11）
 
-下は手元での実行結果です（CI の結果は §4-2）。
+下は手元での実行結果です。**この版はまだ CI を通していません**（§4-2）。
 
 | command | exit | 結果 |
 |---|---:|---|
 | `node --check src/matcher.js` / `src/content.js` | 0 | 構文 OK |
-| `npm test` | 0 | 単体 **63件**全成功 / 構成検査 **287項目**・不一致0（辞書61語・version 1.8.13） |
+| `npm test` | 0 | 単体 **63件**全成功 / 構成検査 **284項目**・不一致0（辞書61語・version 1.8.13） |
 | `npm run test:e2e` | 0 | **193件**全成功（v1.8.11 は 161件） |
 | `npm run package:stage` / `:verify` | 0 | 13ファイル一致 |
 | `npm run package:zip -- --allow-uncommitted` / `:verify-zip` | 0 | 13ファイル（名前に `UNCOMMITTED` が入る。**提出候補ではない**） |
@@ -277,24 +282,15 @@ v1.8.2 と v1.8.3 で、**注記される語の集合は3ページとも完全�
 
 控えの見直し（20,000件で8ms の予算）と、カーソルの合図の間引き（150ms）は v1.8.13 でも同じです。
 
-### 4-2. CI（`main` の run [`31490364915`](https://github.com/Driedsandwich/repogloss/actions/runs/31490364915)・2026-08-11）
+### 4-2. CI（未実行）
 
-**8ジョブすべて success。** マージコミット `54f98991…`（＝タグ `v1.8.13` が指すもの）に対する実行です。
+**この版はまだ commit も push もしていないので、CI を通していません。** タグを打ったあとに `main` で8ジョブを走らせ、結果と提出候補 ZIP の SHA-256 をここへ記録します。
 
-| ジョブ | 結果 |
-|---|---|
-| `verify` | 構成検査 **284項目**・不一致0（当時は `state: uncommitted`） |
-| `e2e`（ubuntu・実 Chrome） | **206件**全成功 |
-| `e2e-windows`（windows・実 Chrome） | **206件**全成功 |
-| `package-hash` ubuntu / macos / windows | 3 OS とも配布13ファイルの合算が `1386abe9…` |
-| `hash-compare` | `集まった数: 3` → `OK: 3 OS すべてで同じ` |
-| `release-zip` | 提出候補 `repogloss-1.8.13.zip`（`f8ad0962…`）を生成 |
-
-> **PR #23 の初回 CI（run `31489055861`）は落ちました。** 206件中1件——「負の inset で外へ広がる形は落とさない」の対照が、ubuntu と windows で逆の答えを返しました。原因は実装ではなく**見本の環境依存**です（0幅の content box で本文が折り返し、対象語が1行目か2行目かがフォント寸法で変わる）。見本を折り返さない形へ直し（コミット `31c0ad1`）、run `31490022285` で全ジョブ success を確認してからマージしています。
+直前の v1.8.13 は run [`31490364915`](https://github.com/Driedsandwich/repogloss/actions/runs/31490364915) で8ジョブすべて success でした（当時）。
 
 ---
 
-## 6. 権限・通信・保存データ（v1.8.12 → v1.8.13 の差分）
+## 6. 権限・通信・保存データ（v1.8.13 → v1.8.14 の差分）
 
 ```text
 permissions:                 ['storage'] → ['storage']（差分なし）
@@ -385,12 +381,12 @@ web_accessible_resources:    差分なし（locales/dict.json のみ）
 | 配布物の検査（壊した ZIP を9種ぶつける） | [`tests/package.test.js`](tests/package.test.js) |
 | 提出物の身元の schema と、その検査（28件） | [`scripts/provenance.mjs`](scripts/provenance.mjs) / [`tests/provenance.test.js`](tests/provenance.test.js) |
 | 配布物の一覧（唯一の正本） | [`scripts/package-files.mjs`](scripts/package-files.mjs) |
-| 構成と文書の整合検査（287項目） | [`scripts/verify.mjs`](scripts/verify.mjs) |
+| 構成と文書の整合検査（284項目） | [`scripts/verify.mjs`](scripts/verify.mjs) |
 | ZIP の読み書き（自作） | [`scripts/zip.mjs`](scripts/zip.mjs) |
 | ZIP の検査 | [`scripts/verify-zip.mjs`](scripts/verify-zip.mjs) |
 | CI | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |
 | ストア掲載情報と提出記録 | [`STORE_LISTING.md`](STORE_LISTING.md) |
-| **今回の変更の詳細と証拠** | [`docs/audit/v1.8.13-changes.md`](docs/audit/v1.8.13-changes.md) |
+| **今回の変更の詳細と証拠** | [`docs/audit/v1.8.14-changes.md`](docs/audit/v1.8.14-changes.md) |
 
 ---
 

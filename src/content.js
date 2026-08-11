@@ -306,21 +306,50 @@
     return dx * dx + dy * dy <= 1;
   }
 
-  // 角丸の矩形と交わるか。角の四分円の外側だけを落とす。
-  function rectHitsRounded(r, box, radius) {
+  // `round` の値を、四隅の { rx, ry } へ展開する。
+  //   上左・上右・下右・下左 の順で1〜4値。`/` の後ろがあれば、前が水平・後ろが垂直。
+  function cornerRadii(spec, box) {
+    const w = box.x2 - box.x1, h = box.y2 - box.y1;
+    const sides = spec.split('/');
+    if (sides.length > 2) return null;
+    const expand = (txt, base) => {
+      const p = txt.trim().split(/\s+/).filter(Boolean);
+      if (p.length < 1 || p.length > 4) return null;
+      const four = p.length === 1 ? [p[0], p[0], p[0], p[0]]
+        : p.length === 2 ? [p[0], p[1], p[0], p[1]]
+        : p.length === 3 ? [p[0], p[1], p[2], p[1]] : p;
+      const v = four.map(x => lenToPx(x, base));
+      return v.some(x => x === null) ? null : v;
+    };
+    const hx = expand(sides[0], w);
+    const vy = sides.length === 2 ? expand(sides[1], h) : hx;
+    if (!hx || !vy) return null;
+    // 上左・上右・下右・下左
+    return [{ rx: hx[0], ry: vy[0] }, { rx: hx[1], ry: vy[1] },
+            { rx: hx[2], ry: vy[2] }, { rx: hx[3], ry: vy[3] }];
+  }
+
+  // 角丸の矩形と交わるか。角ごとの四分楕円の外側だけを落とす。
+  function rectHitsRounded(r, box, radii) {
     if (r.right <= box.x1 || r.left >= box.x2 || r.bottom <= box.y1 || r.top >= box.y2) return false;
-    if (!(radius > 0)) return true;
-    const rr = Math.min(radius, (box.x2 - box.x1) / 2, (box.y2 - box.y1) / 2);
-    // 角の四分円の中心
-    for (const [cx, cy, qx1, qy1, qx2, qy2] of [
-      [box.x1 + rr, box.y1 + rr, box.x1, box.y1, box.x1 + rr, box.y1 + rr],
-      [box.x2 - rr, box.y1 + rr, box.x2 - rr, box.y1, box.x2, box.y1 + rr],
-      [box.x1 + rr, box.y2 - rr, box.x1, box.y2 - rr, box.x1 + rr, box.y2],
-      [box.x2 - rr, box.y2 - rr, box.x2 - rr, box.y2 - rr, box.x2, box.y2]
-    ]) {
-      // その角の正方形の**中だけ**に収まっている矩形は、四分円との交差で決める
+    const w = box.x2 - box.x1, h = box.y2 - box.y1;
+    // 上左・上右・下右・下左。それぞれ角の正方形と、その四分楕円の中心
+    const corners = [
+      { rx: radii[0].rx, ry: radii[0].ry, x1: box.x1, y1: box.y1, sx: 1, sy: 1 },
+      { rx: radii[1].rx, ry: radii[1].ry, x1: box.x2, y1: box.y1, sx: -1, sy: 1 },
+      { rx: radii[2].rx, ry: radii[2].ry, x1: box.x2, y1: box.y2, sx: -1, sy: -1 },
+      { rx: radii[3].rx, ry: radii[3].ry, x1: box.x1, y1: box.y2, sx: -1 * -1, sy: -1 }
+    ];
+    corners[3].x1 = box.x1; corners[3].sx = 1;
+    for (const c of corners) {
+      const rx = Math.min(c.rx, w), ry = Math.min(c.ry, h);
+      if (!(rx > 0 && ry > 0)) continue;
+      const qx1 = c.sx > 0 ? c.x1 : c.x1 - rx, qx2 = c.sx > 0 ? c.x1 + rx : c.x1;
+      const qy1 = c.sy > 0 ? c.y1 : c.y1 - ry, qy2 = c.sy > 0 ? c.y1 + ry : c.y1;
+      // その角の箱の**中だけ**に収まっている矩形は、四分楕円との交差で決める
       if (r.left >= qx1 && r.right <= qx2 && r.top >= qy1 && r.bottom <= qy2) {
-        return rectHitsEllipse(r, cx, cy, rr, rr);
+        return rectHitsEllipse(r, c.sx > 0 ? c.x1 + rx : c.x1 - rx,
+                                  c.sy > 0 ? c.y1 + ry : c.y1 - ry, rx, ry);
       }
     }
     return true;
@@ -394,6 +423,16 @@
     });
   }
 
+  // 文字そのものが透明なら読めない（第15回 RG-15-05。実測: `color: transparent` の
+  // 語に印が付き、後ろの読める同じ語が説明されなかった）。縁取りがあるときは読めるので外す。
+  function textIsInvisible(cs) {
+    const fill = cs.webkitTextFillColor && cs.webkitTextFillColor !== 'currentcolor'
+      ? cs.webkitTextFillColor : cs.color;
+    if (!/^rgba\([^)]*,\s*0(\.0+)?\)$/.test(fill || '')) return false;
+    const sw = parseFloat(cs.webkitTextStrokeWidth || '0');
+    return !(sw > 0);
+  }
+
   function paintHidesAll(cs) {
     if (cs.filter && cs.filter !== 'none' && FILTER_OPACITY_ZERO.test(cs.filter)) return true;
     const mi = cs.maskImage || cs.webkitMaskImage;
@@ -422,6 +461,7 @@
     //    `auto` と `scroll` は**入れない**——中身はスクロールで読めるので、
     //    画面外というだけで永久に除外すると、長い一覧の下のほうが説明されなくなる。
     const clips = v => v === 'hidden' || v === 'clip';
+    const scrolls = v => v === 'auto' || v === 'scroll';
     const cx = clips(cs.overflowX), cy = clips(cs.overflowY);
     if (cx || cy) {
       let x1 = border.left, y1 = border.top, x2 = border.right, y2 = border.bottom;
@@ -450,7 +490,9 @@
       const t = shapeHitTest(sh, ref);
       if (t) tests.push(t);
     }
-    return { overflow, shape, tests };
+    // スクロールで動かせる入れ物の中か（中身は画面の外でも読める）
+    const scrollable = scrolls(cs.overflowX) || scrolls(cs.overflowY);
+    return { overflow, shape, tests, scrollable };
   }
 
   // 形そのものとの交差判定。矩形で足りる形は null を返す（外接矩形だけで決まる）。
@@ -475,18 +517,18 @@
       if (rx === null || ry === null) return null;
       return rect => rectHitsEllipse(rect, c.cx, c.cy, rx, ry);
     }
-    // inset(... round R)。角丸を捨てると、角に置かれた語を可視と答える（実測）。
+    // inset(... round …)。**角ごとに半径が違う**（1〜4値を上左・上右・下右・下左へ
+    // 展開し、`/` の前後で水平・垂直を分ける）。先頭の1値を四隅へ広げていたため、
+    // 丸めていない角の語を落とし、丸めた角の語を残していた（第15回 RG-15-02）。
     m = /^inset\((.*)\)$/.exec(shape);
     if (m) {
       const parts = m[1].split(/\s+round\s+/);
       if (parts.length !== 2) return null;
       const box = insetRect(parts[0], ref);
       if (!box) return null;
-      const w = box.x2 - box.x1, h = box.y2 - box.y1;
-      const first = parts[1].trim().split(/[\s/]+/)[0];
-      const rad = lenToPx(first, Math.min(w, h));
-      if (rad === null) return null;
-      return rect => rectHitsRounded(rect, box, rad);
+      const radii = cornerRadii(parts[1], box);
+      if (!radii) return null;
+      return rect => rectHitsRounded(rect, box, radii);
     }
     return null;
   }
@@ -517,7 +559,7 @@
   let chainCache = null;
 
   function paintChain(el, mode) {
-    if (!el) return { clip: null, tests: [], hidden: false, transformed: false };
+    if (!el) return { clip: null, tests: [], hidden: false, transformed: false, fixed: false, scrollable: false };
     const cache = chainCache && chainCache[mode];
     if (cache) { const hit = cache.get(el); if (hit !== undefined) return hit; }
     const cs = getComputedStyle(el);
@@ -537,7 +579,9 @@
     }
     // 描画効果は包含ブロックを作るので、逃げられない。配置に関わらず見る。
     const v = { clip, tests, hidden: up.hidden || paintHidesAll(cs),
-                transformed: up.transformed || cs.transform !== 'none' };
+                transformed: up.transformed || cs.transform !== 'none',
+                fixed: up.fixed || cs.position === 'fixed',
+                scrollable: up.scrollable || !!(own && own.scrollable) };
     if (cache) cache.set(el, v);
     return v;
   }
@@ -564,16 +608,40 @@
   function isPaintedRange(el, node, start, end) {
     const chain = paintChain(el, 'none');
     if (chain.hidden) return false;
+    if (textIsInvisible(getComputedStyle(el))) return false;
     if (rectIsEmpty(chain.clip)) return false;
     const rects = rangeRects(node, start, end);
     if (rects.length === 0) return false;
-    // 形そのものとの交差（円・楕円・角丸）。外接矩形だけでは角の外を落とせない
-    for (const t of chain.tests) if (!rects.some(r => t(r))) return false;
-    if (!chain.clip) return true;
+    // **同じ断片が、全部の条件を通ること**を求める。条件ごとに「どれか1つの断片が
+    // 通るか」を見ていたため、断片Aが形Aだけ・断片Bが形Bだけを通る場合に、
+    // どの断片も全部は通っていないのに合格していた（第15回 RG-15-03）。
     const c = chain.clip;
-    // 1px 以下の帯しか残らない交わりは、読める文字にならない
-    return rects.some(r => Math.min(r.right, c.x2) - Math.max(r.left, c.x1) > 1 &&
-                           Math.min(r.bottom, c.y2) - Math.max(r.top, c.y1) > 1);
+    const inClip = r => !c || (Math.min(r.right, c.x2) - Math.max(r.left, c.x1) > 1 &&
+                               Math.min(r.bottom, c.y2) - Math.max(r.top, c.y1) > 1);
+    // 画面（または動かせる範囲）の外にある語は、読めないしスクロールでも出せない。
+    // ただし**スクロールできる入れ物の中**は、その入れ物を動かせば読めるので見ない
+    // （入れ子のスクロール領域の中身を落とさないため。実測で対照が落ちた）。
+    const reach = chain.scrollable ? null : reachableRect(chain.fixed);
+    const inReach = r => !reach || (r.right > reach.x1 && r.left < reach.x2 &&
+                                    r.bottom > reach.y1 && r.top < reach.y2);
+    return rects.some(r => inClip(r) && inReach(r) && chain.tests.every(t => t(r)));
+  }
+
+  // その語が、画面か「スクロールで出せる範囲」に入っているか。
+  //
+  // 見ていなかったため、`position:fixed; left:-10000px` の語に印が付き、**画面に
+  // 出せないのに Tab で止まれる**点ができていた（第15回 RG-15-04。実測: `scrollX` は
+  // 0 のまま動かせない）。固定配置はいまの画面と、それ以外は文書全体と交差を見る。
+  function reachableRect(fixed) {
+    const de = document.documentElement;
+    const vw = de.clientWidth, vh = de.clientHeight;
+    if (fixed) return { x1: 0, y1: 0, x2: vw, y2: vh };
+    // viewport 座標での文書全体。左と上はスクロール量ぶん外へ広がる。
+    const sx = window.scrollX || de.scrollLeft || 0;
+    const sy = window.scrollY || de.scrollTop || 0;
+    const w = Math.max(de.scrollWidth, document.body ? document.body.scrollWidth : 0, vw);
+    const h = Math.max(de.scrollHeight, document.body ? document.body.scrollHeight : 0, vh);
+    return { x1: -sx, y1: -sy, x2: w - sx, y2: h - sy };
   }
 
   // display:contents は箱を作らない。可視性を判断できる最も近い先祖まで上がる。
@@ -684,9 +752,21 @@
   }
 
   // その節点のうち、**実際に描かれている**一致だけを返す。
+  //
+  // キーで1つに絞るのは**見え方で選んだあと**。先に絞ると、「1つ目は隠れていて
+  // 2つ目は読める」場合に読めるほうが候補から消える（実測: 2行目の読める語に
+  // 説明が付かなかった）。
   function visibleHits(node, el) {
-    const hits = matcher.findHits(node.nodeValue, key => usableGloss(key) !== null);
-    return hits.filter(h => isVisibleOccurrence(el, node, h.end - h.match.length, h.end));
+    const all = matcher.findHits(node.nodeValue, key => usableGloss(key) !== null, { all: true });
+    const out = [];
+    const seen = new Set();
+    for (const h of all) {
+      if (seen.has(h.key)) continue;
+      if (!isVisibleOccurrence(el, node, h.end - h.match.length, h.end)) continue;
+      seen.add(h.key);
+      out.push(h);
+    }
+    return out;
   }
 
   /* ---------- 3. 入口（trigger）の解決 ---------- */
@@ -1003,7 +1083,12 @@
       // から class も role も tabindex も剥がしていた）。自分が作る印は必ず
       // key・説明・用語・合言葉の4つを持つので、1つ消されても2つ以上は残る。
       // 名札を全部消された複製は、見えない停止点として残る——これは既知の限界。
-      if (OWN_DATA_ATTRS.filter(a => el.hasAttribute(a)).length < 2) continue;
+      if (OWN_DATA_ATTRS.filter(a => el.hasAttribute(a)).length < 2) {
+        // 名札を全部消されていても、**自分が書く読み上げ名**が残っていれば複製と分かる
+        // （第15回 RG-15-08。実測: 幅0・tabindex=0 の見えない停止点が残った）。
+        // ページ側がこの文面を偶然持つことはない。
+        if (!/^「.+」の解説$/.test(el.getAttribute('aria-label') || '')) continue;
+      }
       stripOwnIdentity(el);
     }
     // 入口の目印も複製される。引き当てには使っていないので実害は無いが、
@@ -1513,10 +1598,10 @@
     // ただし前に付けた印が「もう説明として使えない」なら、付け直す。
     // 見えている一致だけを注記する。見えない一致に印を付けると、その語の
     // 「ページで最初の1回」を使い切って、後ろの読める同じ語が説明されなくなる。
-    const all = matcher.findHits(node.nodeValue, key => usableGloss(key) !== null);
-    if (all.length === 0) { markHandled(node); return 0; }
-    const hits = all.filter(h =>
-      isVisibleOccurrence(parent, node, h.end - h.match.length, h.end));
+    if (matcher.findHits(node.nodeValue, key => usableGloss(key) !== null).length === 0) {
+      markHandled(node); return 0;
+    }
+    const hits = visibleHits(node, parent);
     if (hits.length === 0) { rememberLatent(node); return 0; }
     // 付け直すと決まったキーについて、使えなくなった古い印を取り除く。
     // 残しておくと、同じ語の印が画面に2つあることになる。
@@ -1872,13 +1957,24 @@
   // （まとめないと、動かした回数だけまとめ直しが走る）。
   // 控えが多いページでは、カーソルを動かすたびに控え全体の見直しが始まっていた
   // （実測: 5,000候補・40回の移動で 128 回・約887ms）。時間でも間引く。
+  // ⚠️ 間引きは「捨てる」ではなく「あとで1回やる」にする。捨てるだけだと、
+  // 1つ目のメニューから 60ms で2つ目へ移ったとき、2つ目をどれだけ開いていても
+  // 暇なときの確認まで説明が付かない（第15回 RG-15-07）。
   const HOVER_GAP = 150;
   let hoverPending = false;
   let hoverAt = 0;
+  let hoverTail = null;
   const onPointerOrFocus = () => {
     if (latent.size === 0 || hoverPending) return;
     const now = performance.now();
-    if (now - hoverAt < HOVER_GAP) return;
+    if (now - hoverAt < HOVER_GAP) {
+      // 最後の1回は、間引きの窓が明けたあとに必ず処理する
+      if (hoverTail === null) {
+        hoverTail = setTimeout(() => { hoverTail = null; onPointerOrFocus(); },
+                               HOVER_GAP - (now - hoverAt));
+      }
+      return;
+    }
     hoverAt = now;
     const fire = () => { hoverPending = false; if (observing) schedule({ deep: true }); };
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(fire);
@@ -1953,6 +2049,7 @@
     for (const t of HOVER_SIGNALS) document.removeEventListener(t, onPointerOrFocus, true);
     if (idleTimer !== null) { clearTimeout(idleTimer); idleTimer = null; }
     if (latentResume !== null) { clearTimeout(latentResume); latentResume = null; }
+    if (hoverTail !== null) { clearTimeout(hoverTail); hoverTail = null; }
     latentPass = null; latentCursor = 0;
     observing = false;
     hideTip();

@@ -920,3 +920,49 @@ export const NAMESPACE14_PAGE = `<!doctype html><html lang="en"><head><meta char
   <sup id="page-sup" class="iiyaku-icon" role="button" tabindex="0" data-iiyaku-owner="page"></sup>
   <div id="page-box" class="pgbox iiyaku-tooltip" data-iiyaku-owner="page">PAGE OWNED</div>
 </body></html>`;
+
+/* ===================== 第15回監査（v1.8.14）の反例 ===================== */
+
+/* 語の選び方と描画判定（RG-15-01〜05・08）。
+   前方＝隠れている（はずの）側、後方＝読める側。落としすぎの対照も並べる。 */
+export const PAINT15_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>paint15</title><style>.slot{height:170px;position:relative}
+ .scroller{width:120px;height:40px;overflow:auto}</style></head><body>
+  <button id="before">before</button>
+  <!-- ① 同じ節点に同じ語が2つ。1つ目だけ切り取られている（読める2つ目に付くこと） -->
+  <div class="slot" id="h-dup"><p style="white-space:pre;line-height:24px;height:48px;clip-path:inset(24px 0 0 0)">branch first
+branch second</p></div>
+  <p id="l-dup">A branch later.</p>
+  <!-- ② 角ごとに丸みが違う。丸めた角（右上）の語は落とす -->
+  <div class="slot" id="h-rnd"><div style="position:relative;width:120px;height:120px;clip-path:inset(0 round 0 60px 0 0)"><span style="position:absolute;right:0;top:0;font-size:6px">commit</span></div></div>
+  <p id="l-rnd">A commit later.</p>
+  <!-- ②対照 丸めていない角（左上）の語は落とさない -->
+  <div class="slot" id="h-rnd2"><div style="position:relative;width:120px;height:120px;clip-path:inset(0 round 0 60px 0 0)"><span style="position:absolute;left:0;top:0;font-size:6px">rebase</span></div></div>
+  <p id="l-rnd2">A rebase later.</p>
+  <!-- ③ 折り返した断片が、別々の形だけを通る -->
+  <div class="slot" id="h-frag"><div style="position:relative;width:140px;height:140px;clip-path:circle(30px at 70px 40px)"><div style="position:absolute;inset:0;clip-path:circle(30px at 40px 70px)"><span style="position:absolute;left:40px;top:40px;width:34px;text-indent:28px;font:10px/28px Arial;word-break:break-all">merge</span></div></div></div>
+  <p id="l-frag">A merge later.</p>
+  <!-- ④ 画面の外へ固定された語 -->
+  <div class="slot" id="h-off"><p style="position:fixed;left:-10000px;top:0">A fetch hidden.</p></div>
+  <p id="l-off">A fetch later.</p>
+  <!-- ④対照 スクロールで出せる入れ物の中は落とさない -->
+  <div class="slot" id="h-scr"><div class="scroller"><div style="height:400px"><p style="margin-top:300px">A milestone below.</p></div></div></div>
+  <p id="l-scr">A milestone later.</p>
+  <!-- ⑤ 透明な文字 -->
+  <div class="slot" id="h-tc"><p style="color:transparent">A webhook invisible.</p></div>
+  <p id="l-tc">A webhook later.</p>
+  <!-- ⑦ 名札を全部消した複製を置く先 -->
+  <p id="clone-src">A token here.</p><div id="sink"></div>
+  <button id="after">after</button>
+</body></html>`;
+
+/* 150ms 以内に別の場所へ移ったときの取りこぼし（RG-15-07） */
+export const HOVER15_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>hover15</title><style>
+  .menu{display:none} .host:hover .menu{display:block}
+</style></head><body>
+  <a href="#" id="before">before</a>
+  <p>A commit anchor.</p>
+  <div class="host" id="h1" style="padding:16px">one <span class="menu">A branch one.</span></div>
+  <div class="host" id="h2" style="padding:16px">two <span class="menu">A rebase two.</span></div>
+</body></html>`;

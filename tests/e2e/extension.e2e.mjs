@@ -18,6 +18,7 @@ import { launchChrome, startTestServer, stageExtension, stageExtensionWith,
          PAINT_PAGE, LIFECYCLE13_PAGE, SIGNATURE13_PAGE, TRANSIENT_PAGE,
          ROOTATTR_PAGE, latentPage,
          WORDRECT_PAGE, NAMESPACE14_PAGE,
+         PAINT15_PAGE, HOVER15_PAGE,
          openPage, sleep, waitFor,
          pressKey, collectTabOrder, tabUntil } from './helpers/chrome.mjs';
 
@@ -2850,6 +2851,87 @@ test('ページ所有の同名要素を、見た目も中身も変えない（�
         return !!ic && !ic.hasAttribute('aria-hidden') && ic.textContent === ''; })()`));
     assert.equal(await tab.evaluate(
       `document.querySelectorAll('.iiyaku-icon[data-iiyaku-key="commit"]').length`), 1, '印が増減している');
+  });
+
+  await tab.close();
+});
+
+/* ===================== 第15回監査（v1.8.14）の受入条件 ===================== */
+
+test('語の選び方と描画判定（第15回）', async t => {
+  const srv = await startTestServer(PAINT15_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  const nIn = sel => tab.evaluate(`document.querySelectorAll(${JSON.stringify(sel)} + ' .iiyaku-icon').length`);
+  await waitFor('拡張が印を付ける', async () =>
+    await tab.evaluate(`document.querySelectorAll('.iiyaku-icon').length`) > 0);
+  await sleep(700);
+
+  await t.test('RG-15-01 同じ節点で1つ目が隠れていても、読める2つ目に説明が付く', async () => {
+    assert.deepEqual([await nIn('#h-dup'), await nIn('#l-dup')], [1, 0],
+      '1つ目で候補を使い切り、読める2つ目に付いていない');
+  });
+  for (const [id, why, want] of [
+    ['rnd', '角ごとに丸みが違うとき、丸めた角の語', [0, 1]],
+    ['frag', '折り返した断片が、別々の形だけを通るとき', [0, 1]],
+    ['off', '画面の外へ固定された語', [0, 1]],
+    ['tc', '透明な文字', [0, 1]],
+    ['rnd2', '【対照】丸めていない角の語', [1, 0]],
+    ['scr', '【対照】スクロールで出せる入れ物の中', [1, 0]]
+  ]) {
+    await t.test(`RG-15-02/03/04/05 ${why}`, async () => {
+      assert.deepEqual([await nIn(`#h-${id}`), await nIn(`#l-${id}`)], want, why);
+    });
+  }
+
+  await t.test('RG-15-04 画面の外の印へ、Tab で止まれない', async () => {
+    const hit = await tabUntil(cdp, tab,
+      `el.classList.contains('iiyaku-icon') && el.getBoundingClientRect().right < 0`,
+      { steps: 40, startId: 'before' });
+    assert.equal(hit, null, `画面外の印で止まった: ${hit}`);
+  });
+
+  await t.test('RG-15-08 名札を全部消した複製も、Tab の停止点にしない', async () => {
+    await tab.evaluate(`(() => {
+      const c = document.querySelector('#clone-src .iiyaku-icon').cloneNode(true);
+      c.id = 'bare';
+      for (const a of [...c.attributes]) if (a.name.startsWith('data-iiyaku')) c.removeAttribute(a.name);
+      document.getElementById('sink').appendChild(c); })(); true`);
+    await waitFor('複製が無力になる', async () => await tab.evaluate(
+      `(() => { const d = document.getElementById('bare');
+        return !d || (d.tabIndex < 0 && d.getAttribute('role') !== 'button'); })()`));
+  });
+
+  await tab.close();
+});
+
+test('カーソルが素早く移っても、取りこぼさない（第15回）', async t => {
+  const srv = await startTestServer(HOVER15_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  await waitFor('拡張が印を付ける', async () => await tab.evaluate(
+    `document.querySelectorAll('.iiyaku-icon').length`) > 0);
+  const move = (x, y) => cdp.send('Input.dispatchMouseEvent',
+    { type: 'mouseMoved', x, y, button: 'none', buttons: 0, clickCount: 0 }, tab.sessionId);
+  const at = id => tab.evaluate(`(() => { const r = document.getElementById(${JSON.stringify(id)})
+    .getBoundingClientRect(); return [Math.round(r.x + 5), Math.round(r.y + r.height / 2)]; })()`);
+
+  await t.test('RG-15-07 150ms 以内に別の場所へ移っても、そちらに説明が付く', async () => {
+    const p1 = await at('h1'), p2 = await at('h2');
+    await move(p1[0], p1[1]);
+    await sleep(60);                 // 間引きの窓の内側で移る
+    await move(p2[0], p2[1]);
+    await sleep(500);                // 暇なときの確認（2秒）より十分早い
+    assert.equal(await tab.evaluate(
+      `document.querySelectorAll('.iiyaku-icon[data-iiyaku-key="rebase"]').length`), 1,
+      '窓の内側で来た合図を捨てている（暇なときの確認まで付かない）');
+    await move(5, 5);
   });
 
   await tab.close();

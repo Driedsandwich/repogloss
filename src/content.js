@@ -163,7 +163,7 @@
   const CONTENTS_HOST_OPTS = { opacityProperty: true, checkOpacity: true };
   const HAS_CHECK_VISIBILITY = typeof Element.prototype.checkVisibility === 'function';
 
-  let visibleCache = null;   // 走査1回のあいだだけ有効
+  // 可視性は語の範囲ごとに変わるので、要素を鍵にした覚え書きは持たない
 
   // 語が「実際に画面へ描かれている場所」に出ているか。
   //
@@ -457,23 +457,27 @@
   // 文字そのものの矩形。**面積のあるものだけ**を返す。
   // `transform: scale(0)` は箱の寸法（offsetWidth）を変えないので、面積を見ないと
   // 落とせない（実測: 0画素しか描かれていないのに印が付いた）。
-  function textRects(el) {
+  function rangeRects(node, start, end) {
     const r = document.createRange();
-    r.selectNodeContents(el);
+    if (start === null) r.selectNodeContents(node);
+    else { r.setStart(node, start); r.setEnd(node, end); }
     const out = [];
     for (const x of r.getClientRects()) if (x.width > 0 && x.height > 0) out.push(x);
     return out;
   }
 
-  // その要素の文字が、切り取りを越えて実際に描かれているか。
-  function isPaintedText(el) {
+  // **その語**が、切り取りを越えて実際に描かれているか。
+  //
+  // 親要素まるごとで測ってはいけない。同じ親の中に見えている文字が1つでもあれば、
+  // 対象の語が完全に切り取りの外でも可視と答えてしまう（実測: 幅120pxの
+  // `overflow:hidden` の段落で、先頭だけが見えていると、はみ出した先の語に印が付き、
+  // 後ろの読める同じ語が説明されなかった。その語の矩形の画素は0）。
+  //   node … 語を含むテキスト節点／start,end … 語の文字範囲（null なら要素の中身全部）
+  function isPaintedRange(el, node, start, end) {
     const chain = paintChain(el, 'none');
     if (chain.hidden) return false;
     if (rectIsEmpty(chain.clip)) return false;
-    // 切り取りも変形も無いなら、箱の大きさで足りる（Range を作らない）。
-    // ここを毎回 Range にすると、用語の多いページで初期走査が目に見えて遅くなる。
-    if (!chain.clip && !chain.transformed && el.offsetWidth > 0 && el.offsetHeight > 0) return true;
-    const rects = textRects(el);
+    const rects = rangeRects(node, start, end);
     if (rects.length === 0) return false;
     if (!chain.clip) return true;
     const c = chain.clip;
@@ -501,22 +505,19 @@
   //   display:none / opacity / 先祖の content-visibility … 継承しない。先祖に聞く
   //   実際に描かれているか … 子の Range と、積み上げた切り取りで見る
   // content-visibility:auto は落とさない（画面外というだけで永久に除外しないため）。
-  function isVisibleContentsText(el, cs) {
+  function isVisibleContentsText(el, cs, node, start, end) {
     if (cs.visibility !== 'visible') return false;
     const host = boxedAncestor(el);
     if (host) {
       if (!host.checkVisibility(CONTENTS_HOST_OPTS)) return false;
       if (getComputedStyle(host).contentVisibility === 'hidden') return false;
     }
-    return isPaintedText(el);
+    return isPaintedRange(el, node, start, end);
   }
 
-  function isVisibleOccurrence(el) {
+  // その語が読める場所に描かれているか。**語の範囲**で測る。
+  function isVisibleOccurrence(el, node, start, end) {
     if (!el || !el.isConnected) return false;
-    if (visibleCache) {
-      const hit = visibleCache.get(el);
-      if (hit !== undefined) return hit;
-    }
     // レイアウトを起こすので高い。1要素につき1回だけ取って使い回す。
     const cs = getComputedStyle(el);
     let ok;
@@ -524,23 +525,22 @@
       // 箱を作らない要素。Chrome は checkVisibility に false を返すが（実測）、
       // それは「隠れている」ではなく「箱が無い」という意味なので、転用できない。
       ok = HAS_CHECK_VISIBILITY
-        ? isVisibleContentsText(el, cs)
-        : (cs.visibility === 'visible' && isPaintedText(el));
+        ? isVisibleContentsText(el, cs, node, start, end)
+        : (cs.visibility === 'visible' && isPaintedRange(el, node, start, end));
     } else if (HAS_CHECK_VISIBILITY) {
       ok = el.checkVisibility(CHECK_VISIBILITY_OPTS);
       // その要素自身が content-visibility:hidden のとき、**中身**は隠れているのに
       // 要素自体は描画されているので checkVisibility は true を返す（実測）。
       if (ok && cs.contentVisibility === 'hidden') ok = false;
-      if (ok && !isPaintedText(el)) ok = false;
+      if (ok && !isPaintedRange(el, node, start, end)) ok = false;
     } else {
       // checkVisibility が無い環境。manifest の minimum_chrome_version より古い
       // Chrome か、拡張を手で読み込んだ場合にしか起きない。祖先の opacity や
       // content-visibility は見抜けないので、ここは「落ちないための保険」にすぎない。
       ok = !(cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0');
       if (ok && cs.contentVisibility === 'hidden') ok = false;
-      if (ok && !isPaintedText(el)) ok = false;
+      if (ok && !isPaintedRange(el, node, start, end)) ok = false;
     }
-    if (visibleCache) visibleCache.set(el, ok);
     return ok;
   }
 
@@ -585,10 +585,18 @@
     // 2,500段落の祖先を隠す／戻すを繰り返す試験では、ここが費用の大半だった。
     // 可視でないだけの節点は**印を付けない**が処理済みにもしない（あとで見えたら注記する）。
     if (!matcher.test(v)) { markHandled(node); return false; }
-    if (isVisibleOccurrence(el)) return true;
+    // 可視性は**一致した語の範囲**で見る。親要素まるごとで測ると、同じ親に
+    // 見えている文字が1つでもあるだけで、切り取りの外の語まで可視と答える。
+    if (visibleHits(node, el).length > 0) return true;
     // 見えないだけの節点は処理済みにしない。あとで見えたときに拾えるよう控える。
     rememberLatent(node);
     return false;
+  }
+
+  // その節点のうち、**実際に描かれている**一致だけを返す。
+  function visibleHits(node, el) {
+    const hits = matcher.findHits(node.nodeValue, key => usableGloss(key) !== null);
+    return hits.filter(h => isVisibleOccurrence(el, node, h.end - h.match.length, h.end));
   }
 
   /* ---------- 3. 入口（trigger）の解決 ---------- */
@@ -1285,7 +1293,10 @@
   }
 
   function computeUsable(rec) {
-    if (!isVisibleOccurrence(rec.icon.parentElement)) return false;
+    // 記録した語の範囲で見る。印の親要素まるごとで測ると、同じ親の別の文字が
+    // 見えているだけで「まだ読める」と答えてしまう。
+    const start = rec.splitOffset - rec.term.length;
+    if (!isVisibleOccurrence(rec.termNode.parentElement, rec.termNode, start, rec.splitOffset)) return false;
     const now = resolvePlacement(rec.parent);
     if (now.kind !== rec.placementKind) return false;
     if (rec.placementKind === 'hosted') {
@@ -1389,8 +1400,13 @@
     // 同じ語はページで最初の1回だけ。説明は一度読めば足りるうえ、
     // git の解説ページのような文書では印が数百個になり本文が読めなくなる。
     // ただし前に付けた印が「もう説明として使えない」なら、付け直す。
-    const hits = matcher.findHits(node.nodeValue, key => usableGloss(key) !== null);
-    if (hits.length === 0) { markHandled(node); return 0; }
+    // 見えている一致だけを注記する。見えない一致に印を付けると、その語の
+    // 「ページで最初の1回」を使い切って、後ろの読める同じ語が説明されなくなる。
+    const all = matcher.findHits(node.nodeValue, key => usableGloss(key) !== null);
+    if (all.length === 0) { markHandled(node); return 0; }
+    const hits = all.filter(h =>
+      isVisibleOccurrence(parent, node, h.end - h.match.length, h.end));
+    if (hits.length === 0) { rememberLatent(node); return 0; }
     // 付け直すと決まったキーについて、使えなくなった古い印を取り除く。
     // 残しておくと、同じ語の印が画面に2つあることになる。
     for (const h of hits) retireGloss(h.key);
@@ -1452,7 +1468,7 @@
   // 古い測定値で判定してしまう。
   function withRenderCache(fn) {
     const owner = renderCache === null;
-    if (owner) { renderCache = new WeakMap(); visibleCache = new WeakMap();
+    if (owner) { renderCache = new WeakMap();
                  // 積み上げた切り取りは「どう逃げているか」で答えが変わるので、
                  // 覚えるときも逃げ方ごとに分ける（混ぜると別の答えを使い回す）。
                  chainCache = { none: new WeakMap(), absolute: new WeakMap(), fixed: new WeakMap() };
@@ -1460,7 +1476,7 @@
     try {
       return fn();
     } finally {
-      if (owner) { renderCache = null; visibleCache = null; chainCache = null;
+      if (owner) { renderCache = null; chainCache = null;
                    usableCache = null; skipCache = null; }
     }
   }

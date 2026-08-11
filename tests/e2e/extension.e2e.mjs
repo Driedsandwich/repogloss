@@ -672,8 +672,10 @@ test('checkVisibility が無いと、見えない場所へ印が付く（最低�
              opacity: { there: n('op-host'), later: n('op-later') },
              display: { there: n('dn-host'), later: n('dn-later') } };
   })()`);
-  // 祖先の content-visibility と opacity は見抜けず、見えない側へ付いてしまう
-  assert.deepEqual(r.cv, { there: 1, later: 0 },
+  // 祖先の opacity は見抜けず、見えない側へ付いてしまう。
+  // content-visibility のほうは、v1.8.13 で**語の矩形**を測るようにしたことで、
+  // checkVisibility が無くても落とせるようになった（矩形が出ないため）。
+  assert.deepEqual(r.cv, { there: 0, later: 1 },
     `代替手段だけで content-visibility を見抜けている＝最低版の根拠が変わった: ${JSON.stringify(r.cv)}`);
   assert.deepEqual(r.opacity, { there: 1, later: 0 },
     `代替手段だけで opacity を見抜けている＝最低版の根拠が変わった: ${JSON.stringify(r.opacity)}`);
@@ -1680,7 +1682,9 @@ test('ページ側の同名 class・同名属性を壊さず、面積0の切り�
   });
 
   await t.test('RG-9-07 面積が残る切り取りと display:contents は、可視のまま扱う（落としすぎの対照）', async () => {
-    assert.deepEqual([await nIn('#c-part'), await nIn('#c-part-later')], [1, 0],
+    // v1.8.13 で期待値を直した。`clip-path: inset(10%)` の左端は x≈96 で、
+    // `tags` は x≈25〜59 にある。**語の矩形の画素は 0**（後ろの読める `tags` は 183 画素）。
+    assert.deepEqual([await nIn('#c-part'), await nIn('#c-part-later')], [0, 1],
       'inset(10%) を全面非表示と誤判定している');
     assert.deepEqual([await nIn('#c-dc'), await nIn('#c-dc-later')], [1, 0],
       'display:contents 自身の clip-path を効かせてしまっている');
@@ -2448,8 +2452,12 @@ test('潰れた参照ボックスの切り取りを、寸法不明と混ぜな�
   });
 
   await t.test('RG-12-05 対照: 負の inset で外へ広がる形は、誤って落とさない', async () => {
-    assert.deepEqual([await nIn('#zero-neg'), await nIn('#neg-later')], [1, 0],
-      '見えている文章を隠れていると判定している');
+    // v1.8.13 で期待値を直した。**語の矩形の画素を数えたら 0** だった——content box が
+    // 0 幅なので本文は折り返し、`commit` は2行目に落ちて切り取りの外にある（後ろの
+    // 読める `commit` は 268 画素）。以前は要素の中身**全部**を測っていたので、
+    // 1行目が見えていることで要素ごと可視と答えていた。
+    assert.deepEqual([await nIn('#zero-neg'), await nIn('#neg-later')], [0, 1],
+      '語の矩形で 0 画素なら落とすのが正しい。ここが [1,0] に戻ったら、また要素全体で測っている');
   });
 
   await t.test('RG-12-05 対照: 潰れていない content box の inset(0) は可視', async () => {

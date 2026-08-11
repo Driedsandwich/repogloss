@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "RepoGloss — GitHubの英語用語に日本語の解説",
-  "version": "1.8.11",
+  "version": "1.8.12",
   "description": "GitHubの英語UIはそのままに、Git／GitHub固有の用語に印を付け、カーソルを乗せると日本語の解説が出ます。初学者向け。GitHub, Inc.とは無関係の非公式ツールです。",
   "minimum_chrome_version": "105",
   "permissions": ["storage"],

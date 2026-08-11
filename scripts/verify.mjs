@@ -167,13 +167,25 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   if (m) {
     const body = m[1];
     const skipAt = body.indexOf('inSkip(');
-    const valueAt = Math.min(
-      ...['.nodeValue', '.data', '.textContent', '.wholeText', 'substringData']
-        .map(t => { const i = body.indexOf(t); return i === -1 ? Infinity : i; })
-    );
+    // 探すのは**本文の文字**を読む書き方だけ。`.dataset`（自分が書いた名札）は
+    // 本文ではないので、`.data` の部分一致で拾ってしまわないよう境界を付ける。
+    const TEXT_READ = /\.nodeValue|\.textContent|\.wholeText|substringData\(|\.data\b(?!set)/;
+    const found = TEXT_READ.exec(body);
+    const valueAt = found ? found.index : Infinity;
     check('isCoherent が SKIP 判定より前にテキストの値を読んでいない',
       skipAt !== -1 && skipAt < valueAt,
       `SKIP の位置=${skipAt} / 値を読む位置=${valueAt === Infinity ? 'なし' : valueAt}`);
+    // 陽性対照/陰性対照: 本文を読む書き方は捕まえ、名札の読み出しは捕まえないこと
+    check('この順序検査が、本文を読む書き方を捕まえる（陽性対照）',
+      TEXT_READ.test('const v = rec.termNode.nodeValue;'));
+    check('この順序検査が、名札の読み出しを誤って捕まえない（陰性対照）',
+      !TEXT_READ.test('if (rec.icon.dataset.iiyakuKey !== rec.key) return false;'));
+    // 記録の中身と意味も、毎回確かめていること（RG-13-04）
+    check('isCoherent が、説明文・用語・役割まで記録どおりか確かめている',
+      /dataset\.iiyaku !== DICT\[rec\.key\]/.test(body) &&
+      /dataset\.iiyakuTerm !== rec\.term/.test(body) &&
+      /getAttribute\('role'\) !== 'button'/.test(body),
+      'ページ側が説明文や役割を書き換えても、正規の記録として残り続ける');
     // 語のうしろに文字が増えたら整合でないこと（RG-9-02）
     check('isCoherent が、語が節点の末尾で終わることを要求している',
       /termNode\.length\s*!==\s*rec\.splitOffset/.test(body),
@@ -243,9 +255,19 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
 /* ---------- 自分の変更かどうかを、所有ではなく予定表で決めているか（RG-10-05） ---------- */
 {
   check('自分が書く属性の予定表がある',
-    /const expectedAttrs = new WeakMap\(\)/.test(content) && /function setOwnAttr/.test(content));
+    /let expectedAttrs = new WeakMap\(\)/.test(content) && /function setOwnAttr/.test(content));
   check('自分の仕業かどうかを、予定表との一致で決めている',
-    /function isExpectedAttrChange/.test(content) && /isExpectedAttrChange\(t, mu\.attributeName\)/.test(content));
+    /function consumeExpectedAttr/.test(content) &&
+    /consumeExpectedAttr\(t, mu\.attributeName, mu\.oldValue\)/.test(content));
+  // 予定は**1回だけ**受け取って消すこと。消さないと、ページが同じ値へ書き戻した
+  // 変更まで自分の仕業として捨てる（RG-13-05）。
+  check('属性の予定を、1回受け取ったら消している',
+    /q\.splice\(i, 1\)/.test(content),
+    '予定が残り続けると、ページが同じ値へ戻した変更に気づけない');
+  check('変更前の値で突き合わせるため、oldValue を受け取っている',
+    /attributeOldValue: true/.test(content));
+  check('見張っていない間の予定を持ち越していない',
+    /function clearExpectations/.test(content) && /clearExpectations\(\);/.test(content));
   // 所有だけで無視すると、ページ側が自分の印へ加えた変更まで見落とす
   check('所有だけを根拠に属性変更を無視していない',
     !/if \(isOurNode\(mu\.target\)\) continue;[\s\S]{0,80}attributes/.test(content));
@@ -325,14 +347,30 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   check('記録の不変条件に、合言葉の値が入っている',
     /rec\.icon\.getAttribute\('data-iiyaku-owner'\) !== UID/.test(content),
     '合言葉を外された印が、見えない停止点として残る');
-  check('複製の判定が、合言葉の値ではなく自分の説明文で行われている',
-    /ic\.dataset\.iiyaku === DICT\[key\]/.test(content),
-    '合言葉を書き換えた複製・消した複製がすり抜ける');
-  check('見た目の側でも、合言葉の値まで見ている',
-    /function scopeOwnStyle/.test(content) && /:not\(\[data-iiyaku-owner=/.test(content));
-  // 「作ったもの」と「いま正規のもの」を分けていること
-  check('作ったものと、いま正規のものを別に持っている',
-    /const madeIcons = new WeakSet\(\)/.test(content) && /function madeIconAt/.test(content));
+  // 辞書の説明文を所有の証明に使うと、**ページ側がたまたま同じ data 属性を持つ
+  // 要素**まで本文ごと消す（第13回 RG-13-03。実測で再現）。判定は自分の側の証拠だけで行う。
+  check('複製の判定に、辞書の説明文との一致を使っていない',
+    !/dataset\.iiyaku === DICT\[/.test(stripComments(content)),
+    'ページ側の要素を、その本文ごと消す');
+  check('複製の判定が、今回の合言葉そのもので行われている',
+    /pick\(`\[data-iiyaku-owner="\$\{CSS\.escape\(UID\)\}"\]`\)/.test(content));
+  check('中身のある節点は消さず、名札を外すだけにしている',
+    /el\.childNodes\.length === 0\) removeOwn\(el\);\s*\n\s*else stripOwnIdentity\(el\)/.test(content),
+    'ページが使い回している節点を、その本文ごと消す');
+  check('見た目の側で、印・吹き出し・切替ボタンの3つとも合言葉の値まで見ている',
+    /function scopeOwnStyle/.test(content) && /:not\(\$\{mine\}\)/.test(content) &&
+    /OWN_CLASSES\.map\(c => `\.\$\{c\}\[data-iiyaku-owner\]:not\(\$\{mine\}\)`\)/.test(content),
+    'ページ側の同名 class へ、自分の見た目が乗る');
+  // 「作ったことがある」という永久の記録は持たない（持つと、退役した節点を
+  // ページが戻したときにも自分のものとして扱う）
+  check('「作ったことがある」という永久の記録を持っていない',
+    !/madeIcons/.test(stripComments(content)),
+    '退役した印をページが使い回すと、その中が走査されない');
+  check('自分が外す削除だけを、1回受け取って自分のものとしている',
+    /const expectedRemovals = new WeakSet\(\)/.test(content) &&
+    /function isOwnRemoval/.test(content) &&
+    /expectedRemovals\.delete\(node\)/.test(content),
+    'ページが正規の印を外したことに気づけない');
 }
 
 /* ---------- 自分の起こした変更を数えていないか（RG-11-03 / RG-11-05） ---------- */
@@ -347,8 +385,8 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   // 陽性対照: この探し方が、実際に並べた書き方を捕まえること
   check('除外一覧の検査が、class 名を並べた書き方を捕まえる（陽性対照）',
     /^\s*'\.iiyaku-icon',/m.test("    '.iiyaku-icon',\n"));
-  check('自分の印は、要素そのもので除外している',
-    /isOurChrome\(el\) \|\| !!madeIconAt\(el\)/.test(code),
+  check('自分の印は、いま正規のものだけを要素そのもので除外している',
+    /isOurChrome\(el\) \|\| !!ownedIconAt\(el\)/.test(code),
     'class 名を外したのに、自分の印を除外する経路が無い');
   check('吹き出しの中かどうかを、いま出している吹き出しそのもので見ている',
     /const inTooltip = target =>[\s\S]{0,200}?tip && \(el === tip \|\| tip\.contains\(el\)\)/.test(code),
@@ -379,13 +417,37 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
 /* ---------- 参照ボックスの 0 と、寸法不明を分けているか（RG-12-05） ---------- */
 {
   const code = stripComments(content);
-  check('箱の寸法が 0 でも、分かっているなら面積の式に使う',
-    /const useBox = Number\.isFinite\(w\) && Number\.isFinite\(h\) && w >= 0 && h >= 0/.test(code),
-    '既知の 0×0 参照ボックスを「寸法不明」と同じ扱いにしている');
-  // 陽性対照: 以前の書き方（w > 0）なら捕まえること
-  check('この検査が、以前の書き方を捕まえる（陽性対照）',
-    !/const useBox = Number\.isFinite\(w\) && Number\.isFinite\(h\) && w >= 0 && h >= 0/
-      .test('const useBox = typeof w === "number" && w > 0 && h > 0;'));
+  // 面積が 0 かどうかだけを見ていては足りない。**切り取りに面積があっても、
+  // 語がその外**にあることがある（第13回 RG-13-01。画素を数えて実測）。
+  check('語の矩形と、積み上げた切り取りの交わりで決めている',
+    /function isPaintedText/.test(code) && /function intersectRect/.test(code) &&
+    /function paintChain/.test(code),
+    '切り取りの指定が面積0かどうかだけでは、外へ置かれた語を落とせない');
+  check('文字の矩形は、面積のあるものだけを数えている',
+    /x\.width > 0 && x\.height > 0/.test(code),
+    'transform:scale(0) は箱の寸法を変えないので、面積を見ないと落とせない');
+  check('描画効果（完全に透明な filter / mask）も不可視として見ている',
+    /function paintHidesAll/.test(code) && /FILTER_OPACITY_ZERO/.test(code) &&
+    /isFullyTransparentGradient/.test(code));
+  check('絶対配置が切り取りから逃げることを見ている',
+    /function establishesContainingBlock/.test(code) && /function positionEscape/.test(code),
+    '包含ブロックでない祖先の切り取りで、読める語を落とす');
+  // スクロールで読める領域を切り取りに数えると、長い一覧の下が説明されなくなる
+  // 文の終わりまで見る。前方一致で済ませると、`|| v === 'auto'` を足した書き方も
+  // 通ってしまう（この緩さは、下の陰性対照が実際に捕まえた）。
+  const CLIPS_ONLY = /const clips = v => v === 'hidden' \|\| v === 'clip';/;
+  check('overflow の auto / scroll を切り取りに数えていない', CLIPS_ONLY.test(code),
+    '画面外というだけの語を、永久に除外してしまう');
+  check('この検査が、auto を足した書き方を捕まえる（陰性対照）',
+    !CLIPS_ONLY.test("const clips = v => v === 'hidden' || v === 'clip' || v === 'auto';"));
+  check('この検査が、いまの書き方は通す（陽性対照）',
+    CLIPS_ONLY.test("const clips = v => v === 'hidden' || v === 'clip';"));
+  // 1px 四方まで潰す書き方は、切り取りの指定を持たないこともある
+  check('読める幅が残らない帯を不可視としている',
+    /function rectIsEmpty/.test(code) && /<= 1/.test(code));
+  check('大きさの目安だけで不可視と決めていない',
+    !/\btiny\b/.test(code),
+    '1px の箱でも、負の inset で外へ描かれていれば読める（実測で362画素）');
 }
 
 /* ---------- 可視性の判定が祖先まで見ているか ---------- */
@@ -692,8 +754,9 @@ check('README が CI の成果物（提出用 ZIP）について書いている'
       tag === 'null' || tag === `v${v}`, `tag: ${tag}`);
 
     const commit = field(yaml, 'commit');
+    // 「未記入」の書き方は tag と揃える（2つの綴りを許すと、どちらかしか見ない経路ができる）
     check('§1-1 の commit が、未記入か 40 桁の hex である',
-      commit === undefined || /^[0-9a-f]{40}$/.test(commit), `commit: ${commit}`);
+      commit === undefined || commit === 'null' || /^[0-9a-f]{40}$/.test(commit), `commit: ${commit}`);
 
     // 取り下げた版のコミットを、現在版の commit として書いてしまう取り違えを止める。
     // `superseded:` の中は上で落としてあるので、元の全文から拾う。
@@ -801,6 +864,97 @@ check('content.js が保存キー iiyakuEnabled を変えていない', content.
 // その結果、`AUDIT.md` が古い件数（158・166）を名乗ったまま残った（実測）。
 // 自分の件数を自分で名乗る以上、そこも突き合わせる。
 // この検査自身が最後の1件なので、いまの checks に 1 を足したものが最終の件数になる。
+/* ---------- 第13回監査（v1.8.12）で足した約束 ---------- */
+{
+  const code = stripComments(content);
+
+  // `<html>` の属性は、body を見張っていても1件も届かない（実測: 表示が消えても
+  // まとめ直しは1回も走らず、暇なときの確認まで約2秒かかった）。
+  check('`<html>` の属性も見張っている',
+    /observer\.observe\(document\.documentElement, ROOT_OPTS\)/.test(code) &&
+    /const ROOT_OPTS = \{ attributes: true, attributeOldValue: true \}/.test(code),
+    '見た目を切り替える指定は `<html>` に置かれることが多い');
+  // ただし走査し直す場所には入れない（1回の書き換えでページ全体を歩き直すため）
+  check('`<html>` の属性変更で、ページ全体を走査し直していない',
+    /if \(mu\.target !== document\.documentElement\) roots\.push\(mu\.target\)/.test(code));
+
+  // カーソルとフォーカスも合図にする（CSS だけで開くメニューは他の合図に乗らない）
+  check('カーソルとフォーカスを、控えの見直しの合図にしている',
+    /const HOVER_SIGNALS = \['pointerover', 'pointerout', 'focusin', 'focusout'\]/.test(code) &&
+    /addEventListener\(t, onPointerOrFocus, true\)/.test(code));
+  check('見直す先が無いときは、その合図で何もしない',
+    /if \(latent\.size === 0 \|\| hoverPending\) return/.test(code),
+    'カーソルを動かすたびにまとめ直しが走る');
+  check('カーソルの合図を、1フレームに1回へまとめている',
+    /requestAnimationFrame\(fire\)/.test(code));
+  check('切り替えのときに、その合図も外している',
+    /removeEventListener\(t, onPointerOrFocus, true\)/.test(code));
+
+  // 控えの見直しに時間の予算があること（20,000件で毎回 30〜60ms 掛かっていた）
+  check('控えの見直しに、時間の予算と続きの持ち越しがある',
+    /const LATENT_BUDGET_MS/.test(code) && /latentCursor/.test(code) &&
+    /function scheduleLatentResume/.test(code),
+    '控えが多いページで、2秒ごとに長い処理が走る');
+  check('続きは、マイクロタスクではなく一度ブラウザへ返してから走る',
+    /latentResume = setTimeout\(/.test(code),
+    'マイクロタスクで続けると、区切った意味が無くなる');
+
+  // 上限の旗が、実際の処理につながっていること（読まれない旗を残さない）
+  const truncReads = (code.match(/latentTruncated/g) || []).length;
+  check('上限の旗が、書くだけでなく読まれている', truncReads >= 3 &&
+    /if \(latentTruncated\) reindexLatent\(\)/.test(code),
+    `latentTruncated の出現 ${truncReads} 箇所。旗を立てるだけでは「もう探さない」が黙って続く`);
+  check('入れ直す前に旗を下ろしていない',
+    /if \(latent\.size >= LATENT_MAX\) return;\s*\n\s*latentTruncated = false;/.test(code),
+    '空きが無くて引き返した1回で旗が消え、あとで空きができても入れ直さない');
+  check('満杯のときは、まず死んだ控えを落として空きを作る',
+    /function pruneLatent/.test(code) && /pruneLatent\(\);/.test(code));
+
+  // 見た目の絞り込みが外されたら足し直す
+  check('見た目の絞り込みが外されたら足し直す',
+    /function ensureOwnStyle/.test(code) && /ensureOwnStyle\(\);/.test(code));
+
+  // `styles.css` が与える性質と、絞り込みで戻す性質の一覧がそろっていること。
+  // 片方だけ増えると、ページ側の同名要素へ自分の見た目が残る。
+  {
+    const css = read('styles.css').replace(/\/\*[\s\S]*?\*\//g, '');
+    const want = new Set();
+    for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      const sel = m[1];
+      if (!/\.iiyaku-(icon|tooltip|toggle)\[data-iiyaku-owner\]/.test(sel)) continue;
+      for (const d of m[2].split(';')) if (d.includes(':')) want.add(d.split(':')[0].trim());
+    }
+    const listed = new Set((/const OWN_STYLE_PROPS = \[([\s\S]*?)\];/.exec(content) || [, ''])[1]
+      .split(',').map(x => x.replace(/['\s\n]/g, '')).filter(Boolean));
+    const missing = [...want].filter(x => !listed.has(x));
+    const extra = [...listed].filter(x => !want.has(x));
+    check('絞り込みで戻す性質の一覧が、styles.css と一致している',
+      want.size > 0 && missing.length === 0 && extra.length === 0,
+      `styles.css にあって一覧に無い: ${missing.join(',') || 'なし'} / 一覧にあって styles.css に無い: ${extra.join(',') || 'なし'}`);
+    // 陽性対照: 抜き出しが実際に動いていること（0件なら比較そのものが無意味）
+    check('styles.css からの抜き出しが動いている（陽性対照）', want.size >= 10,
+      `抜き出せた性質は ${want.size} 個`);
+  }
+
+  // 配布する DESIGN.md が、現行の実装と食い違っていないこと（RG-13-07）
+  {
+    const design = read('DESIGN.md');
+    const stale = [
+      ['DOM の監視をまとめていない', /監視をまとめていない|呼び出しごとに走査しており/],
+      ['characterData を捕捉していない', /characterData`?\)?や、?\s*`?hidden`?\s*\/\s*`?aria-hidden`?\s*の解除だけで表示された要素は捕捉していない/]
+    ];
+    for (const [name, re] of stale) {
+      check(`DESIGN.md に、現行と食い違う旧仕様（${name}）が残っていない`, !re.test(design),
+        '配布物の設計説明を根拠に監査・保守する人へ、旧仕様を伝えてしまう');
+    }
+    // 陽性対照: この探し方が、実際の旧文言を捕まえること
+    check('旧仕様の探し方が、当時の文言を捕まえる（陽性対照）',
+      stale[0][1].test('- **DOM の監視をまとめていない。** MutationObserver の呼び出しごとに走査しており、'));
+    check('DESIGN.md が、いまの仕組み（まとめ直し・属性の見張り・控えの上限）を書いている',
+      /queueMicrotask/.test(design) && /characterData/.test(design) && /20,000/.test(design));
+  }
+}
+
 {
   const auditText = read('AUDIT.md');
   // 過去の run の結果を書いた行は、その時点の事実なので現在の値と一致しなくてよい。

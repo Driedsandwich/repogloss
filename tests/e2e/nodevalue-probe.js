@@ -14,6 +14,11 @@
  * ページ側の世界とは別なので、ページからこの計装は見えない。
  * 配布する src/ には一切手を入れない。
  */
+/* 公表先は localStorage にする。**<html> の属性へ書いてはいけない。**
+   content.js は `<html>` の属性を見張るので、計測器が書くたびにまとめ直しが
+   予約され、その予約自体がまた計測器を動かす。実測では、これでページが完全に
+   固まった（マイクロタスクが尽きない）。localStorage は同じ生成元を共有するので
+   隔離された世界からでもページ側から読めて、DOM には何の痕跡も残さない。 */
 (() => {
   const PATTERN = /RGSENTINEL_[A-Z]+/;
   const seen = new Set();
@@ -24,7 +29,7 @@
     if (seen.has(hit)) return;
     seen.add(hit);
     // DOM は世界をまたいで共有されるので、テスト側から読める
-    document.documentElement.setAttribute('data-rg-raw', [...seen].sort().join(','));
+    localStorage.setItem('rg-raw', [...seen].sort().join(','));
   }
 
   let wrapped = 0;
@@ -48,7 +53,7 @@
     };
     wrapped++;
   }
-  document.documentElement.setAttribute('data-rg-rawtap', wrapped === 4 ? 'ready' : `partial:${wrapped}`);
+  localStorage.setItem('rg-rawtap', wrapped === 4 ? 'ready' : `partial:${wrapped}`);
 
   // 陽性対照。包んだ getter が本当に効いていることを、**同じ実行の中で**示す。
   // これが記録されていなければ、「読まれていない」は計測の失敗と区別が付かない。

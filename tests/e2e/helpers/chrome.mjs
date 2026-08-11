@@ -875,3 +875,35 @@ export function latentPage(filler) {
 ${rows.join('\n')}
 </body></html>`;
 }
+
+/* ===================== 第14回監査（v1.8.13）の反例 ===================== */
+
+/* 語そのものの位置で判定する（RG-14-01/02/03）。
+   前方（隠れている側）と後方（読める側）に同じ語を置く。落としすぎの対照も並べる。 */
+export const WORDRECT_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>wordrect</title></head><body>
+  <a href="#" id="before">before</a>
+  <!-- 同じ段落の先頭だけが見えていて、語は切り取りの外 -->
+  <div id="h-pre"><p style="width:120px;overflow:hidden;white-space:nowrap">VISIBLE XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX branch clipped.</p></div>
+  <p id="l-pre">A branch later.</p>
+  <!-- 親は font-size:0、見えているのは別の子要素 -->
+  <div id="h-zero"><p style="font-size:0">commit <span style="font-size:16px">VISIBLE CHILD</span></p></div>
+  <p id="l-zero">A commit later.</p>
+  <!-- 絶対配置が、包含ブロックでない祖先の clip-path から逃げてはいけない -->
+  <div id="h-acp"><div style="position:relative"><div style="width:120px;height:50px;clip-path:inset(0)"><span style="position:absolute;left:180px;top:10px;white-space:nowrap">A merge clipped.</span></div></div></div>
+  <p id="l-acp">A merge later.</p>
+  <!-- ［対照］overflow:hidden からは、絶対配置は本当に逃げる -->
+  <div id="h-aov"><div style="position:relative"><div style="width:120px;height:50px;overflow:hidden"><span style="position:absolute;left:180px;top:10px;white-space:nowrap">A fetch escaped.</span></div></div></div>
+  <p id="l-aov">A fetch later.</p>
+  <!-- 円の外だが、外接矩形の内 -->
+  <div id="h-cir"><div style="position:relative;width:120px;height:120px;clip-path:circle(50px at 60px 60px)"><span style="position:absolute;left:6px;top:6px;font-size:6px">rebase</span></div></div>
+  <p id="l-cir">A rebase later.</p>
+  <!-- ［対照］同じ大きさでも、円の内側なら落とさない -->
+  <div id="h-cin"><div style="position:relative;width:120px;height:120px;clip-path:circle(50px at 60px 60px)"><span style="position:absolute;left:40px;top:58px;font-size:6px">squash merge</span></div></div>
+  <p id="l-cin">A squash merge later.</p>
+  <!-- 角丸の角 -->
+  <div id="h-rnd"><div style="position:relative;width:120px;height:120px;clip-path:inset(0 round 50%)"><span style="position:absolute;left:0;top:0;font-size:6px">git</span></div></div>
+  <p id="l-rnd">A git later.</p>
+</body></html>`;
+
+/* 名前の衝突と、生成した印の不変条件（RG-14-04/05/07） */

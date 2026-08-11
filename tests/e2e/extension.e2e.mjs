@@ -17,6 +17,7 @@ import { launchChrome, startTestServer, stageExtension, stageExtensionWith,
          LATENT_GUARD_PAGE, DEFERRED_PAGE, SKIPNAME_PAGE, CLIPZERO_PAGE,
          PAINT_PAGE, LIFECYCLE13_PAGE, SIGNATURE13_PAGE, TRANSIENT_PAGE,
          ROOTATTR_PAGE, latentPage,
+         WORDRECT_PAGE,
          openPage, sleep, waitFor,
          pressKey, collectTabOrder, tabUntil } from './helpers/chrome.mjs';
 
@@ -2771,3 +2772,41 @@ test('控えが多くても、1回の見直しを短く保ち、上限の外も�
 
   await tab.close();
 });
+
+/* ===================== 第14回監査（v1.8.13）の受入条件 ===================== */
+
+test('一致した語そのものの位置で、描かれているかを決める', async t => {
+  const srv = await startTestServer(WORDRECT_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await chrome.cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(chrome.cdp, PAGE);
+  const nIn = sel => tab.evaluate(`document.querySelectorAll(${JSON.stringify(sel)} + ' .iiyaku-icon').length`);
+  await waitFor('拡張が印を付ける', async () =>
+    await tab.evaluate(`document.querySelectorAll('.iiyaku-icon').length`) > 0);
+  await sleep(600);
+
+  for (const [id, why] of [
+    ['pre', '同じ段落の先頭だけが見えていて、語は切り取りの外'],
+    ['zero', '親が font-size:0 で、見えているのは別の子要素'],
+    ['acp', '絶対配置でも、祖先の clip-path からは逃げられない'],
+    ['cir', '円の外（外接矩形の内）'],
+    ['rnd', '角丸の外']
+  ]) {
+    await t.test(`RG-14-01/02/03 ${why}には注記しない`, async () => {
+      assert.deepEqual([await nIn(`#h-${id}`), await nIn(`#l-${id}`)], [0, 1],
+        `語の矩形では 0 画素なのに印が付いている（${why}）`);
+    });
+  }
+  for (const [id, why] of [
+    ['aov', 'overflow:hidden からは絶対配置が本当に逃げる'],
+    ['cin', '同じ 6px でも円の内側なら読める']
+  ]) {
+    await t.test(`RG-14-01/02/03【対照】${why}語は落とさない`, async () => {
+      assert.deepEqual([await nIn(`#h-${id}`), await nIn(`#l-${id}`)], [1, 0],
+        `読める語を落としている（${why}）`);
+    });
+  }
+  await tab.close();
+});
+

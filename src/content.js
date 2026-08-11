@@ -328,6 +328,7 @@
 
   // 形を、それを囲む矩形にする。囲む矩形は本物の形より**広い**ので、
   // 「交わらない」と言えるときだけ落とす、という向きを崩さない。
+  // 形そのものとの交差は shapeHitTest が別に見る（外接矩形だけでは落としきれない）。
   function shapeBoundsRect(shape, ref) {
     if (shape === '') return ref;                       // 参照ボックスだけの指定
     if (UNRESOLVED.test(shape)) return null;
@@ -566,6 +567,8 @@
     if (rectIsEmpty(chain.clip)) return false;
     const rects = rangeRects(node, start, end);
     if (rects.length === 0) return false;
+    // 形そのものとの交差（円・楕円・角丸）。外接矩形だけでは角の外を落とせない
+    for (const t of chain.tests) if (!rects.some(r => t(r))) return false;
     if (!chain.clip) return true;
     const c = chain.clip;
     // 1px 以下の帯しか残らない交わりは、読める文字にならない

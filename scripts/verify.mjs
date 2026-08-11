@@ -419,10 +419,23 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   const code = stripComments(content);
   // 面積が 0 かどうかだけを見ていては足りない。**切り取りに面積があっても、
   // 語がその外**にあることがある（第13回 RG-13-01。画素を数えて実測）。
-  check('語の矩形と、積み上げた切り取りの交わりで決めている',
-    /function isPaintedText/.test(code) && /function intersectRect/.test(code) &&
-    /function paintChain/.test(code),
-    '切り取りの指定が面積0かどうかだけでは、外へ置かれた語を落とせない');
+  check('一致した語の範囲で、積み上げた切り取りとの交わりを決めている',
+    /function isPaintedRange/.test(code) && /function intersectRect/.test(code) &&
+    /function paintChain/.test(code) && /function visibleHits/.test(code),
+    '親要素まるごとで測ると、同じ親に見えている文字があるだけで切り取りの外の語まで可視になる');
+  check('可視性を、要素だけを鍵にして覚えていない',
+    !/visibleCache/.test(code),
+    '語ごとに答えが変わるので、要素を鍵にした覚え書きは誤答を配る');
+  // 形そのものとの交差（外接矩形だけでは、円や角丸の外を落とせない）
+  check('円・楕円・角丸の外側を、形そのもので落としている',
+    /function rectHitsEllipse/.test(code) && /function rectHitsRounded/.test(code) &&
+    /function shapeHitTest/.test(code),
+    '外接矩形だけでは、円の角に置かれた語を可視と答える');
+  // 逃げてよいのは overflow だけ。clip と clip-path は子孫の描画そのものを制限する
+  check('包含ブロックの例外を、overflow だけに掛けている',
+    /if \(applies && own\.overflow && !isRoot\) clip = intersectRect\(clip, own\.overflow\)/.test(code) &&
+    /if \(own\.shape\) clip = intersectRect\(clip, own\.shape\)/.test(code),
+    '絶対配置が祖先の clip-path まで逃れてしまう');
   check('文字の矩形は、面積のあるものだけを数えている',
     /x\.width > 0 && x\.height > 0/.test(code),
     'transform:scale(0) は箱の寸法を変えないので、面積を見ないと落とせない');

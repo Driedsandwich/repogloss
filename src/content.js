@@ -1328,6 +1328,9 @@
     if (rec.icon.dataset.iiyakuKey !== rec.key) return false;
     if (rec.icon.dataset.iiyaku !== DICT[rec.key]) return false;
     if (rec.icon.dataset.iiyakuTerm !== rec.term) return false;
+    // 自分が作る印は**必ず空**。ページが中へ書き込んだものを、自分の UI として
+    // 抱えたままにしない（実測: 印の中へ入れた文字がそのまま残った）。
+    if (rec.icon.firstChild) return false;
     if (rec.placementKind === 'hosted') {
       // 装飾扱い。読み上げに出さず、Tab の順路にも入れない
       if (rec.icon.getAttribute('aria-hidden') !== 'true') return false;
@@ -1336,6 +1339,9 @@
       if (rec.icon.getAttribute('role') !== 'button') return false;
       if (rec.icon.getAttribute('tabindex') !== '0') return false;
       if (rec.icon.getAttribute('aria-label') !== `「${rec.term}」の解説`) return false;
+      // 読み上げから隠されたまま Tab で止まる印を残さない（実測: ページが
+      // `aria-hidden="true"` を足しても、tabindex=0 のまま正規の記録として残った）。
+      if (rec.icon.hasAttribute('aria-hidden')) return false;
       // 開閉の状態は出し入れで変わるので、値そのものではなく**取りうる値か**を見る
       const ex = rec.icon.getAttribute('aria-expanded');
       if (ex !== 'true' && ex !== 'false') return false;

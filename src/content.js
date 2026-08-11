@@ -295,6 +295,37 @@
     return lenToPx(v, base);
   }
 
+  // 軸に沿った矩形と楕円が交わるか。矩形のうち中心にいちばん近い点が楕円の内側なら交わる。
+  // 外接矩形で代用してはいけない——実測: `circle(50px at 60px 60px)` の角に置いた語は
+  // 0画素しか描かれていないのに、外接矩形の中なので可視と答えていた。
+  function rectHitsEllipse(r, cx, cy, rx, ry) {
+    if (!(rx > 0 && ry > 0)) return false;
+    const nx = Math.max(r.left, Math.min(cx, r.right));
+    const ny = Math.max(r.top, Math.min(cy, r.bottom));
+    const dx = (nx - cx) / rx, dy = (ny - cy) / ry;
+    return dx * dx + dy * dy <= 1;
+  }
+
+  // 角丸の矩形と交わるか。角の四分円の外側だけを落とす。
+  function rectHitsRounded(r, box, radius) {
+    if (r.right <= box.x1 || r.left >= box.x2 || r.bottom <= box.y1 || r.top >= box.y2) return false;
+    if (!(radius > 0)) return true;
+    const rr = Math.min(radius, (box.x2 - box.x1) / 2, (box.y2 - box.y1) / 2);
+    // 角の四分円の中心
+    for (const [cx, cy, qx1, qy1, qx2, qy2] of [
+      [box.x1 + rr, box.y1 + rr, box.x1, box.y1, box.x1 + rr, box.y1 + rr],
+      [box.x2 - rr, box.y1 + rr, box.x2 - rr, box.y1, box.x2, box.y1 + rr],
+      [box.x1 + rr, box.y2 - rr, box.x1, box.y2 - rr, box.x1 + rr, box.y2],
+      [box.x2 - rr, box.y2 - rr, box.x2 - rr, box.y2 - rr, box.x2, box.y2]
+    ]) {
+      // その角の正方形の**中だけ**に収まっている矩形は、四分円との交差で決める
+      if (r.left >= qx1 && r.right <= qx2 && r.top >= qy1 && r.bottom <= qy2) {
+        return rectHitsEllipse(r, cx, cy, rr, rr);
+      }
+    }
+    return true;
+  }
+
   // 形を、それを囲む矩形にする。囲む矩形は本物の形より**広い**ので、
   // 「交わらない」と言えるときだけ落とす、という向きを崩さない。
   function shapeBoundsRect(shape, ref) {
@@ -369,12 +400,23 @@
     return false;
   }
 
-  // その要素が課す切り取り。効かないなら null。
-  function ownClipRect(el, cs) {
+  // その要素が課す切り取りを、**逃げられるものと逃げられないものに分けて**返す。
+  //   overflow … 絶対・固定配置は、包含ブロックでない祖先のこれを逃れる（CSS 2.2）
+  //   shape    … `clip` と `clip-path`。要素と**子孫の描画そのもの**を制限するので逃げられない
+  //   tests    … 形そのものとの交差判定（外接矩形だけでは、円や角丸の外を落とせない）
+  // 一緒くたにしていたため、包含ブロックでない祖先の clip-path が丸ごと無視されていた
+  // （実測: 0画素の語に印が付き、後ろの読める同じ語が説明されなかった）。
+  function ownClips(el, cs) {
     if (cs.display === 'contents') return null;      // 箱を作らないので切り取りも効かない
     const border = el.getBoundingClientRect();
-    const transformed = cs.transform !== 'none';
-    let r = null;
+    // 変形があっても、**平行移動だけ**なら辺の削り込みはそのまま使える。
+    // 回転や拡大縮小のときだけ、軸に沿った外接矩形になるので削らない（落としすぎ防止）。
+    const m = /^matrix\(([^)]*)\)$/.exec(cs.transform || '');
+    const n = m ? m[1].split(',').map(Number) : null;
+    const skewed = cs.transform !== 'none' &&
+      !(n && n.length === 6 && n[0] === 1 && n[1] === 0 && n[2] === 0 && n[3] === 1);
+    let overflow = null, shape = null;
+    const tests = [];
     // ① overflow。切り取り線は padding box（overflow clip edge）。
     //    `auto` と `scroll` は**入れない**——中身はスクロールで読めるので、
     //    画面外というだけで永久に除外すると、長い一覧の下のほうが説明されなくなる。
@@ -382,33 +424,74 @@
     const cx = clips(cs.overflowX), cy = clips(cs.overflowY);
     if (cx || cy) {
       let x1 = border.left, y1 = border.top, x2 = border.right, y2 = border.bottom;
-      if (!transformed) {
+      if (!skewed) {
         x1 += px(cs.borderLeftWidth); y1 += px(cs.borderTopWidth);
         x2 -= px(cs.borderRightWidth); y2 -= px(cs.borderBottomWidth);
       }
-      const m = px(cs.overflowClipMargin);   // overflow:clip は外側へ余白を足せる
-      if (m > 0) { x1 -= m; y1 -= m; x2 += m; y2 += m; }
+      const mg = px(cs.overflowClipMargin);   // overflow:clip は外側へ余白を足せる
+      if (mg > 0) { x1 -= mg; y1 -= mg; x2 += mg; y2 += mg; }
       if (!cx) { x1 = -Infinity; x2 = Infinity; }
       if (!cy) { y1 = -Infinity; y2 = Infinity; }
-      r = intersectRect(r, { x1, y1, x2, y2 });
+      overflow = { x1, y1, x2, y2 };
     }
     // ② legacy clip。**絶対配置の要素にしか効かない**（position を見ずに判定すると、
     //    読める文章のほうを除外する。実測で再現済み）。
     if (CLIP_POSITIONS.includes(cs.position) && cs.clip && cs.clip !== 'auto') {
       const lc = legacyClipRect(cs.clip, border);
-      if (lc) r = intersectRect(r, lc);
+      if (lc) shape = intersectRect(shape, lc);
     }
-    // ③ clip-path
+    // ③ clip-path。外接矩形に加えて、形そのものとの交差も控える。
     if (cs.clipPath && cs.clipPath !== 'none') {
-      const { shape, box } = splitGeometryBox(cs.clipPath.trim());
-      const sr = shapeBoundsRect(shape, refBoxRect(cs, border, transformed, box));
-      if (sr) r = intersectRect(r, sr);
+      const { shape: sh, box } = splitGeometryBox(cs.clipPath.trim());
+      const ref = refBoxRect(cs, border, skewed, box);
+      const sr = shapeBoundsRect(sh, ref);
+      if (sr) shape = intersectRect(shape, sr);
+      const t = shapeHitTest(sh, ref);
+      if (t) tests.push(t);
     }
-    return r;
+    return { overflow, shape, tests };
   }
 
-  // 絶対・固定配置の箱は、包含ブロックでない祖先の切り取りからは**逃げる**。
-  // ここを見ないと、読める文章を切り取られたものとして落としてしまう。
+  // 形そのものとの交差判定。矩形で足りる形は null を返す（外接矩形だけで決まる）。
+  function shapeHitTest(shape, ref) {
+    let m = /^circle\((.*)\)$/.exec(shape);
+    if (m) {
+      const { radii, pos } = splitShapeArgs(m[1]);
+      const c = centerOf(pos, ref);
+      if (!c) return null;
+      const r = radiusOf(radii, c, ref, null);
+      if (r === null) return null;
+      return rect => rectHitsEllipse(rect, c.cx, c.cy, r, r);
+    }
+    m = /^ellipse\((.*)\)$/.exec(shape);
+    if (m) {
+      const { radii, pos } = splitShapeArgs(m[1]);
+      const c = centerOf(pos, ref);
+      if (!c) return null;
+      const rr = radii === '' ? ['', ''] : radii.split(/\s+/).filter(Boolean);
+      if (rr.length !== 2) return null;
+      const rx = radiusOf(rr[0], c, ref, 'x'), ry = radiusOf(rr[1], c, ref, 'y');
+      if (rx === null || ry === null) return null;
+      return rect => rectHitsEllipse(rect, c.cx, c.cy, rx, ry);
+    }
+    // inset(... round R)。角丸を捨てると、角に置かれた語を可視と答える（実測）。
+    m = /^inset\((.*)\)$/.exec(shape);
+    if (m) {
+      const parts = m[1].split(/\s+round\s+/);
+      if (parts.length !== 2) return null;
+      const box = insetRect(parts[0], ref);
+      if (!box) return null;
+      const w = box.x2 - box.x1, h = box.y2 - box.y1;
+      const first = parts[1].trim().split(/[\s/]+/)[0];
+      const rad = lenToPx(first, Math.min(w, h));
+      if (rad === null) return null;
+      return rect => rectHitsRounded(rect, box, rad);
+    }
+    return null;
+  }
+
+  // 絶対・固定配置の箱は、包含ブロックでない祖先の **overflow** からは逃げる。
+  // `clip` と `clip-path` は逃げられない（要素と子孫の描画そのものを制限するため）。
   function establishesContainingBlock(cs, forFixed) {
     if (!forFixed && cs.position !== 'static') return true;
     if (cs.transform !== 'none' || cs.perspective !== 'none') return true;
@@ -426,29 +509,33 @@
 
   // 祖先までさかのぼって、その場所の文字に効く事情を1回で集める。
   //   clip        … 積み上げた切り取り（null は制限なし）
+  //   tests       … 形そのものとの交差判定の並び
   //   hidden      … 描画効果だけで完全に消えている
   //   transformed … 途中に変形があり、箱の寸法から見た目を推し量れない
   // 逃げ方（mode）によって答えが変わるので、覚えるときも mode ごとに分ける。
   let chainCache = null;
 
   function paintChain(el, mode) {
-    // <body> と <html> の overflow は viewport へ伝わる（要素自身は切り取らない）。
-    // ここを切り取りに数えると、画面の下にあるだけの本文が全部「見えない」になる。
-    if (!el || el === document.body || el === document.documentElement) {
-      return { clip: null, hidden: false, transformed: false };
-    }
+    if (!el) return { clip: null, tests: [], hidden: false, transformed: false };
     const cache = chainCache && chainCache[mode];
     if (cache) { const hit = cache.get(el); if (hit !== undefined) return hit; }
     const cs = getComputedStyle(el);
     const applies = mode === 'none' || establishesContainingBlock(cs, mode === 'fixed');
     const up = paintChain(el.parentElement, applies ? positionEscape(cs) : mode);
     let clip = up.clip;
-    if (applies) {
-      const own = ownClipRect(el, cs);
-      if (own) clip = intersectRect(clip, own);
+    let tests = up.tests;
+    const own = ownClips(el, cs);
+    if (own) {
+      // <body> と <html> の overflow は viewport へ伝わる（要素自身は切り取らない）。
+      // ここを切り取りに数えると、画面の下にあるだけの本文が全部「見えない」になる。
+      // ただし **root の clip-path・clip・描画効果は効く**ので、そちらは無視しない。
+      const isRoot = el === document.body || el === document.documentElement;
+      if (applies && own.overflow && !isRoot) clip = intersectRect(clip, own.overflow);
+      if (own.shape) clip = intersectRect(clip, own.shape);         // 形は逃げられない
+      if (own.tests.length) tests = tests.concat(own.tests);
     }
     // 描画効果は包含ブロックを作るので、逃げられない。配置に関わらず見る。
-    const v = { clip, hidden: up.hidden || paintHidesAll(cs),
+    const v = { clip, tests, hidden: up.hidden || paintHidesAll(cs),
                 transformed: up.transformed || cs.transform !== 'none' };
     if (cache) cache.set(el, v);
     return v;

@@ -306,21 +306,50 @@
     return dx * dx + dy * dy <= 1;
   }
 
-  // 角丸の矩形と交わるか。角の四分円の外側だけを落とす。
-  function rectHitsRounded(r, box, radius) {
+  // `round` の値を、四隅の { rx, ry } へ展開する。
+  //   上左・上右・下右・下左 の順で1〜4値。`/` の後ろがあれば、前が水平・後ろが垂直。
+  function cornerRadii(spec, box) {
+    const w = box.x2 - box.x1, h = box.y2 - box.y1;
+    const sides = spec.split('/');
+    if (sides.length > 2) return null;
+    const expand = (txt, base) => {
+      const p = txt.trim().split(/\s+/).filter(Boolean);
+      if (p.length < 1 || p.length > 4) return null;
+      const four = p.length === 1 ? [p[0], p[0], p[0], p[0]]
+        : p.length === 2 ? [p[0], p[1], p[0], p[1]]
+        : p.length === 3 ? [p[0], p[1], p[2], p[1]] : p;
+      const v = four.map(x => lenToPx(x, base));
+      return v.some(x => x === null) ? null : v;
+    };
+    const hx = expand(sides[0], w);
+    const vy = sides.length === 2 ? expand(sides[1], h) : hx;
+    if (!hx || !vy) return null;
+    // 上左・上右・下右・下左
+    return [{ rx: hx[0], ry: vy[0] }, { rx: hx[1], ry: vy[1] },
+            { rx: hx[2], ry: vy[2] }, { rx: hx[3], ry: vy[3] }];
+  }
+
+  // 角丸の矩形と交わるか。角ごとの四分楕円の外側だけを落とす。
+  function rectHitsRounded(r, box, radii) {
     if (r.right <= box.x1 || r.left >= box.x2 || r.bottom <= box.y1 || r.top >= box.y2) return false;
-    if (!(radius > 0)) return true;
-    const rr = Math.min(radius, (box.x2 - box.x1) / 2, (box.y2 - box.y1) / 2);
-    // 角の四分円の中心
-    for (const [cx, cy, qx1, qy1, qx2, qy2] of [
-      [box.x1 + rr, box.y1 + rr, box.x1, box.y1, box.x1 + rr, box.y1 + rr],
-      [box.x2 - rr, box.y1 + rr, box.x2 - rr, box.y1, box.x2, box.y1 + rr],
-      [box.x1 + rr, box.y2 - rr, box.x1, box.y2 - rr, box.x1 + rr, box.y2],
-      [box.x2 - rr, box.y2 - rr, box.x2 - rr, box.y2 - rr, box.x2, box.y2]
-    ]) {
-      // その角の正方形の**中だけ**に収まっている矩形は、四分円との交差で決める
+    const w = box.x2 - box.x1, h = box.y2 - box.y1;
+    // 上左・上右・下右・下左。それぞれ角の正方形と、その四分楕円の中心
+    const corners = [
+      { rx: radii[0].rx, ry: radii[0].ry, x1: box.x1, y1: box.y1, sx: 1, sy: 1 },
+      { rx: radii[1].rx, ry: radii[1].ry, x1: box.x2, y1: box.y1, sx: -1, sy: 1 },
+      { rx: radii[2].rx, ry: radii[2].ry, x1: box.x2, y1: box.y2, sx: -1, sy: -1 },
+      { rx: radii[3].rx, ry: radii[3].ry, x1: box.x1, y1: box.y2, sx: -1 * -1, sy: -1 }
+    ];
+    corners[3].x1 = box.x1; corners[3].sx = 1;
+    for (const c of corners) {
+      const rx = Math.min(c.rx, w), ry = Math.min(c.ry, h);
+      if (!(rx > 0 && ry > 0)) continue;
+      const qx1 = c.sx > 0 ? c.x1 : c.x1 - rx, qx2 = c.sx > 0 ? c.x1 + rx : c.x1;
+      const qy1 = c.sy > 0 ? c.y1 : c.y1 - ry, qy2 = c.sy > 0 ? c.y1 + ry : c.y1;
+      // その角の箱の**中だけ**に収まっている矩形は、四分楕円との交差で決める
       if (r.left >= qx1 && r.right <= qx2 && r.top >= qy1 && r.bottom <= qy2) {
-        return rectHitsEllipse(r, cx, cy, rr, rr);
+        return rectHitsEllipse(r, c.sx > 0 ? c.x1 + rx : c.x1 - rx,
+                                  c.sy > 0 ? c.y1 + ry : c.y1 - ry, rx, ry);
       }
     }
     return true;
@@ -475,18 +504,18 @@
       if (rx === null || ry === null) return null;
       return rect => rectHitsEllipse(rect, c.cx, c.cy, rx, ry);
     }
-    // inset(... round R)。角丸を捨てると、角に置かれた語を可視と答える（実測）。
+    // inset(... round …)。**角ごとに半径が違う**（1〜4値を上左・上右・下右・下左へ
+    // 展開し、`/` の前後で水平・垂直を分ける）。先頭の1値を四隅へ広げていたため、
+    // 丸めていない角の語を落とし、丸めた角の語を残していた（第15回 RG-15-02）。
     m = /^inset\((.*)\)$/.exec(shape);
     if (m) {
       const parts = m[1].split(/\s+round\s+/);
       if (parts.length !== 2) return null;
       const box = insetRect(parts[0], ref);
       if (!box) return null;
-      const w = box.x2 - box.x1, h = box.y2 - box.y1;
-      const first = parts[1].trim().split(/[\s/]+/)[0];
-      const rad = lenToPx(first, Math.min(w, h));
-      if (rad === null) return null;
-      return rect => rectHitsRounded(rect, box, rad);
+      const radii = cornerRadii(parts[1], box);
+      if (!radii) return null;
+      return rect => rectHitsRounded(rect, box, radii);
     }
     return null;
   }

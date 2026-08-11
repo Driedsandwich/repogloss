@@ -754,8 +754,9 @@ check('README が CI の成果物（提出用 ZIP）について書いている'
       tag === 'null' || tag === `v${v}`, `tag: ${tag}`);
 
     const commit = field(yaml, 'commit');
+    // 「未記入」の書き方は tag と揃える（2つの綴りを許すと、どちらかしか見ない経路ができる）
     check('§1-1 の commit が、未記入か 40 桁の hex である',
-      commit === undefined || /^[0-9a-f]{40}$/.test(commit), `commit: ${commit}`);
+      commit === undefined || commit === 'null' || /^[0-9a-f]{40}$/.test(commit), `commit: ${commit}`);
 
     // 取り下げた版のコミットを、現在版の commit として書いてしまう取り違えを止める。
     // `superseded:` の中は上で落としてあるので、元の全文から拾う。
@@ -863,6 +864,97 @@ check('content.js が保存キー iiyakuEnabled を変えていない', content.
 // その結果、`AUDIT.md` が古い件数（158・166）を名乗ったまま残った（実測）。
 // 自分の件数を自分で名乗る以上、そこも突き合わせる。
 // この検査自身が最後の1件なので、いまの checks に 1 を足したものが最終の件数になる。
+/* ---------- 第13回監査（v1.8.12）で足した約束 ---------- */
+{
+  const code = stripComments(content);
+
+  // `<html>` の属性は、body を見張っていても1件も届かない（実測: 表示が消えても
+  // まとめ直しは1回も走らず、暇なときの確認まで約2秒かかった）。
+  check('`<html>` の属性も見張っている',
+    /observer\.observe\(document\.documentElement, ROOT_OPTS\)/.test(code) &&
+    /const ROOT_OPTS = \{ attributes: true, attributeOldValue: true \}/.test(code),
+    '見た目を切り替える指定は `<html>` に置かれることが多い');
+  // ただし走査し直す場所には入れない（1回の書き換えでページ全体を歩き直すため）
+  check('`<html>` の属性変更で、ページ全体を走査し直していない',
+    /if \(mu\.target !== document\.documentElement\) roots\.push\(mu\.target\)/.test(code));
+
+  // カーソルとフォーカスも合図にする（CSS だけで開くメニューは他の合図に乗らない）
+  check('カーソルとフォーカスを、控えの見直しの合図にしている',
+    /const HOVER_SIGNALS = \['pointerover', 'pointerout', 'focusin', 'focusout'\]/.test(code) &&
+    /addEventListener\(t, onPointerOrFocus, true\)/.test(code));
+  check('見直す先が無いときは、その合図で何もしない',
+    /if \(latent\.size === 0 \|\| hoverPending\) return/.test(code),
+    'カーソルを動かすたびにまとめ直しが走る');
+  check('カーソルの合図を、1フレームに1回へまとめている',
+    /requestAnimationFrame\(fire\)/.test(code));
+  check('切り替えのときに、その合図も外している',
+    /removeEventListener\(t, onPointerOrFocus, true\)/.test(code));
+
+  // 控えの見直しに時間の予算があること（20,000件で毎回 30〜60ms 掛かっていた）
+  check('控えの見直しに、時間の予算と続きの持ち越しがある',
+    /const LATENT_BUDGET_MS/.test(code) && /latentCursor/.test(code) &&
+    /function scheduleLatentResume/.test(code),
+    '控えが多いページで、2秒ごとに長い処理が走る');
+  check('続きは、マイクロタスクではなく一度ブラウザへ返してから走る',
+    /latentResume = setTimeout\(/.test(code),
+    'マイクロタスクで続けると、区切った意味が無くなる');
+
+  // 上限の旗が、実際の処理につながっていること（読まれない旗を残さない）
+  const truncReads = (code.match(/latentTruncated/g) || []).length;
+  check('上限の旗が、書くだけでなく読まれている', truncReads >= 3 &&
+    /if \(latentTruncated\) reindexLatent\(\)/.test(code),
+    `latentTruncated の出現 ${truncReads} 箇所。旗を立てるだけでは「もう探さない」が黙って続く`);
+  check('入れ直す前に旗を下ろしていない',
+    /if \(latent\.size >= LATENT_MAX\) return;\s*\n\s*latentTruncated = false;/.test(code),
+    '空きが無くて引き返した1回で旗が消え、あとで空きができても入れ直さない');
+  check('満杯のときは、まず死んだ控えを落として空きを作る',
+    /function pruneLatent/.test(code) && /pruneLatent\(\);/.test(code));
+
+  // 見た目の絞り込みが外されたら足し直す
+  check('見た目の絞り込みが外されたら足し直す',
+    /function ensureOwnStyle/.test(code) && /ensureOwnStyle\(\);/.test(code));
+
+  // `styles.css` が与える性質と、絞り込みで戻す性質の一覧がそろっていること。
+  // 片方だけ増えると、ページ側の同名要素へ自分の見た目が残る。
+  {
+    const css = read('styles.css').replace(/\/\*[\s\S]*?\*\//g, '');
+    const want = new Set();
+    for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      const sel = m[1];
+      if (!/\.iiyaku-(icon|tooltip|toggle)\[data-iiyaku-owner\]/.test(sel)) continue;
+      for (const d of m[2].split(';')) if (d.includes(':')) want.add(d.split(':')[0].trim());
+    }
+    const listed = new Set((/const OWN_STYLE_PROPS = \[([\s\S]*?)\];/.exec(content) || [, ''])[1]
+      .split(',').map(x => x.replace(/['\s\n]/g, '')).filter(Boolean));
+    const missing = [...want].filter(x => !listed.has(x));
+    const extra = [...listed].filter(x => !want.has(x));
+    check('絞り込みで戻す性質の一覧が、styles.css と一致している',
+      want.size > 0 && missing.length === 0 && extra.length === 0,
+      `styles.css にあって一覧に無い: ${missing.join(',') || 'なし'} / 一覧にあって styles.css に無い: ${extra.join(',') || 'なし'}`);
+    // 陽性対照: 抜き出しが実際に動いていること（0件なら比較そのものが無意味）
+    check('styles.css からの抜き出しが動いている（陽性対照）', want.size >= 10,
+      `抜き出せた性質は ${want.size} 個`);
+  }
+
+  // 配布する DESIGN.md が、現行の実装と食い違っていないこと（RG-13-07）
+  {
+    const design = read('DESIGN.md');
+    const stale = [
+      ['DOM の監視をまとめていない', /監視をまとめていない|呼び出しごとに走査しており/],
+      ['characterData を捕捉していない', /characterData`?\)?や、?\s*`?hidden`?\s*\/\s*`?aria-hidden`?\s*の解除だけで表示された要素は捕捉していない/]
+    ];
+    for (const [name, re] of stale) {
+      check(`DESIGN.md に、現行と食い違う旧仕様（${name}）が残っていない`, !re.test(design),
+        '配布物の設計説明を根拠に監査・保守する人へ、旧仕様を伝えてしまう');
+    }
+    // 陽性対照: この探し方が、実際の旧文言を捕まえること
+    check('旧仕様の探し方が、当時の文言を捕まえる（陽性対照）',
+      stale[0][1].test('- **DOM の監視をまとめていない。** MutationObserver の呼び出しごとに走査しており、'));
+    check('DESIGN.md が、いまの仕組み（まとめ直し・属性の見張り・控えの上限）を書いている',
+      /queueMicrotask/.test(design) && /characterData/.test(design) && /20,000/.test(design));
+  }
+}
+
 {
   const auditText = read('AUDIT.md');
   // 過去の run の結果を書いた行は、その時点の事実なので現在の値と一致しなくてよい。

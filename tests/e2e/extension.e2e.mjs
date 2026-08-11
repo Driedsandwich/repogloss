@@ -15,7 +15,7 @@ import { launchChrome, startTestServer, stageExtension, stageExtensionWith,
          USABILITY_PAGE, NAMESPACE_CLIP_PAGE, PROTECTED_PAGE, CONVERGE_PAGE,
          SIGNALS_PAGE, OWNERSHIP_PAGE, LATENT_PAGE, SIGNATURE_PAGE,
          LATENT_GUARD_PAGE, DEFERRED_PAGE, SKIPNAME_PAGE, CLIPZERO_PAGE,
-         PAINT_PAGE, SIGNATURE13_PAGE,
+         PAINT_PAGE, LIFECYCLE13_PAGE, SIGNATURE13_PAGE,
          openPage, sleep, waitFor,
          pressKey, collectTabOrder, tabUntil } from './helpers/chrome.mjs';
 
@@ -2523,6 +2523,51 @@ test('語が実際に描かれている場所だけへ注記する', async t => 
         `読める語を落としている（${why}）`);
     });
   }
+
+  await tab.close();
+});
+
+test('生成した印の生命周期を、記録どおりに保つ', async t => {
+  const srv = await startTestServer(LIFECYCLE13_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await chrome.cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(chrome.cdp, PAGE);
+  const nKey = k => tab.evaluate(`document.querySelectorAll('.iiyaku-icon[data-iiyaku-key=${JSON.stringify(k)}]').length`);
+  await waitFor('拡張が印を付ける', async () => await nKey('branch') === 1);
+
+  await t.test('RG-13-04 ページが正規の印だけを外したら、暇なときの確認を待たずに戻る', async () => {
+    await tab.evaluate(`document.querySelector('.iiyaku-icon[data-iiyaku-key="branch"]').remove(); true`);
+    // 暇なときの確認は2秒ごと。それより十分早く戻ること
+    await sleep(500);
+    assert.equal(await nKey('branch'), 1, '外部の削除に気づかず、説明が消えたままになっている');
+  });
+
+  await t.test('RG-13-04 退役した印をページが本文として使い回しても、消さず、中の語も説明する', async () => {
+    const r = await tab.evaluate(`(async () => {
+      const wait = ms => new Promise(r => setTimeout(r, ms));
+      const ic = document.querySelector('.iiyaku-icon[data-iiyaku-key="commit"]');
+      ic.remove();
+      await wait(300);
+      ic.textContent = 'A squash merge inside.';
+      document.getElementById('reuse-dest').appendChild(ic);
+      await wait(1200);
+      return { connected: ic.isConnected, text: ic.textContent,
+               inside: ic.querySelectorAll('.iiyaku-icon').length };
+    })()`);
+    assert.equal(r.connected, true, 'ページが使い回している節点を消している');
+    assert.match(r.text, /squash merge/, 'ページの本文を壊している');
+    assert.equal(r.inside, 1, '使い回された節点の中が走査されていない');
+  });
+
+  await t.test('RG-13-04 説明文・用語・role を書き換えられたら、正しい印へ作り直す', async () => {
+    await tab.evaluate(`(() => { const ic = document.querySelector('.iiyaku-icon[data-iiyaku-key="webhook"]');
+      ic.dataset.iiyaku = 'WRONG'; ic.dataset.iiyakuTerm = 'wrong'; ic.setAttribute('role', 'img'); })(); true`);
+    await waitFor('正しい印へ戻る', async () => await tab.evaluate(
+      `(() => { const ic = document.querySelector('.iiyaku-icon[data-iiyaku-key="webhook"]');
+        return !!ic && ic.dataset.iiyaku !== 'WRONG' && ic.getAttribute('role') === 'button'; })()`));
+    assert.equal(await nKey('webhook'), 1, '印が増減している');
+  });
 
   await tab.close();
 });

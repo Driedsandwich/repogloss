@@ -820,6 +820,16 @@ export const PAINT_PAGE = `<!doctype html><html lang="en"><head><meta charset="u
 </body></html>`;
 
 /* 生成した印の生命周期（RG-13-04） */
+export const LIFECYCLE13_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>life13</title></head><body>
+  <a href="#" id="before">before</a>
+  <p id="remove-src">A branch here.</p>
+  <p id="reuse-src">A commit here.</p>
+  <p id="reuse-dest">dest</p>
+  <p id="tamper-src">A webhook here.</p>
+</body></html>`;
+
+/* 複製の署名と、名前の衝突（RG-13-03） */
 export const SIGNATURE13_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>sig13</title></head><body>
   <a href="#" id="before">before</a>

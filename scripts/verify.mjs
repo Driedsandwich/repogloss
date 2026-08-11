@@ -167,13 +167,25 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   if (m) {
     const body = m[1];
     const skipAt = body.indexOf('inSkip(');
-    const valueAt = Math.min(
-      ...['.nodeValue', '.data', '.textContent', '.wholeText', 'substringData']
-        .map(t => { const i = body.indexOf(t); return i === -1 ? Infinity : i; })
-    );
+    // 探すのは**本文の文字**を読む書き方だけ。`.dataset`（自分が書いた名札）は
+    // 本文ではないので、`.data` の部分一致で拾ってしまわないよう境界を付ける。
+    const TEXT_READ = /\.nodeValue|\.textContent|\.wholeText|substringData\(|\.data\b(?!set)/;
+    const found = TEXT_READ.exec(body);
+    const valueAt = found ? found.index : Infinity;
     check('isCoherent が SKIP 判定より前にテキストの値を読んでいない',
       skipAt !== -1 && skipAt < valueAt,
       `SKIP の位置=${skipAt} / 値を読む位置=${valueAt === Infinity ? 'なし' : valueAt}`);
+    // 陽性対照/陰性対照: 本文を読む書き方は捕まえ、名札の読み出しは捕まえないこと
+    check('この順序検査が、本文を読む書き方を捕まえる（陽性対照）',
+      TEXT_READ.test('const v = rec.termNode.nodeValue;'));
+    check('この順序検査が、名札の読み出しを誤って捕まえない（陰性対照）',
+      !TEXT_READ.test('if (rec.icon.dataset.iiyakuKey !== rec.key) return false;'));
+    // 記録の中身と意味も、毎回確かめていること（RG-13-04）
+    check('isCoherent が、説明文・用語・役割まで記録どおりか確かめている',
+      /dataset\.iiyaku !== DICT\[rec\.key\]/.test(body) &&
+      /dataset\.iiyakuTerm !== rec\.term/.test(body) &&
+      /getAttribute\('role'\) !== 'button'/.test(body),
+      'ページ側が説明文や役割を書き換えても、正規の記録として残り続ける');
     // 語のうしろに文字が増えたら整合でないこと（RG-9-02）
     check('isCoherent が、語が節点の末尾で終わることを要求している',
       /termNode\.length\s*!==\s*rec\.splitOffset/.test(body),
@@ -363,8 +375,8 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   // 陽性対照: この探し方が、実際に並べた書き方を捕まえること
   check('除外一覧の検査が、class 名を並べた書き方を捕まえる（陽性対照）',
     /^\s*'\.iiyaku-icon',/m.test("    '.iiyaku-icon',\n"));
-  check('自分の印は、要素そのもので除外している',
-    /isOurChrome\(el\) \|\| !!madeIconAt\(el\)/.test(code),
+  check('自分の印は、いま正規のものだけを要素そのもので除外している',
+    /isOurChrome\(el\) \|\| !!ownedIconAt\(el\)/.test(code),
     'class 名を外したのに、自分の印を除外する経路が無い');
   check('吹き出しの中かどうかを、いま出している吹き出しそのもので見ている',
     /const inTooltip = target =>[\s\S]{0,200}?tip && \(el === tip \|\| tip\.contains\(el\)\)/.test(code),

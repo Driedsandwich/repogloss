@@ -58,7 +58,7 @@
     '.cm-editor', '.CodeMirror', '.highlight', '.snippet-clipboard-content',
     '[data-testid="code-cell"]', '[data-testid="blob-viewer-file-content"]',
     // 自分の印・吹き出し・切替ボタンは、ここ（class 名）ではなく要素そのもので除く
-    // （→ isOurChrome / madeIconAt）。名前で除くと、ページ側の同名 class まで巻き込み、
+    // （→ isOurChrome / ownedIconAt）。名前で除くと、ページ側の同名 class まで巻き込み、
     // そのページ本文を一度も走査しなくなる（実測: `class="iiyaku-icon"` の段落が
     // まるごと説明されなかった）。
     '[aria-hidden="true"]', '.sr-only', '.visually-hidden'
@@ -545,7 +545,11 @@
       const hit = skipCache.get(el);
       if (hit !== undefined) return hit;
     }
-    const v = isOurChrome(el) || !!madeIconAt(el) || !!el.closest(SKIP);
+    // 退役した印は、ページが本文として使い回すことがある。「自分が作った」を
+    // 永久の除外理由にすると、その中の文章が二度と走査されない（実測: 使い回した
+    // 節点の中の語に、そのタブを開いているあいだ説明が付かなかった）。
+    // ここで見るのは「**いま**自分の正規の印か」だけにする。
+    const v = isOurChrome(el) || !!ownedIconAt(el) || !!el.closest(SKIP);
     if (skipCache) skipCache.set(el, v);
     return v;
   }
@@ -718,11 +722,11 @@
   // 「いま自分の正規の印か」。退役したら取り消す（下の retireGloss）。
   const ownedIcons = new WeakSet();
   const ownedTriggers = new WeakSet();
-  // 「自分が作った要素か」。こちらは取り消さない。
-  // 2つを分けるのは、問いが別だからである。所有を取り消した印を DOM から外すと、
-  // その削除は「ページが起こした変更」に見えてしまい、余計なまとめ直しを呼ぶ。
-  // 変更の出どころを言うにはこちらを、正規かどうかを言うには上の表を使う。
-  const madeIcons = new WeakSet();
+  // 「自分が作ったことがある」という記録は**持たない**。持つと、退役した印を
+  // ページが本文として使い回したときにも自分のものとして扱ってしまい、その領域が
+  // 一度も走査されず、同じ語の印が2つ並ぶ経路もできた（どちらも実測）。
+  // 変更の出どころは「いま自分のものか（ownedIcons）」と、
+  // 「自分が外す直前に控えたか（expectedRemovals）」の2つだけで言う。
 
   /* ---------- 3-1b. 自分が書いた属性の「予定表」 ---------- */
   // 「その要素は自分のものか」と「その変更を起こしたのは自分か」は別のこと。
@@ -782,12 +786,6 @@
   // 自分のものとして扱うと、そのリンクのクリックを横取りしてしまう（実測）。
   function ownedIconAt(el) {
     for (let n = el; n; n = n.parentElement) if (ownedIcons.has(n)) return n;
-    return null;
-  }
-
-  // 自分が作った印か（退役したものも含む）。変更の出どころを言うときに使う。
-  function madeIconAt(el) {
-    for (let n = el; n; n = n.parentElement) if (madeIcons.has(n)) return n;
     return null;
   }
 
@@ -891,7 +889,6 @@
     // 「合言葉あり かつ 自分の作ったものではない」を複製の判定に使う。
     icon.dataset.iiyakuOwner = UID;
     ownedIcons.add(icon);   // 複製された印と区別するため、自分の作ったものを控える
-    madeIcons.add(icon);
     return icon;
   }
 
@@ -976,7 +973,7 @@
     for (const ic of tipIcons) {
       if (ic.getAttribute('role') === 'button') setOwnAttr(ic, 'aria-expanded', 'false');
     }
-    if (tip) { tip.remove(); tip = null; }
+    if (tip) { removeOwn(tip); tip = null; }
     tipAnchor = null;
     tipIcons = [];
   }
@@ -1176,6 +1173,28 @@
     // （実測: 合言葉を外された印は幅0になるが、role=button と tabindex=0 は残った）。
     if (!ownedIcons.has(rec.icon)) return false;
     if (rec.icon.getAttribute('data-iiyaku-owner') !== UID) return false;
+    // 合言葉だけでは足りない。**中身と意味も記録どおりでなければならない。**
+    // 確かめないと、ページ側が説明文や役割を書き換えても正規の記録のまま残り、
+    // 誤った説明を出し続ける（実測: `data-iiyaku` を書き換えると、3秒後も
+    // その文言が吹き出しに出た。role を img へ変えても押せる印として残った）。
+    // 食い違ったら退役させ、正しい印を付け直す（本文には触れない）。
+    if (rec.icon.tagName !== 'SUP') return false;
+    if (!rec.icon.classList.contains('iiyaku-icon')) return false;
+    if (rec.icon.dataset.iiyakuKey !== rec.key) return false;
+    if (rec.icon.dataset.iiyaku !== DICT[rec.key]) return false;
+    if (rec.icon.dataset.iiyakuTerm !== rec.term) return false;
+    if (rec.placementKind === 'hosted') {
+      // 装飾扱い。読み上げに出さず、Tab の順路にも入れない
+      if (rec.icon.getAttribute('aria-hidden') !== 'true') return false;
+      if (rec.icon.hasAttribute('role') || rec.icon.hasAttribute('tabindex')) return false;
+    } else {
+      if (rec.icon.getAttribute('role') !== 'button') return false;
+      if (rec.icon.getAttribute('tabindex') !== '0') return false;
+      if (rec.icon.getAttribute('aria-label') !== `「${rec.term}」の解説`) return false;
+      // 開閉の状態は出し入れで変わるので、値そのものではなく**取りうる値か**を見る
+      const ex = rec.icon.getAttribute('aria-expanded');
+      if (ex !== 'true' && ex !== 'false') return false;
+    }
 
     // ---- 本文の文字に触れる前に、いまも触れてよい場所かを確かめる ----
     // 注記したあとで、ページ側がその場所を編集領域・コード・aria-hidden・inert・
@@ -1560,9 +1579,11 @@
   function isOurNode(node) {
     const el = node && (node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement);
     if (!el) return false;
-    // 退役させた印の削除も「自分が起こした変更」である。所有を取り消したあとに
-    // 外すので、ここで所有だけを見ると自分の後始末がページの変更に見えてしまう。
-    if (madeIconAt(el)) return true;
+    // 見るのは「**いま**自分の正規の印か」だけ。「自分が作った」を永久の証明に
+    // 使うと、退役した節点をページが本文として戻したときにも自分の変更と数え、
+    // その領域が一度も走査されない（実測: 使い回された節点の中の語に説明が付かなかった）。
+    // 自分が外した削除は expectedRemovals が1回だけ受け取る（→ isOwnRemoval）。
+    if (ownedIconAt(el)) return true;
     return isOurChrome(el);
   }
 
@@ -1603,7 +1624,9 @@
         if (expectedSplit.has(n)) { expectedSplit.delete(n); continue; }
         if (!isOurNode(n)) { deep = true; roots.push(n); }
       }
-      for (const n of mu.removedNodes) if (!isOurNode(n)) deep = true;
+      // 外れた節点は「自分が外す直前に控えたか」だけで判定する。作ったのが自分でも、
+      // 外したのはページかもしれない（→ expectedRemovals）。
+      for (const n of mu.removedNodes) if (!isOwnRemoval(n)) deep = true;
     }
     if (!deep && roots.length === 0) return;
     for (const r of roots) pendingRoots.add(r);

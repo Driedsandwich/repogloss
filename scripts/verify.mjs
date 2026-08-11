@@ -355,8 +355,15 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   check('複製の判定が、今回の合言葉そのもので行われている',
     /pick\(`\[data-iiyaku-owner="\$\{CSS\.escape\(UID\)\}"\]`\)/.test(content));
   check('中身のある節点は消さず、名札を外すだけにしている',
-    /el\.childNodes\.length === 0\) removeOwn\(el\);\s*\n\s*else stripOwnIdentity\(el\)/.test(content),
+    /!hasPageContent\(el\)\) removeOwn\(el\);\s*\n\s*else stripOwnIdentity\(el\)/.test(content),
     'ページが使い回している節点を、その本文ごと消す');
+  // 「空」を childNodes 0 で見ると、Comment や空の Text を1つ足すだけで抜けられる
+  check('「中身が無い」を、Comment や空の Text を数えずに判定している',
+    /function hasPageContent/.test(content) && !/childNodes\.length === 0/.test(stripComments(content)),
+    '複製に空の Text を足すだけで、見えない Tab の停止点が残る');
+  check('名札が2つ以上そろったものだけを、名前で見分けている',
+    /OWN_DATA_ATTRS\.filter\(a => el\.hasAttribute\(a\)\)\.length < 2/.test(content),
+    'ページ側の要素から class や role を剥がしてしまう');
   check('見た目の側で、印・吹き出し・切替ボタンの3つとも合言葉の値まで見ている',
     /function scopeOwnStyle/.test(content) && /:not\(\$\{mine\}\)/.test(content) &&
     /OWN_CLASSES\.map\(c => `\.\$\{c\}\[data-iiyaku-owner\]:not\(\$\{mine\}\)`\)/.test(content),

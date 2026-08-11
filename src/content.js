@@ -939,6 +939,17 @@
   const OWN_SEMANTIC_ATTRS = ['role', 'tabindex', 'aria-label', 'aria-expanded', 'aria-hidden'];
   const OWN_CLASSES = ['iiyaku-icon', 'iiyaku-tooltip', 'iiyaku-toggle'];
 
+  // ページが失って困る中身があるか。Comment や空の Text は中身ではない——
+  // それを「中身がある」と数えていたため、複製に空の Text を1つ足すだけで
+  // 後始末をすり抜け、見えない Tab の停止点が残った（実測）。
+  function hasPageContent(el) {
+    for (const n of el.childNodes) {
+      if (n.nodeType === Node.ELEMENT_NODE) return true;
+      if (n.nodeType === Node.TEXT_NODE && n.nodeValue.trim() !== '') return true;
+    }
+    return false;
+  }
+
   function stripOperability(el) {
     for (const a of OWN_SEMANTIC_ATTRS) el.removeAttribute(a);
   }
@@ -973,7 +984,7 @@
       // 見るのは「**いま**自分の正規の印か」。「作ったことがある」で除くと、
       // 退役した印をページが DOM へ戻したときに素通りし、同じ語の印が2つ並ぶ（実測）。
       if (ownedIcons.has(el) || isOurChrome(el)) continue;
-      if (el.childNodes.length === 0) removeOwn(el);
+      if (!hasPageContent(el)) removeOwn(el);
       else stripOwnIdentity(el);
     }
     // ② 合言葉を消された／書き換えられた複製。断定はできないので、条件を重ねる:
@@ -984,12 +995,16 @@
       if (ownedIcons.has(el)) continue;
       if (el.getAttribute('data-iiyaku-owner') === UID) continue;   // ① で扱った
       if (el.tagName !== 'SUP') continue;
-      if (el.childNodes.length !== 0) continue;                     // ページの中身がある
+      if (hasPageContent(el)) continue;                             // ページの中身がある
       if (!el.hasAttribute('tabindex') && el.getAttribute('role') !== 'button') continue;
-      // 自分の名札がまだ1つでも残っているなら、自分の作ったものの複製と見てよい。
-      // 1つも無ければ、名前が同じだけかもしれないので**操作性だけ**を外す。
-      if (OWN_DATA_ATTRS.some(a => el.hasAttribute(a))) stripOwnIdentity(el);
-      else stripOperability(el);
+      // **自分の名札が2つ以上そろっているものだけ**を扱う。1つだけなら、名前が
+      // 同じだけのページの持ち物と区別できない（実測: ページが置いた
+      // `<sup class="iiyaku-icon" role="button" tabindex="0" data-iiyaku-owner="page">`
+      // から class も role も tabindex も剥がしていた）。自分が作る印は必ず
+      // key・説明・用語・合言葉の4つを持つので、1つ消されても2つ以上は残る。
+      // 名札を全部消された複製は、見えない停止点として残る——これは既知の限界。
+      if (OWN_DATA_ATTRS.filter(a => el.hasAttribute(a)).length < 2) continue;
+      stripOwnIdentity(el);
     }
     // 入口の目印も複製される。引き当てには使っていないので実害は無いが、
     // ページに自分の合言葉だけが残るのは紛らわしいので外す。
@@ -1434,7 +1449,7 @@
       // 外すのは自分が入れた <sup> だけ。ただしページがその節点を作り替えて
       // 中身を入れているなら、消すとページの本文まで消える（実測: 使い回された
       // 節点が、その中の文章ごと画面から無くなった）。そのときは手を引くだけにする。
-      if (rec.icon.childNodes.length === 0) removeOwn(rec.icon);
+      if (!hasPageContent(rec.icon)) removeOwn(rec.icon);
       else stripOwnIdentity(rec.icon);
     }
     // 印が既にページ側から外されていても、ここへ来る。記録があるので、

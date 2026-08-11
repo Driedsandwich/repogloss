@@ -423,6 +423,16 @@
     });
   }
 
+  // 文字そのものが透明なら読めない（第15回 RG-15-05。実測: `color: transparent` の
+  // 語に印が付き、後ろの読める同じ語が説明されなかった）。縁取りがあるときは読めるので外す。
+  function textIsInvisible(cs) {
+    const fill = cs.webkitTextFillColor && cs.webkitTextFillColor !== 'currentcolor'
+      ? cs.webkitTextFillColor : cs.color;
+    if (!/^rgba\([^)]*,\s*0(\.0+)?\)$/.test(fill || '')) return false;
+    const sw = parseFloat(cs.webkitTextStrokeWidth || '0');
+    return !(sw > 0);
+  }
+
   function paintHidesAll(cs) {
     if (cs.filter && cs.filter !== 'none' && FILTER_OPACITY_ZERO.test(cs.filter)) return true;
     const mi = cs.maskImage || cs.webkitMaskImage;
@@ -598,6 +608,7 @@
   function isPaintedRange(el, node, start, end) {
     const chain = paintChain(el, 'none');
     if (chain.hidden) return false;
+    if (textIsInvisible(getComputedStyle(el))) return false;
     if (rectIsEmpty(chain.clip)) return false;
     const rects = rangeRects(node, start, end);
     if (rects.length === 0) return false;

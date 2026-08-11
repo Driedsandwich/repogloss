@@ -560,6 +560,56 @@ export const SIGNATURE_PAGE = `<!doctype html><html lang="en"><head><meta charse
   <a href="#" id="after">after</a>
 </body></html>`;
 
+/* 控えてある候補を見直すとき、**本文へ触れる前に**触れてよい場所かを確かめるか
+   （第12回 RG-12-01）。目印は最初は置かず、保護領域へ変えるのと同時に入れる——
+   初回走査の時点で読まれるのは正しい（そのときは保護領域ではない）ので、
+   それを数えてしまうと何を測っているか分からなくなる。 */
+export const LATENT_GUARD_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>latent-guard</title><style>.hid{display:none}</style></head><body>
+  <p id="anchor">A repository stays visible.</p>
+  <p id="lat-edit" class="hid">a branch here.</p>
+  <p id="lat-aria" class="hid">a commit here.</p>
+  <p id="lat-inert" class="hid">a merge here.</p>
+  <p id="lat-hidden" class="hid">a rebase here.</p>
+  <p id="lat-open" class="hid">a revert here.</p>
+</body></html>`;
+
+/* いまは入口が無いだけの候補（第12回 RG-12-02）。
+   どれも見えてはいるが、そのままでは印を入れる場所（入口）が決まらない。 */
+export const DEFERRED_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>deferred</title></head><body>
+  <a href="#" id="before">before</a>
+  <p id="anchor">A repository stays visible.</p>
+  <button id="btn" disabled>branch</button>
+  <div id="roving" tabindex="-1" role="treeitem">commit</div>
+  <label id="lab">merge</label><input id="ctrl">
+  <a id="anchorless">rebase</a>
+</body></html>`;
+
+/* ページ側が自分と同じ class 名を使う場所（第12回 RG-12-06）。
+   本文は走査してよく、吹き出しの中と誤認してもいけない。 */
+export const SKIPNAME_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>skipname</title></head><body>
+  <p id="src">A branch first.</p>
+  <p id="page-icon" class="iiyaku-icon">A commit in ordinary page text.</p>
+  <div id="page-tip" class="iiyaku-tooltip">page owned</div>
+  <div id="page-toggle" class="iiyaku-toggle">page owned too</div>
+</body></html>`;
+
+/* 参照ボックスが潰れているときの切り取り（第12回 RG-12-05）。
+   既知の 0 と、寸法が分からないことを混ぜない。負の inset で外へ広がる形も対照に置く。 */
+export const CLIPZERO_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>clipzero</title><style>
+  .box{box-sizing:border-box;width:100px;height:100px}
+  #zero{padding:50px;clip-path:inset(0) content-box}
+  #zero-neg{padding:50px;clip-path:inset(-20px) content-box}
+  #nonzero{padding:10px;clip-path:inset(0) content-box}
+</style></head><body>
+  <div id="zero" class="box">A branch hidden.</div><p id="zero-later">A branch later.</p>
+  <div id="zero-neg" class="box">A commit shown.</div><p id="neg-later">A commit later.</p>
+  <div id="nonzero" class="box">A merge shown.</div><p id="nonzero-later">A merge later.</p>
+</body></html>`;
+
 export function startTestServer(html = REPO_PAGE) {
   const { key, cert } = makeCert();
   const server = https.createServer({ key, cert }, (req, res) => {

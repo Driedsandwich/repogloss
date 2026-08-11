@@ -226,9 +226,13 @@
       : parts.length === 2 ? [parts[0], parts[1], parts[0], parts[1]]
       : parts.length === 3 ? [parts[0], parts[1], parts[2], parts[1]]
       : parts;
-    // 箱の寸法が 0 以下だと「0 + 0 >= 0」で何でも全面非表示になってしまう。
-    // その場合は百分率だけで判断する（px は箱に対する割合が決まらない）。
-    const useBox = typeof w === 'number' && typeof h === 'number' && w > 0 && h > 0;
+    // 「寸法が分からない（null）」と「箱が潰れている（0）」は別のこと。
+    // 一緒に扱うと、既知の 0×0 参照ボックスへ inset(0) を掛けた形——中身は
+    // まったく見えない——を可視と答える（実測: 隠れた側に印が付き、後ろの読める語が0）。
+    // 寸法が分かっているなら 0 でもそのまま面積の式に入れる。負の inset で外へ広がる
+    // 形も同じ式で正しく出る（`bh - top - bottom > 0` なら可視）。
+    // 分からないときだけ、百分率で言えることに限る（px は箱に対する割合が決まらない）。
+    const useBox = Number.isFinite(w) && Number.isFinite(h) && w >= 0 && h >= 0;
     const bw = useBox ? w : null;
     const bh = useBox ? h : null;
     const top = lenToPx(t, bh), bottom = lenToPx(b, bh);

@@ -1083,7 +1083,12 @@
       // から class も role も tabindex も剥がしていた）。自分が作る印は必ず
       // key・説明・用語・合言葉の4つを持つので、1つ消されても2つ以上は残る。
       // 名札を全部消された複製は、見えない停止点として残る——これは既知の限界。
-      if (OWN_DATA_ATTRS.filter(a => el.hasAttribute(a)).length < 2) continue;
+      if (OWN_DATA_ATTRS.filter(a => el.hasAttribute(a)).length < 2) {
+        // 名札を全部消されていても、**自分が書く読み上げ名**が残っていれば複製と分かる
+        // （第15回 RG-15-08。実測: 幅0・tabindex=0 の見えない停止点が残った）。
+        // ページ側がこの文面を偶然持つことはない。
+        if (!/^「.+」の解説$/.test(el.getAttribute('aria-label') || '')) continue;
+      }
       stripOwnIdentity(el);
     }
     // 入口の目印も複製される。引き当てには使っていないので実害は無いが、
@@ -1952,13 +1957,24 @@
   // （まとめないと、動かした回数だけまとめ直しが走る）。
   // 控えが多いページでは、カーソルを動かすたびに控え全体の見直しが始まっていた
   // （実測: 5,000候補・40回の移動で 128 回・約887ms）。時間でも間引く。
+  // ⚠️ 間引きは「捨てる」ではなく「あとで1回やる」にする。捨てるだけだと、
+  // 1つ目のメニューから 60ms で2つ目へ移ったとき、2つ目をどれだけ開いていても
+  // 暇なときの確認まで説明が付かない（第15回 RG-15-07）。
   const HOVER_GAP = 150;
   let hoverPending = false;
   let hoverAt = 0;
+  let hoverTail = null;
   const onPointerOrFocus = () => {
     if (latent.size === 0 || hoverPending) return;
     const now = performance.now();
-    if (now - hoverAt < HOVER_GAP) return;
+    if (now - hoverAt < HOVER_GAP) {
+      // 最後の1回は、間引きの窓が明けたあとに必ず処理する
+      if (hoverTail === null) {
+        hoverTail = setTimeout(() => { hoverTail = null; onPointerOrFocus(); },
+                               HOVER_GAP - (now - hoverAt));
+      }
+      return;
+    }
     hoverAt = now;
     const fire = () => { hoverPending = false; if (observing) schedule({ deep: true }); };
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(fire);
@@ -2033,6 +2049,7 @@
     for (const t of HOVER_SIGNALS) document.removeEventListener(t, onPointerOrFocus, true);
     if (idleTimer !== null) { clearTimeout(idleTimer); idleTimer = null; }
     if (latentResume !== null) { clearTimeout(latentResume); latentResume = null; }
+    if (hoverTail !== null) { clearTimeout(hoverTail); hoverTail = null; }
     latentPass = null; latentCursor = 0;
     observing = false;
     hideTip();

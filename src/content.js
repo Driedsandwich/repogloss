@@ -1870,10 +1870,16 @@
   //
   // 見直す先が無いなら何もしない。カーソルは大量に動くので、1フレームに1回へまとめる
   // （まとめないと、動かした回数だけまとめ直しが走る）。
+  // 控えが多いページでは、カーソルを動かすたびに控え全体の見直しが始まっていた
+  // （実測: 5,000候補・40回の移動で 128 回・約887ms）。時間でも間引く。
+  const HOVER_GAP = 150;
   let hoverPending = false;
+  let hoverAt = 0;
   const onPointerOrFocus = () => {
     if (latent.size === 0 || hoverPending) return;
-    hoverPending = true;
+    const now = performance.now();
+    if (now - hoverAt < HOVER_GAP) return;
+    hoverAt = now;
     const fire = () => { hoverPending = false; if (observing) schedule({ deep: true }); };
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(fire);
     else setTimeout(fire, 16);

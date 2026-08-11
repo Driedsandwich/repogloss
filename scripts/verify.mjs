@@ -285,6 +285,36 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   check('控えの見直しが、見え方を測る前に文字列で足切りしている',
     /matcher\.findHits\(v, key => usableGloss\(key\) !== null\)\.length === 0\) continue/.test(code),
     '控えが多いページで、毎回すべての見え方を測ることになる');
+
+  // 第12回 RG-12-01: 控えを見直すときも、**本文へ触れる前に**除外を確かめること。
+  // 初回走査（isTarget）は先に見ているのに、見直しの経路だけ順序が逆だった（実測）。
+  {
+    const fn = /function discoverLatent\(\)[\s\S]*?\n  \}/.exec(code);
+    check('控えの見直しの本体を取り出せる', !!fn, '関数名を変えたなら、この検査も直す');
+    const body = fn ? fn[0] : '';
+    const iSkip = body.indexOf('inSkip(el)');
+    const iRead = body.indexOf('node.nodeValue');
+    check('控えの見直しが、本文を読む前に除外を確かめている',
+      iSkip > -1 && iRead > -1 && iSkip < iRead,
+      `inSkip の位置 ${iSkip} / 本文を読む位置 ${iRead}（前者が先でなければならない）`);
+    // 陽性対照: この並び順の見方が、逆の書き方を実際に捕まえること
+    check('順序を見る検査が、逆の書き方を捕まえる（陽性対照）',
+      (s => { const a = s.indexOf('inSkip(el)'), b = s.indexOf('node.nodeValue');
+              return !(a > -1 && b > -1 && a < b); })('const v = node.nodeValue; if (inSkip(el)) return;'));
+  }
+
+  // 第12回 RG-12-02: 入口がまだ無いだけの候補を、永久に処理済みにしない
+  check('入口が無いだけの候補を、控えへ入れて見直している',
+    /placement\.kind === 'skip'\) \{[\s\S]{0,400}?rememberLatent\(node\)/.test(code),
+    '入口ができても、同じ世代では二度と見なくなる');
+
+  // 第12回 RG-12-04: 控えに既にあるものを数え直して上限を踏まないこと
+  check('控えへ入れる前に、既に控えてあるかを見ている',
+    /function rememberLatent[\s\S]{0,200}?latent\.has\(node\)\) return/.test(code),
+    '見直すたびに上限へ達し、控えを丸ごと捨ててしまう');
+  check('上限に達しても、控えを捨てていない',
+    !/latent\.clear\(\)/.test(code),
+    '捨てると「候補0件」に見え、二度と探さなくなる');
 }
 
 /* ---------- 退役で所有を取り消しているか（RG-11-02） ---------- */
@@ -311,9 +341,18 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   check('吹き出しと切替ボタンを、class 名ではなく要素そのもので見分けている',
     /function isOurChrome/.test(content) && !/closest\('\.iiyaku-tooltip, \.iiyaku-toggle'\)/.test(code),
     'ページ側が同じ class を使うと、その要素を自分のものとして扱ってしまう');
-  check('除外一覧に、自分の吹き出しと切替ボタンの class を並べていない',
-    !/'\.iiyaku-toggle', '\.iiyaku-tooltip'/.test(code),
+  check('除外一覧に、自分の UI の class 名を並べていない',
+    !/'\.iiyaku-toggle', '\.iiyaku-tooltip'/.test(code) && !/^\s*'\.iiyaku-icon',/m.test(code),
     'ページ側の同名 class の中を、永久に走査しなくなる');
+  // 陽性対照: この探し方が、実際に並べた書き方を捕まえること
+  check('除外一覧の検査が、class 名を並べた書き方を捕まえる（陽性対照）',
+    /^\s*'\.iiyaku-icon',/m.test("    '.iiyaku-icon',\n"));
+  check('自分の印は、要素そのもので除外している',
+    /isOurChrome\(el\) \|\| !!madeIconAt\(el\)/.test(code),
+    'class 名を外したのに、自分の印を除外する経路が無い');
+  check('吹き出しの中かどうかを、いま出している吹き出しそのもので見ている',
+    /const inTooltip = target =>[\s\S]{0,200}?tip && \(el === tip \|\| tip\.contains\(el\)\)/.test(code),
+    'ページ側の同名 class へカーソルが移っても、説明が閉じない');
   check('本文を割ったときの変更を、自分のものとして数えていない',
     /const expectedSplit = new WeakSet\(\)/.test(content) &&
     /expectedSplit\.has\(n\)\) \{ expectedSplit\.delete\(n\)/.test(code) &&
@@ -321,6 +360,32 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     '印を1つ動かすたびに、空のまとめ直しがもう1回走る');
   // 読まれない旗を残さない（守っているつもりの不変条件が誰も見ていない状態になる）
   check('読まれない再入防止の旗が残っていない', !/inBatch/.test(code));
+}
+
+/* ---------- 走査より先に見張り始めているか（RG-12-03） ---------- */
+// 走査の途中で自分が起こす変更は「次に1回だけ起きるはず」として控えてある。
+// 見張る前に走査すると、その控えが消費されないまま残り、**そのあとページが起こした
+// 最初の文字変更を自分のものとして捨てる**（実測）。
+{
+  const code = stripComments(content);
+  const iObs = code.indexOf('observer.observe(document.body, OBSERVE_OPTS)');
+  const iScan = code.indexOf('scan(document.body);\n', code.indexOf('function startRuntime'));
+  check('見張り始める場所と、初回走査の場所が両方ある', iObs > -1 && iScan > -1,
+    `observe: ${iObs} / scan: ${iScan}`);
+  check('走査より先に見張り始めている', iObs > -1 && iScan > -1 && iObs < iScan,
+    '残った「予定」が、ページの最初の文字変更を食べる');
+}
+
+/* ---------- 参照ボックスの 0 と、寸法不明を分けているか（RG-12-05） ---------- */
+{
+  const code = stripComments(content);
+  check('箱の寸法が 0 でも、分かっているなら面積の式に使う',
+    /const useBox = Number\.isFinite\(w\) && Number\.isFinite\(h\) && w >= 0 && h >= 0/.test(code),
+    '既知の 0×0 参照ボックスを「寸法不明」と同じ扱いにしている');
+  // 陽性対照: 以前の書き方（w > 0）なら捕まえること
+  check('この検査が、以前の書き方を捕まえる（陽性対照）',
+    !/const useBox = Number\.isFinite\(w\) && Number\.isFinite\(h\) && w >= 0 && h >= 0/
+      .test('const useBox = typeof w === "number" && w > 0 && h > 0;'));
 }
 
 /* ---------- 可視性の判定が祖先まで見ているか ---------- */

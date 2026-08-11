@@ -57,9 +57,10 @@
     '.react-code-lines', '.react-code-line-contents', '.react-blob-print-hide',
     '.cm-editor', '.CodeMirror', '.highlight', '.snippet-clipboard-content',
     '[data-testid="code-cell"]', '[data-testid="blob-viewer-file-content"]',
-    // 自分の吹き出しと切替ボタンは、ここ（class 名）ではなく要素そのもので除く
-    // （→ isOurChrome）。名前で除くと、ページ側の同名 class まで巻き込む。
-    '.iiyaku-icon',
+    // 自分の印・吹き出し・切替ボタンは、ここ（class 名）ではなく要素そのもので除く
+    // （→ isOurChrome / madeIconAt）。名前で除くと、ページ側の同名 class まで巻き込み、
+    // そのページ本文を一度も走査しなくなる（実測: `class="iiyaku-icon"` の段落が
+    // まるごと説明されなかった）。
     '[aria-hidden="true"]', '.sr-only', '.visually-hidden'
   ].join(',');
 
@@ -98,13 +99,20 @@
   // 走査し直す場所も、退役した記録も無いからである。その結果、最初に隠れていた
   // 語は、そのタブを開いているあいだ永久に説明されなかった（4通りで実測）。
   // 合図のたびにページ全体を走り直すのは高いので、ここだけを見直す。
+  // 控えるのは「不可視だった」節点だけではない。**いまは入口が無い**だけの節点も
+  // ここへ入れる（disabled の button など）。処理済みにしてしまうと、あとで入口が
+  // できても同じ世代では二度と見ない（実測: disabled を外しても説明が付かなかった）。
   const latent = new Set();          // Text ノード（自分で掃除する）
-  const LATENT_MAX = 2000;           // これを超えたら控えるのをやめ、全体走査へ落とす
-  let latentOverflow = false;
+  const LATENT_MAX = 20000;          // 安全弁。ここまで来たら**捨てずに**、増やすのをやめる
+  let latentTruncated = false;
 
   function rememberLatent(node) {
-    if (latentOverflow) return;
-    if (latent.size >= LATENT_MAX) { latent.clear(); latentOverflow = true; return; }
+    // 既に控えてあるなら何もしない。ここで数え直すと、見直しのたびに上限へ達し、
+    // **控えを丸ごと捨てて二度と探さなくなる**（実測: ちょうど上限の件数で発生した）。
+    if (latent.has(node)) return;
+    // 上限では捨てない。捨てると「もう探さない」に化ける。増やすのをやめるだけにして、
+    // 取りこぼしがあることを別の旗で覚えておく（→ DESIGN 3-2-3o）。
+    if (latent.size >= LATENT_MAX) { latentTruncated = true; return; }
     latent.add(node);
   }
   // このページで印を付けた辞書キー -> そのとき自分が何を作ったかの記録。
@@ -219,9 +227,13 @@
       : parts.length === 2 ? [parts[0], parts[1], parts[0], parts[1]]
       : parts.length === 3 ? [parts[0], parts[1], parts[2], parts[1]]
       : parts;
-    // 箱の寸法が 0 以下だと「0 + 0 >= 0」で何でも全面非表示になってしまう。
-    // その場合は百分率だけで判断する（px は箱に対する割合が決まらない）。
-    const useBox = typeof w === 'number' && typeof h === 'number' && w > 0 && h > 0;
+    // 「寸法が分からない（null）」と「箱が潰れている（0）」は別のこと。
+    // 一緒に扱うと、既知の 0×0 参照ボックスへ inset(0) を掛けた形——中身は
+    // まったく見えない——を可視と答える（実測: 隠れた側に印が付き、後ろの読める語が0）。
+    // 寸法が分かっているなら 0 でもそのまま面積の式に入れる。負の inset で外へ広がる
+    // 形も同じ式で正しく出る（`bh - top - bottom > 0` なら可視）。
+    // 分からないときだけ、百分率で言えることに限る（px は箱に対する割合が決まらない）。
+    const useBox = Number.isFinite(w) && Number.isFinite(h) && w >= 0 && h >= 0;
     const bw = useBox ? w : null;
     const bh = useBox ? h : null;
     const top = lenToPx(t, bh), bottom = lenToPx(b, bh);
@@ -488,7 +500,7 @@
       const hit = skipCache.get(el);
       if (hit !== undefined) return hit;
     }
-    const v = isOurChrome(el) || !!el.closest(SKIP);
+    const v = isOurChrome(el) || !!madeIconAt(el) || !!el.closest(SKIP);
     if (skipCache) skipCache.set(el, v);
     return v;
   }
@@ -972,9 +984,12 @@
   }
 
   const show = req => req && showTip(req.icons, req.anchor, req.describe);
+  // 吹き出しの中か。**いま出している吹き出しそのもの**で見分ける。
+  // class 名で見分けると、ページ側が同じ class を使った要素へカーソルが移っただけで
+  // 「吹き出しの中へ移った」と誤認し、説明が閉じないまま残る（実測）。
   const inTooltip = target => {
     const el = asElement(target);
-    return !!(el && el.closest('.iiyaku-tooltip'));
+    return !!(el && tip && (el === tip || tip.contains(el)));
   };
 
   function bindTip() {
@@ -1231,7 +1246,14 @@
     // closest() は祖先をたどるので、一致の有無に関わらず全候補で呼ぶと重い
     // （実測で大きなページの初期走査が 15ms から 29ms へ倍増した）。
     const placement = resolvePlacement(parent);
-    if (placement.kind === 'skip') { markHandled(node); return 0; }
+    if (placement.kind === 'skip') {
+      // **入口が無いのは、いまだけかもしれない。** disabled が外れる、tabindex が
+      // 変わる、label の対応先ができる——どれも入口を生む。処理済みにすると同じ世代
+      // では二度と見ないので、控えへ入れて見直す（実測: disabled を外しても、その語は
+      // そのタブを開いているあいだ説明されなかった）。
+      rememberLatent(node);
+      return 0;
+    }
 
     let cur = node;        // いま扱っている節点（用語で終わる左側になる）
     let consumed = 0;      // cur の先頭が、元の文字列の何文字目にあたるか
@@ -1314,17 +1336,31 @@
   // 同じキーに使える印が別の場所にあるなら `findHits` が落とすので、
   // ここで印が2つになることはない（移動もしない。読める説明が1つあれば足りる）。
   function discoverLatent() {
-    if (latentOverflow) { latentOverflow = false; return scanInner(document.body); }
     let n = 0;
     for (const node of latent) {
       if (!node.isConnected || isHandled(node)) { latent.delete(node); continue; }
+      const el = node.parentElement;
+      if (!el) { latent.delete(node); continue; }
+      // ---- ここまでで、まだ本文の文字には触れていない ----
+      // **触れてよい場所かを、文字を読む前に確かめる。** 走査の入口（isTarget）と
+      // 同じ順序にする。控えへ入れたあとで、ページがその場所を編集領域・コード・
+      // aria-hidden・inert・hidden へ変えることがある。順序を崩すと、触れないと
+      // 約束した本文を読むことになる（実測: 編集中の本文が2秒ごとに読まれていた）。
+      // 触れない場所へ移ったものは、読まずに控えから外す。戻ってきたときは、
+      // その属性変更が走査し直す場所として渡ってくるので、そこで入り直す。
+      if (inSkip(el)) { latent.delete(node); continue; }
       // 見え方を測る前に、「まだ読める説明が無い語」を含むかだけを見る。
       // ここは文字列の照合だけで、レイアウトを起こさない。印は1語につき1つなので、
       // 既に読める印がある語しか入っていない節点は、見えるようになっても何も足せない。
       // 控えからは外さない——その印があとで退役すれば、また候補に戻るからである。
       const v = node.nodeValue;
       if (!v || matcher.findHits(v, key => usableGloss(key) !== null).length === 0) continue;
-      if (isTarget(node)) { latent.delete(node); n += annotate(node); }
+      if (!isTarget(node)) continue;
+      n += annotate(node);
+      // 外すのは「もう当たらない」と決まったときだけ。入口がまだ無い節点は控えに残す。
+      // ⚠️ ここで先に外して annotate に戻させると、**反復中の Set へ追加**することに
+      // なり、その要素をもう一度訪れて無限に回る（実際に固まった）。外すのは後。
+      if (isHandled(node)) latent.delete(node);
     }
     return n;
   }
@@ -1499,6 +1535,7 @@
       if (!observing) return;
       // 印が1つも無くても、あとで見えるかもしれない候補があるなら見に行く
       // （property だけの変化は、この経路でしか気づけない）。
+      // 控えが上限で打ち切られている場合も、控えてある分は見に行く。
       if (document.hidden || (glossed.size === 0 && latent.size === 0)) { scheduleIdleCheck(); return; }
       const run = () => { schedule({ deep: true }); scheduleIdleCheck(); };
       if (canIdle) requestIdleCallback(run, { timeout: IDLE_GAP });
@@ -1521,8 +1558,12 @@
       // 確かめ直してから走査する（隠された印を「説明済み」として残さない）。
       if (reconcileGlosses(true)) generation++;
     });
-    scan(document.body);
+    // **走査より先に見張り始める。** 走査の途中で自分が起こす変更（本文の分割）は
+    // 「次に1回だけ起きるはず」として控えてある。見張っていなければ、その控えは
+    // 消費されないまま残り、**そのあとページが起こした最初の文字変更を自分のものと
+    // して捨てる**（実測: 語を消しても、次に暇なときの確認が来るまで印が動かなかった）。
     observer.observe(document.body, OBSERVE_OPTS);
+    scan(document.body);
     if (document.head) headObserver.observe(document.head, HEAD_OPTS);
     for (const t of EXTERNAL_SIGNALS) document.addEventListener(t, onExternal, true);
     window.addEventListener('resize', onViewport);

@@ -14,6 +14,7 @@ import { launchChrome, startTestServer, stageExtension, stageExtensionWith,
          SENTINEL_PAGE, LIFECYCLE_PAGE, VISIBILITY_PAGE, RETIRE_PAGE, RESELECT_PAGE,
          USABILITY_PAGE, NAMESPACE_CLIP_PAGE, PROTECTED_PAGE, CONVERGE_PAGE,
          SIGNALS_PAGE, OWNERSHIP_PAGE, LATENT_PAGE, SIGNATURE_PAGE,
+         LATENT_GUARD_PAGE, DEFERRED_PAGE, SKIPNAME_PAGE, CLIPZERO_PAGE,
          openPage, sleep, waitFor,
          pressKey, collectTabOrder, tabUntil } from './helpers/chrome.mjs';
 
@@ -2237,6 +2238,242 @@ test('1回のページ変更で、まとめ直しは1回しか走らない', asy
     await sleep(600);
     assert.equal(await attr('data-rg-batches'), '0',
       '吹き出しを出しただけで本文のまとめ直しが走っている');
+  });
+
+  await tab.close();
+});
+
+/* ===================== 第12回監査（v1.8.11）の受入条件 ===================== */
+
+test('控えの見直しは、触れない場所の本文を読まない', async t => {
+  const srv = await startTestServer(LATENT_GUARD_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await chrome.cdp.send('Extensions.loadUnpacked', {
+    path: stageExtensionWith({ 'nodevalue-probe.js': 'tests/e2e/nodevalue-probe.js' },
+      js => ['nodevalue-probe.js', ...js]) });
+  const tab = await openPage(chrome.cdp, PAGE);
+  const raw = () => tab.evaluate(`document.documentElement.getAttribute('data-rg-raw') || ''`);
+  const nKey = k => tab.evaluate(
+    `document.querySelectorAll('.iiyaku-icon[data-iiyaku-key="' + ${JSON.stringify(k)} + '"]').length`);
+
+  await t.test('RG-12-01 計装が効いている（陽性対照）', async () => {
+    // 拡張が読み込まれる前に見ると null になる。**待ってから**確かめる
+    // （待たずに書いて、全件実行のときだけ落ちる不安定な試験になった）。
+    await waitFor('読み取りを包めている', async () => await tab.evaluate(
+      `document.documentElement.getAttribute('data-rg-rawtap') === 'ready' ? 1 : 0`));
+    await waitFor('見えている語へ印が付く', async () => await nKey('repository') === 1);
+    assert.equal(await raw(), 'RGSENTINEL_SELFTEST', '最初から余計な読み取りがある');
+  });
+
+  await t.test('RG-12-01 保護領域へ移った控えの本文は、一度も読まない（4種）', async () => {
+    // 目印は「保護する」のと同時に入れる。初回走査で読まれた分を数えないため。
+    await tab.evaluate(`(() => {
+      const set = (id, sentinel, apply) => {
+        const el = document.getElementById(id);
+        apply(el); el.classList.remove('hid');
+        el.firstChild.nodeValue = sentinel + ' ' + el.firstChild.nodeValue;
+      };
+      set('lat-edit',   'RGSENTINEL_LATEDIT',   el => el.contentEditable = 'true');
+      set('lat-aria',   'RGSENTINEL_LATARIA',   el => el.setAttribute('aria-hidden', 'true'));
+      set('lat-inert',  'RGSENTINEL_LATINERT',  el => el.setAttribute('inert', ''));
+      set('lat-hidden', 'RGSENTINEL_LATHIDDEN', el => el.setAttribute('hidden', ''));
+    })(); true`);
+    await sleep(5200);   // 2秒周期の確認を2回以上通す
+    const seen = (await raw()).split(',').filter(Boolean);
+    const leaked = seen.filter(s => s.startsWith('RGSENTINEL_LAT'));
+    assert.deepEqual(leaked, [], `触れない場所の本文を読んだ: ${leaked.join(', ')}`);
+  });
+
+  await t.test('RG-12-01 保護されていない控えは、これまでどおり読んで注記する（陽性対照）', async () => {
+    await tab.evaluate(`(() => { const el = document.getElementById('lat-open');
+      el.classList.remove('hid');
+      el.firstChild.nodeValue = 'RGSENTINEL_LATOPEN ' + el.firstChild.nodeValue; })(); true`);
+    await waitFor('その語に印が付く', async () => await nKey('revert') === 1, { timeout: 12000 });
+    assert.ok((await raw()).includes('RGSENTINEL_LATOPEN'),
+      '注記したのに読み取りが記録されていない＝計測が壊れている');
+  });
+
+  await tab.close();
+});
+
+test('いまは入口が無いだけの語も、入口ができたら説明する', async t => {
+  const srv = await startTestServer(DEFERRED_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await chrome.cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(chrome.cdp, PAGE);
+  const nKey = k => tab.evaluate(
+    `document.querySelectorAll('.iiyaku-icon[data-iiyaku-key="' + ${JSON.stringify(k)} + '"]').length`);
+  await waitFor('拡張が印を付ける', async () => await nKey('repository') === 1);
+
+  await t.test('RG-12-02 前提: 入口が無いあいだは印を付けない', async () => {
+    assert.deepEqual([await nKey('branch'), await nKey('commit'), await nKey('merge')],
+      [0, 0, 0], 'この試験の前提が崩れている');
+  });
+
+  // 監査は「href の後付け」も同じ型として挙げたが、実装ではそもそも該当しない。
+  // `href` の無い `<a>` は入口の候補にならないので、その中の語は最初から
+  // **ふつうの印**（印自体を入口にする形）で説明される。実測して確かめてある。
+  await t.test('RG-12-02 対照: href の無い a は、最初からふつうに説明される', async () => {
+    assert.equal(await nKey('rebase'), 1,
+      'href の無い a の中の語に、最初から印が付いていない＝前提の理解が違う');
+  });
+
+  await t.test('RG-12-02 disabled を外すと説明が付く', async () => {
+    await tab.evaluate(`document.getElementById('btn').disabled = false; true`);
+    await waitFor('印が付く', async () => await nKey('branch') === 1, { timeout: 12000 });
+  });
+
+  await t.test('RG-12-02 tabindex が -1 から 0 になると説明が付く', async () => {
+    await tab.evaluate(`document.getElementById('roving').setAttribute('tabindex', '0'); true`);
+    await waitFor('印が付く', async () => await nKey('commit') === 1, { timeout: 12000 });
+  });
+
+  await t.test('RG-12-02 label の対応先が後からできると説明が付く', async () => {
+    await tab.evaluate(`document.getElementById('lab').setAttribute('for', 'ctrl'); true`);
+    await waitFor('印が付く', async () => await nKey('merge') === 1, { timeout: 12000 });
+  });
+
+  await t.test('RG-12-02 もう一度無効にすると退役する（増えも残りもしない）', async () => {
+    await tab.evaluate(`document.getElementById('btn').disabled = true; true`);
+    await waitFor('印が外れる', async () => await nKey('branch') === 0, { timeout: 12000 });
+  });
+
+  await tab.close();
+});
+
+test('控えが多くても、探すのをやめない', async t => {
+  // 旧版の上限は 2,000 で、しかも**控えに既にある節点を数え直して**上限を踏み、
+  // 控えを丸ごと捨てていた。捨てたあとは「候補0件」に見えるので二度と探さない。
+  const hidden = [];
+  for (let i = 0; i < 2100; i++) hidden.push(`<p>Hidden line ${i} mentions a branch here.</p>`);
+  const srv = await startTestServer(`<!doctype html><html lang="en"><head><meta charset="utf-8">
+    <title>many</title><style>#vault{display:none}#target{display:none}
+    body:has(#tgl:checked) #target{display:block}</style></head><body>
+    <div id="vault">${hidden.join('')}</div>
+    <input id="tgl" type="checkbox">
+    <p id="target">A commit appears when ticked.</p></body></html>`);
+  const chrome = await launchChrome({ port: srv.port });
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await chrome.cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(chrome.cdp, PAGE);
+  const nKey = k => tab.evaluate(
+    `document.querySelectorAll('.iiyaku-icon[data-iiyaku-key="' + ${JSON.stringify(k)} + '"]').length`);
+  await sleep(2500);
+
+  await t.test('RG-12-04 前提: 隠れているあいだは印が無い', async () => {
+    assert.equal(await nKey('commit'), 0, 'この試験の前提が崩れている');
+  });
+
+  await t.test('RG-12-04 2,100件の控えがあっても、後から見えた語を見つける', async () => {
+    await tab.evaluate(`document.getElementById('tgl').checked = true; true`);
+    await waitFor('印が付く', async () => await nKey('commit') === 1, { timeout: 20000 });
+    assert.equal(await tab.evaluate(`getComputedStyle(document.getElementById('target')).display`), 'block');
+  });
+
+  await tab.close();
+});
+
+test('最初の走査の途中で自分が起こした変更が、あとの外部変更を食べない', async t => {
+  const srv = await startTestServer(`<!doctype html><html lang="en"><head><meta charset="utf-8">
+    <title>expect</title></head><body>
+    <p id="first">A branch first.</p><p id="second">A branch later.</p></body></html>`);
+  const chrome = await launchChrome({ port: srv.port });
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await chrome.cdp.send('Extensions.loadUnpacked', {
+    path: stageExtensionWith({ 'batch-probe.js': 'tests/e2e/batch-probe.js' },
+      js => ['batch-probe.js', ...js]) });
+  const tab = await openPage(chrome.cdp, PAGE);
+  const attr = n => tab.evaluate(`document.documentElement.getAttribute(${JSON.stringify(n)})`);
+  const nIn = sel => tab.evaluate(`document.querySelectorAll(${JSON.stringify(sel)} + ' .iiyaku-icon').length`);
+  await waitFor('拡張が印を付ける', async () => await nIn('#first') === 1);
+
+  await t.test('RG-12-03 数える仕掛けが効いている（陽性対照）', async () => {
+    assert.equal(await attr('data-rg-probe-selftest'), '1', '予約を包めていない');
+  });
+
+  await t.test('RG-12-03 最初の外部の文字変更に、その場で反応する', async () => {
+    await tab.evaluate(`document.documentElement.setAttribute('data-rg-reset', '1'); true`);
+    await waitFor('数え直しが効く', async () => await attr('data-rg-batches') === '0');
+    await tab.evaluate(`document.getElementById('first').firstChild.nodeValue = 'A banana'; true`);
+    await sleep(600);   // 暇なときの確認（2秒）より十分早い
+    assert.equal(await attr('data-rg-batches'), '1',
+      '外部の文字変更を「自分の変更」として捨てている（残った予定が食べた）');
+    assert.deepEqual([await nIn('#first'), await nIn('#second')], [0, 1]);
+  });
+
+  await tab.close();
+});
+
+test('潰れた参照ボックスの切り取りを、寸法不明と混ぜない', async t => {
+  const srv = await startTestServer(CLIPZERO_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await chrome.cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(chrome.cdp, PAGE);
+  const nIn = sel => tab.evaluate(`document.querySelectorAll(${JSON.stringify(sel)} + ' .iiyaku-icon').length`);
+  await waitFor('拡張が印を付ける', async () =>
+    await tab.evaluate(`[...document.querySelectorAll('.iiyaku-icon')].filter(i => i.dataset.iiyakuKey).length`));
+
+  await t.test('RG-12-05 content box が 0 の inset(0) は、全面が消えていると見抜く', async () => {
+    assert.equal(await tab.evaluate(`getComputedStyle(document.getElementById('zero')).clipPath`),
+      'inset(0px) content-box', 'この試験の前提（computed 値）が違う');
+    assert.deepEqual([await nIn('#zero'), await nIn('#zero-later')], [0, 1]);
+  });
+
+  await t.test('RG-12-05 対照: 負の inset で外へ広がる形は、誤って落とさない', async () => {
+    assert.deepEqual([await nIn('#zero-neg'), await nIn('#neg-later')], [1, 0],
+      '見えている文章を隠れていると判定している');
+  });
+
+  await t.test('RG-12-05 対照: 潰れていない content box の inset(0) は可視', async () => {
+    assert.deepEqual([await nIn('#nonzero'), await nIn('#nonzero-later')], [1, 0]);
+  });
+
+  await tab.close();
+});
+
+test('自分の class 名を、ページ側の同名要素へ当てはめない', async t => {
+  const srv = await startTestServer(SKIPNAME_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await chrome.cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(chrome.cdp, PAGE);
+  const nIn = sel => tab.evaluate(`document.querySelectorAll(${JSON.stringify(sel)} + ' .iiyaku-icon').length`);
+  const nKey = k => tab.evaluate(
+    `document.querySelectorAll('.iiyaku-icon[data-iiyaku-key="' + ${JSON.stringify(k)} + '"]').length`);
+  await waitFor('拡張が印を付ける', async () => await nKey('branch') === 1);
+
+  await t.test('RG-12-06 ページ側の .iiyaku-icon の本文も、ふつうに走査する', async () => {
+    assert.equal(await nKey('commit'), 1, 'ページ本文を自分の印と取り違えて飛ばしている');
+    assert.equal(await tab.evaluate(`document.getElementById('page-icon').textContent`),
+      'A commit in ordinary page text.'.replace('commit', 'commit'), '本文を壊している');
+  });
+
+  await t.test('RG-12-06 ページ側の .iiyaku-tooltip へ移ったら、説明は閉じる', async () => {
+    await tab.evaluate(`(() => { const ic = document.querySelector('#src .iiyaku-icon');
+      ic.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); })(); true`);
+    await waitFor('説明が出る', async () =>
+      await tab.evaluate(`!!document.querySelector('.iiyaku-tooltip[data-iiyaku-owner]')`));
+    await tab.evaluate(`(() => { const ic = document.querySelector('#src .iiyaku-icon');
+      ic.dispatchEvent(new MouseEvent('mouseout', { bubbles: true,
+        relatedTarget: document.getElementById('page-tip') })); })(); true`);
+    await waitFor('説明が閉じる', async () =>
+      await tab.evaluate(`!document.querySelector('.iiyaku-tooltip[data-iiyaku-owner]')`));
+  });
+
+  await t.test('RG-12-06 本物の吹き出しへ移ったときは、閉じない', async () => {
+    await tab.evaluate(`(() => { const ic = document.querySelector('#src .iiyaku-icon');
+      ic.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); })(); true`);
+    await waitFor('説明が出る', async () =>
+      await tab.evaluate(`!!document.querySelector('.iiyaku-tooltip[data-iiyaku-owner]')`));
+    await tab.evaluate(`(() => { const ic = document.querySelector('#src .iiyaku-icon');
+      ic.dispatchEvent(new MouseEvent('mouseout', { bubbles: true,
+        relatedTarget: document.querySelector('.iiyaku-tooltip[data-iiyaku-owner]') })); })(); true`);
+    await sleep(500);
+    assert.ok(await tab.evaluate(`!!document.querySelector('.iiyaku-tooltip[data-iiyaku-owner]')`),
+      '本物の吹き出しへ移ったのに閉じている＝長い説明が読めない');
   });
 
   await tab.close();

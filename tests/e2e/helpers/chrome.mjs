@@ -820,3 +820,14 @@ export const PAINT_PAGE = `<!doctype html><html lang="en"><head><meta charset="u
 </body></html>`;
 
 /* 生成した印の生命周期（RG-13-04） */
+export const SIGNATURE13_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>sig13</title></head><body>
+  <a href="#" id="before">before</a>
+  <p id="clone-src">A milestone first.</p>
+  <div id="sink"></div>
+  <span id="page-data" data-iiyaku-key="fetch" data-iiyaku="PLACEHOLDER">PAGE DATA</span>
+  <div id="page-tip" class="iiyaku-tooltip" data-iiyaku-owner="page">PAGE TOOLTIP</div>
+  <div id="page-toggle" class="iiyaku-toggle" data-iiyaku-owner="page">PAGE TOGGLE</div>
+</body></html>`;
+
+/* CSS だけで短時間ひらくメニュー（RG-13-02） */

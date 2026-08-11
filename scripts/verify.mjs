@@ -325,14 +325,30 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   check('記録の不変条件に、合言葉の値が入っている',
     /rec\.icon\.getAttribute\('data-iiyaku-owner'\) !== UID/.test(content),
     '合言葉を外された印が、見えない停止点として残る');
-  check('複製の判定が、合言葉の値ではなく自分の説明文で行われている',
-    /ic\.dataset\.iiyaku === DICT\[key\]/.test(content),
-    '合言葉を書き換えた複製・消した複製がすり抜ける');
-  check('見た目の側でも、合言葉の値まで見ている',
-    /function scopeOwnStyle/.test(content) && /:not\(\[data-iiyaku-owner=/.test(content));
-  // 「作ったもの」と「いま正規のもの」を分けていること
-  check('作ったものと、いま正規のものを別に持っている',
-    /const madeIcons = new WeakSet\(\)/.test(content) && /function madeIconAt/.test(content));
+  // 辞書の説明文を所有の証明に使うと、**ページ側がたまたま同じ data 属性を持つ
+  // 要素**まで本文ごと消す（第13回 RG-13-03。実測で再現）。判定は自分の側の証拠だけで行う。
+  check('複製の判定に、辞書の説明文との一致を使っていない',
+    !/dataset\.iiyaku === DICT\[/.test(stripComments(content)),
+    'ページ側の要素を、その本文ごと消す');
+  check('複製の判定が、今回の合言葉そのもので行われている',
+    /pick\(`\[data-iiyaku-owner="\$\{CSS\.escape\(UID\)\}"\]`\)/.test(content));
+  check('中身のある節点は消さず、名札を外すだけにしている',
+    /el\.childNodes\.length === 0\) removeOwn\(el\);\s*\n\s*else stripOwnIdentity\(el\)/.test(content),
+    'ページが使い回している節点を、その本文ごと消す');
+  check('見た目の側で、印・吹き出し・切替ボタンの3つとも合言葉の値まで見ている',
+    /function scopeOwnStyle/.test(content) && /:not\(\$\{mine\}\)/.test(content) &&
+    /OWN_CLASSES\.map\(c => `\.\$\{c\}\[data-iiyaku-owner\]:not\(\$\{mine\}\)`\)/.test(content),
+    'ページ側の同名 class へ、自分の見た目が乗る');
+  // 「作ったことがある」という永久の記録は持たない（持つと、退役した節点を
+  // ページが戻したときにも自分のものとして扱う）
+  check('「作ったことがある」という永久の記録を持っていない',
+    !/madeIcons/.test(stripComments(content)),
+    '退役した印をページが使い回すと、その中が走査されない');
+  check('自分が外す削除だけを、1回受け取って自分のものとしている',
+    /const expectedRemovals = new WeakSet\(\)/.test(content) &&
+    /function isOwnRemoval/.test(content) &&
+    /expectedRemovals\.delete\(node\)/.test(content),
+    'ページが正規の印を外したことに気づけない');
 }
 
 /* ---------- 自分の起こした変更を数えていないか（RG-11-03 / RG-11-05） ---------- */

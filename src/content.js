@@ -743,6 +743,22 @@
   // 気づけなくなる。実測では、この2つが「1回の変更で2回のまとめ直し」の正体だった。
   const expectedSplit = new WeakSet();   // 割ってできた右側（増える）
   const expectedTrim = new WeakSet();    // 割られた左側（短くなる）
+  // 節点を外すのも自分である。**外す直前にだけ**控え、1回受け取って消す。
+  // 「自分が作ったものか（madeIcons）」を永久の証明に使ってはいけない。ページ側が
+  // 正規の印を外したことに気づけなくなる（実測: 説明が約2秒間0個になり、
+  // 暇なときの確認が来るまで戻らなかった）。作ったのが自分でも、外したのは相手でありうる。
+  const expectedRemovals = new WeakSet();
+
+  function removeOwn(node) {
+    if (!node) return;
+    expectedRemovals.add(node);
+    node.remove();
+  }
+
+  function isOwnRemoval(node) {
+    if (expectedRemovals.has(node)) { expectedRemovals.delete(node); return true; }
+    return false;
+  }
 
   function setOwnAttr(el, name, value) {
     let m = expectedAttrs.get(el);
@@ -787,12 +803,36 @@
     return false;
   }
 
-  // 追加された領域を走査する前に、複製された「自分のふり」を取り除く。
+  // 自分の名札。複製の後始末で外すのはこれだけにする。
+  const OWN_DATA_ATTRS = ['data-iiyaku', 'data-iiyaku-key', 'data-iiyaku-term',
+                          'data-iiyaku-owner', 'data-iiyaku-for'];
+  // 印を「押せる・Tab で止まれる」ものにしている属性。これだけを外せば、
+  // 見えない停止点でなくなる（class も本文も残す＝ページの持ち物を壊さない）。
+  const OWN_SEMANTIC_ATTRS = ['role', 'tabindex', 'aria-label', 'aria-expanded', 'aria-hidden'];
+  const OWN_CLASSES = ['iiyaku-icon', 'iiyaku-tooltip', 'iiyaku-toggle'];
+
+  function stripOperability(el) {
+    for (const a of OWN_SEMANTIC_ATTRS) el.removeAttribute(a);
+  }
+  function stripOwnIdentity(el) {
+    for (const a of OWN_DATA_ATTRS) el.removeAttribute(a);
+    el.classList.remove(...OWN_CLASSES);
+    stripOperability(el);
+    removeDescribedBy(el, TIP_ID);
+  }
+
+  // 追加された領域を走査する前に、複製された「自分のふり」を無力化する。
   //
-  // 判定は class だけではしない。class は誰でも付けられる。自分が作った印には
-  // 読み込みごとに変わる合言葉（data-iiyaku-owner = UID）を入れてあるので、
-  // **「合言葉を持つ」かつ「自分が作ったものではない」**＝複製、と決める。
-  // ページ側が自前で `.iiyaku-icon` を使っていても、それには触らない。
+  // **辞書の説明文を所有の証明に使ってはいけない。** キーと説明文の一致だけで
+  // 消していたため、ページ側が同じ data 属性を持つ要素まで、その本文ごと黙って
+  // 消えていた（実測: `<span data-iiyaku-key=… data-iiyaku=…>PAGE DATA</span>` が
+  // 起動時に消滅した）。判定は**自分の側の証拠**だけで行い、消すのは
+  // 「中身が空で、自分の作ったものの複製だと断定できる」ときに限る。
+  //   ① 読み込みごとに変わる合言葉が今回の値 … 自分が作ったものの複製と断定できる
+  //   ② 合言葉を消された／書き換えられた複製 … 断定できないので、**空で操作できる**
+  //      ものから操作性だけを外す（class も本文も data も触らない）
+  // ページ側が中身を入れている節点は、どちらの場合も消さない。退役した印を
+  // ページが本文として使い回すことがあり、消すとその文章まで失われる（実測）。
   function sanitizeClones(root) {
     if (!root || root.nodeType !== Node.ELEMENT_NODE) return;
     const pick = sel => {
@@ -800,17 +840,28 @@
       if (root.querySelectorAll) out.push(...root.querySelectorAll(sel));
       return out;
     };
-    // 複製かどうかは、**自分が書いた説明文そのもの**で決める。
-    // 合言葉の値で決めていたときは、値を書き換えた複製も、値を消した複製も
-    // すり抜けた（実測: 前者は印として描かれ、後者は幅0のまま Tab で止まった）。
-    // 辞書のキーと、そのキーの説明文が一致していれば、それは自分の作ったものの
-    // 複製である。ページ側が同じ class を使っているだけの要素には当たらない。
-    for (const ic of pick('[data-iiyaku-key]')) {
-      if (ownedIcons.has(ic)) continue;
-      const key = ic.dataset ? ic.dataset.iiyakuKey : null;
-      if (key && Object.prototype.hasOwnProperty.call(DICT, key) && ic.dataset.iiyaku === DICT[key]) {
-        ic.remove();
-      }
+    // ① 今回の合言葉を持つのに、自分が作ったものではない
+    for (const el of pick(`[data-iiyaku-owner="${CSS.escape(UID)}"]`)) {
+      // 見るのは「**いま**自分の正規の印か」。「作ったことがある」で除くと、
+      // 退役した印をページが DOM へ戻したときに素通りし、同じ語の印が2つ並ぶ（実測）。
+      if (ownedIcons.has(el) || isOurChrome(el)) continue;
+      if (el.childNodes.length === 0) removeOwn(el);
+      else stripOwnIdentity(el);
+    }
+    // ② 合言葉を消された／書き換えられた複製。断定はできないので、条件を重ねる:
+    //    自分が作る印と同じ形（<sup> ＋ 自分の class）で、**中身が空**で、
+    //    押せる／Tab で止まれる状態のものだけを扱う。ページ側が中身を持つ要素には
+    //    触れない（名前だけが同じ要素は、そのページの持ち物である）。
+    for (const el of pick('.' + OWN_CLASSES[0])) {
+      if (ownedIcons.has(el)) continue;
+      if (el.getAttribute('data-iiyaku-owner') === UID) continue;   // ① で扱った
+      if (el.tagName !== 'SUP') continue;
+      if (el.childNodes.length !== 0) continue;                     // ページの中身がある
+      if (!el.hasAttribute('tabindex') && el.getAttribute('role') !== 'button') continue;
+      // 自分の名札がまだ1つでも残っているなら、自分の作ったものの複製と見てよい。
+      // 1つも無ければ、名前が同じだけかもしれないので**操作性だけ**を外す。
+      if (OWN_DATA_ATTRS.some(a => el.hasAttribute(a))) stripOwnIdentity(el);
+      else stripOperability(el);
     }
     // 入口の目印も複製される。引き当てには使っていないので実害は無いが、
     // ページに自分の合言葉だけが残るのは紛らわしいので外す。
@@ -819,6 +870,7 @@
       if (ownedTriggers.has(t)) continue;
       if ((t.getAttribute(ENTRANCE_ATTR) || '').startsWith(UID + '-t')) {
         setOwnAttr(t, ENTRANCE_ATTR, null);
+        removeDescribedBy(t, TIP_ID);
       }
     }
   }
@@ -886,6 +938,7 @@
   }
 
   function removeDescribedBy(el, token) {
+    if (!el.hasAttribute('aria-describedby')) return;
     const cur = (el.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean);
     const next = cur.filter(t => t !== token);
     if (next.length) setOwnAttr(el, 'aria-describedby', next.join(' '));
@@ -1226,7 +1279,11 @@
     if (rec.icon.isConnected) {
       // その印について説明を出している最中なら、先に閉じる
       if (tip && tipIcons.includes(rec.icon)) hideTip();
-      rec.icon.remove();     // 外すのは自分が入れた <sup> だけ
+      // 外すのは自分が入れた <sup> だけ。ただしページがその節点を作り替えて
+      // 中身を入れているなら、消すとページの本文まで消える（実測: 使い回された
+      // 節点が、その中の文章ごと画面から無くなった）。そのときは手を引くだけにする。
+      if (rec.icon.childNodes.length === 0) removeOwn(rec.icon);
+      else stripOwnIdentity(rec.icon);
     }
     // 印が既にページ側から外されていても、ここへ来る。記録があるので、
     // 用語を含む節点を走査対象へ戻せる（隣をたどる必要がない）。
@@ -1445,6 +1502,9 @@
     wantDeep = false;
     pendingRoots = new Set();
     if (!observing) return;
+
+    // 見た目の絞り込みが外されていないか（外れていると同名要素へ自分の装飾が戻る）
+    ensureOwnStyle();
 
     withRenderCache(() => {
       // ① 記録と DOM の食い違いを片づける。deep なら見え方・到達性・入口の意味まで。
@@ -1693,19 +1753,51 @@
   // 静的なファイルへ書けないためである。そこで、値が自分のものでない要素からは
   // 自分の装飾を引き上げる規則を、走り出しに1つだけ足す。
   // 消すのではなく「与えない」だけなので、ページ側の要素を壊さない。
+  // `styles.css` がこの3つの class へ与えている性質。**ここに漏れがあると、
+  // ページ側の同名要素へ自分の見た目が残る**（実測: ページが置いた
+  // `class="iiyaku-tooltip" data-iiyaku-owner="page"` の要素が、画面に固定され
+  // z-index も最大値になっていた）。styles.css との突き合わせは verify.mjs が行う。
+  const OWN_STYLE_PROPS = [
+    'align-items', 'background', 'background-color', 'border', 'border-radius', 'border-top',
+    'bottom', 'box-shadow', 'box-sizing', 'color', 'content', 'cursor', 'display',
+    'font-family', 'font-size', 'font-style', 'font-weight', 'height', 'justify-content',
+    'line-height', 'margin-left', 'margin-top', 'max-height', 'max-width', 'opacity',
+    'outline', 'outline-offset', 'overflow', 'overflow-wrap', 'padding', 'padding-top',
+    'pointer-events', 'position', 'right', 'text-align', 'text-decoration', 'transition',
+    'user-select', 'vertical-align', 'white-space', 'width', 'word-break', 'z-index'
+  ];
+
+  let ownStyle = null;
+
   function scopeOwnStyle() {
     try {
       const st = document.createElement('style');
-      const not = `.iiyaku-icon[data-iiyaku-owner]:not([data-iiyaku-owner="${CSS.escape(UID)}"])`;
+      const mine = `[data-iiyaku-owner="${CSS.escape(UID)}"]`;
+      // 印だけでなく、吹き出しと切替ボタンも今回の合言葉へ絞る。
+      // 合言葉の**有無**しか見ない静的な条件を残すと、ページ側が同じ class と
+      // 適当な合言葉を書いただけで、自分の見た目がその要素へ乗る。
+      const sels = OWN_CLASSES.map(c => `.${c}[data-iiyaku-owner]:not(${mine})`);
+      // 中の部品にも同じ名前を使っているので、そこも一緒に戻す。
+      // ページ側の**他の**子孫には触れない（名前を名乗っているものだけ）。
+      const inner = ['iiyaku-tooltip-item', 'iiyaku-tooltip-term']
+        .map(c => `.iiyaku-tooltip[data-iiyaku-owner]:not(${mine}) .${c}`);
+      const revert = OWN_STYLE_PROPS.map(p => `${p}:revert`).join(';');
       st.textContent =
-        `${not}{display:inline;width:auto;height:auto;border:0;margin-left:0;` +
-        `background:none;opacity:1;cursor:auto}` +
-        `${not}::after{content:none}`;
+        `${sels.concat(inner).join(',')}{${revert}}` +
+        `${sels.map(s => `${s}::after`).join(',')}{content:none}`;
       (document.head || document.documentElement).appendChild(st);
+      ownStyle = st;
     } catch (e) {
-      // 足せなくても本体の動作は変わらない（複製は sanitizeClones が取り除く）
+      // 足せなくても本体の動作は変わらない（複製は sanitizeClones が無力化する）
       console.error('[iiyaku] 見た目の絞り込みを足せません:', e);
     }
+  }
+
+  // ページ側が消したら足し直す。消されたままだと、複製や同名要素へ自分の見た目が戻る。
+  function ensureOwnStyle() {
+    if (ownStyle && ownStyle.isConnected) return;
+    ownStyle = null;
+    scopeOwnStyle();
   }
 
   /* ---------- 11. 実行 ---------- */

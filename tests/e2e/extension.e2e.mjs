@@ -15,7 +15,7 @@ import { launchChrome, startTestServer, stageExtension, stageExtensionWith,
          USABILITY_PAGE, NAMESPACE_CLIP_PAGE, PROTECTED_PAGE, CONVERGE_PAGE,
          SIGNALS_PAGE, OWNERSHIP_PAGE, LATENT_PAGE, SIGNATURE_PAGE,
          LATENT_GUARD_PAGE, DEFERRED_PAGE, SKIPNAME_PAGE, CLIPZERO_PAGE,
-         PAINT_PAGE,
+         PAINT_PAGE, SIGNATURE13_PAGE,
          openPage, sleep, waitFor,
          pressKey, collectTabOrder, tabUntil } from './helpers/chrome.mjs';
 
@@ -2523,6 +2523,69 @@ test('語が実際に描かれている場所だけへ注記する', async t => 
         `読める語を落としている（${why}）`);
     });
   }
+
+  await tab.close();
+});
+
+test('自分の署名だけで片づけ、ページの持ち物には触れない（第13回）', async t => {
+  const srv = await startTestServer(SIGNATURE13_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  await waitFor('拡張が印を付ける', async () => await tab.evaluate(
+    `document.querySelectorAll('#clone-src .iiyaku-icon').length`) === 1);
+
+  for (const [name, mutate] of [
+    ['合言葉を消した', `c.removeAttribute('data-iiyaku-owner')`],
+    ['合言葉を書き換えた', `c.setAttribute('data-iiyaku-owner', 'page')`],
+    ['辞書のキーを消した', `c.removeAttribute('data-iiyaku-key')`],
+    ['説明文を書き換えた', `c.dataset.iiyaku = 'MUTATED'`]
+  ]) {
+    await t.test(`RG-13-03 ${name}複製は、見える印も Tab の停止点も増やさない`, async () => {
+      await tab.evaluate(`(() => {
+        document.getElementById('sink').textContent = '';
+        const c = document.querySelector('#clone-src .iiyaku-icon').cloneNode(true);
+        c.id = 'dup'; ${mutate};
+        document.getElementById('sink').appendChild(c); })(); true`);
+      await waitFor('複製が無力になる', async () => await tab.evaluate(
+        `(() => { const d = document.getElementById('dup');
+          if (!d) return true;                      // 消えたなら、それも無力
+          return d.tabIndex < 0 && d.getAttribute('role') !== 'button'
+                 && d.getBoundingClientRect().width < 1; })()`));
+      assert.equal(await tab.evaluate(
+        `document.querySelectorAll('.iiyaku-icon[data-iiyaku-key="milestone"]').length`), 1,
+        '正規の印が増減している');
+    });
+  }
+
+  await t.test('RG-13-03 辞書の説明文をそのまま持つページの要素を、消さない', async () => {
+    // 「たまたま自分と同じ data 属性を持つ」だけの、ページの持ち物。
+    // **追加された領域として**入れる（複製の後始末はそこにしか掛からないので、
+    // 既にある要素へ属性を足すだけでは、この経路を通らない）。
+    await tab.evaluate(`(() => {
+      const src = document.querySelector('.iiyaku-icon[data-iiyaku-key="milestone"]');
+      const el = document.createElement('span');
+      el.id = 'page-copy';
+      el.dataset.iiyaku = src.dataset.iiyaku;      // 辞書の説明文そのもの
+      el.dataset.iiyakuKey = 'milestone';
+      el.textContent = 'PAGE DATA';
+      document.getElementById('sink').appendChild(el); })(); true`);
+    await sleep(700);
+    assert.equal(await tab.evaluate(
+      `(() => { const el = document.getElementById('page-copy'); return el ? el.textContent : null; })()`),
+      'PAGE DATA', 'ページの持ち物を、本文ごと消している');
+  });
+
+  await t.test('RG-13-03 ページ側の同名 class へ、自分の見た目を与えない', async () => {
+    const r = await tab.evaluate(`(() => {
+      const s = id => { const cs = getComputedStyle(document.getElementById(id));
+                        return [cs.position, cs.zIndex]; };
+      return { tip: s('page-tip'), toggle: s('page-toggle') }; })()`);
+    assert.deepEqual(r.tip, ['static', 'auto'], 'ページの要素が自分の吹き出しの見た目になっている');
+    assert.deepEqual(r.toggle, ['static', 'auto'], 'ページの要素が自分の切替ボタンの見た目になっている');
+  });
 
   await tab.close();
 });

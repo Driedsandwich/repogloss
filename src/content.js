@@ -98,6 +98,9 @@
   // 走査し直す場所も、退役した記録も無いからである。その結果、最初に隠れていた
   // 語は、そのタブを開いているあいだ永久に説明されなかった（4通りで実測）。
   // 合図のたびにページ全体を走り直すのは高いので、ここだけを見直す。
+  // 控えるのは「不可視だった」節点だけではない。**いまは入口が無い**だけの節点も
+  // ここへ入れる（disabled の button など）。処理済みにしてしまうと、あとで入口が
+  // できても同じ世代では二度と見ない（実測: disabled を外しても説明が付かなかった）。
   const latent = new Set();          // Text ノード（自分で掃除する）
   const LATENT_MAX = 2000;           // これを超えたら控えるのをやめ、全体走査へ落とす
   let latentOverflow = false;
@@ -1231,7 +1234,14 @@
     // closest() は祖先をたどるので、一致の有無に関わらず全候補で呼ぶと重い
     // （実測で大きなページの初期走査が 15ms から 29ms へ倍増した）。
     const placement = resolvePlacement(parent);
-    if (placement.kind === 'skip') { markHandled(node); return 0; }
+    if (placement.kind === 'skip') {
+      // **入口が無いのは、いまだけかもしれない。** disabled が外れる、tabindex が
+      // 変わる、label の対応先ができる——どれも入口を生む。処理済みにすると同じ世代
+      // では二度と見ないので、控えへ入れて見直す（実測: disabled を外しても、その語は
+      // そのタブを開いているあいだ説明されなかった）。
+      rememberLatent(node);
+      return 0;
+    }
 
     let cur = node;        // いま扱っている節点（用語で終わる左側になる）
     let consumed = 0;      // cur の先頭が、元の文字列の何文字目にあたるか

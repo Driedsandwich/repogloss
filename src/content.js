@@ -451,6 +451,7 @@
     //    `auto` と `scroll` は**入れない**——中身はスクロールで読めるので、
     //    画面外というだけで永久に除外すると、長い一覧の下のほうが説明されなくなる。
     const clips = v => v === 'hidden' || v === 'clip';
+    const scrolls = v => v === 'auto' || v === 'scroll';
     const cx = clips(cs.overflowX), cy = clips(cs.overflowY);
     if (cx || cy) {
       let x1 = border.left, y1 = border.top, x2 = border.right, y2 = border.bottom;
@@ -479,7 +480,9 @@
       const t = shapeHitTest(sh, ref);
       if (t) tests.push(t);
     }
-    return { overflow, shape, tests };
+    // スクロールで動かせる入れ物の中か（中身は画面の外でも読める）
+    const scrollable = scrolls(cs.overflowX) || scrolls(cs.overflowY);
+    return { overflow, shape, tests, scrollable };
   }
 
   // 形そのものとの交差判定。矩形で足りる形は null を返す（外接矩形だけで決まる）。
@@ -546,7 +549,7 @@
   let chainCache = null;
 
   function paintChain(el, mode) {
-    if (!el) return { clip: null, tests: [], hidden: false, transformed: false };
+    if (!el) return { clip: null, tests: [], hidden: false, transformed: false, fixed: false, scrollable: false };
     const cache = chainCache && chainCache[mode];
     if (cache) { const hit = cache.get(el); if (hit !== undefined) return hit; }
     const cs = getComputedStyle(el);
@@ -566,7 +569,9 @@
     }
     // 描画効果は包含ブロックを作るので、逃げられない。配置に関わらず見る。
     const v = { clip, tests, hidden: up.hidden || paintHidesAll(cs),
-                transformed: up.transformed || cs.transform !== 'none' };
+                transformed: up.transformed || cs.transform !== 'none',
+                fixed: up.fixed || cs.position === 'fixed',
+                scrollable: up.scrollable || !!(own && own.scrollable) };
     if (cache) cache.set(el, v);
     return v;
   }
@@ -596,13 +601,36 @@
     if (rectIsEmpty(chain.clip)) return false;
     const rects = rangeRects(node, start, end);
     if (rects.length === 0) return false;
-    // 形そのものとの交差（円・楕円・角丸）。外接矩形だけでは角の外を落とせない
-    for (const t of chain.tests) if (!rects.some(r => t(r))) return false;
-    if (!chain.clip) return true;
+    // **同じ断片が、全部の条件を通ること**を求める。条件ごとに「どれか1つの断片が
+    // 通るか」を見ていたため、断片Aが形Aだけ・断片Bが形Bだけを通る場合に、
+    // どの断片も全部は通っていないのに合格していた（第15回 RG-15-03）。
     const c = chain.clip;
-    // 1px 以下の帯しか残らない交わりは、読める文字にならない
-    return rects.some(r => Math.min(r.right, c.x2) - Math.max(r.left, c.x1) > 1 &&
-                           Math.min(r.bottom, c.y2) - Math.max(r.top, c.y1) > 1);
+    const inClip = r => !c || (Math.min(r.right, c.x2) - Math.max(r.left, c.x1) > 1 &&
+                               Math.min(r.bottom, c.y2) - Math.max(r.top, c.y1) > 1);
+    // 画面（または動かせる範囲）の外にある語は、読めないしスクロールでも出せない。
+    // ただし**スクロールできる入れ物の中**は、その入れ物を動かせば読めるので見ない
+    // （入れ子のスクロール領域の中身を落とさないため。実測で対照が落ちた）。
+    const reach = chain.scrollable ? null : reachableRect(chain.fixed);
+    const inReach = r => !reach || (r.right > reach.x1 && r.left < reach.x2 &&
+                                    r.bottom > reach.y1 && r.top < reach.y2);
+    return rects.some(r => inClip(r) && inReach(r) && chain.tests.every(t => t(r)));
+  }
+
+  // その語が、画面か「スクロールで出せる範囲」に入っているか。
+  //
+  // 見ていなかったため、`position:fixed; left:-10000px` の語に印が付き、**画面に
+  // 出せないのに Tab で止まれる**点ができていた（第15回 RG-15-04。実測: `scrollX` は
+  // 0 のまま動かせない）。固定配置はいまの画面と、それ以外は文書全体と交差を見る。
+  function reachableRect(fixed) {
+    const de = document.documentElement;
+    const vw = de.clientWidth, vh = de.clientHeight;
+    if (fixed) return { x1: 0, y1: 0, x2: vw, y2: vh };
+    // viewport 座標での文書全体。左と上はスクロール量ぶん外へ広がる。
+    const sx = window.scrollX || de.scrollLeft || 0;
+    const sy = window.scrollY || de.scrollTop || 0;
+    const w = Math.max(de.scrollWidth, document.body ? document.body.scrollWidth : 0, vw);
+    const h = Math.max(de.scrollHeight, document.body ? document.body.scrollHeight : 0, vh);
+    return { x1: -sx, y1: -sy, x2: w - sx, y2: h - sy };
   }
 
   // display:contents は箱を作らない。可視性を判断できる最も近い先祖まで上がる。

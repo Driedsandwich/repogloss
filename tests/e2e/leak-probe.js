@@ -12,6 +12,11 @@
  * （globalThis.RepoGlossMatcher.createMatcher の返り値）を使うので、
  * 本体が同じ取り出し方をした場合と、tap から見える形は同じになる。
  */
+/* 公表先は localStorage にする。**<html> の属性へ書いてはいけない。**
+   content.js は `<html>` の属性を見張るので、計測器が書くたびにまとめ直しが
+   予約され、その予約自体がまた計測器を動かす。実測では、これでページが完全に
+   固まった（マイクロタスクが尽きない）。localStorage は同じ生成元を共有するので
+   隔離された世界からでもページ側から読めて、DOM には何の痕跡も残さない。 */
 (() => {
   const api = globalThis.RepoGlossMatcher;
   if (!api || typeof api.createMatcher !== 'function') return;
@@ -31,7 +36,7 @@
     const t = c && c.firstChild;
     if (t && typeof t.substringData === 'function') m.test(t.substringData(0, t.length));
 
-    document.documentElement.setAttribute('data-rg-leak', 'done');
+    localStorage.setItem('rg-leak', 'done');
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', run);

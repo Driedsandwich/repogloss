@@ -102,12 +102,16 @@
   // ここへ入れる（disabled の button など）。処理済みにしてしまうと、あとで入口が
   // できても同じ世代では二度と見ない（実測: disabled を外しても説明が付かなかった）。
   const latent = new Set();          // Text ノード（自分で掃除する）
-  const LATENT_MAX = 2000;           // これを超えたら控えるのをやめ、全体走査へ落とす
-  let latentOverflow = false;
+  const LATENT_MAX = 20000;          // 安全弁。ここまで来たら**捨てずに**、増やすのをやめる
+  let latentTruncated = false;
 
   function rememberLatent(node) {
-    if (latentOverflow) return;
-    if (latent.size >= LATENT_MAX) { latent.clear(); latentOverflow = true; return; }
+    // 既に控えてあるなら何もしない。ここで数え直すと、見直しのたびに上限へ達し、
+    // **控えを丸ごと捨てて二度と探さなくなる**（実測: ちょうど上限の件数で発生した）。
+    if (latent.has(node)) return;
+    // 上限では捨てない。捨てると「もう探さない」に化ける。増やすのをやめるだけにして、
+    // 取りこぼしがあることを別の旗で覚えておく（→ DESIGN 3-2-3o）。
+    if (latent.size >= LATENT_MAX) { latentTruncated = true; return; }
     latent.add(node);
   }
   // このページで印を付けた辞書キー -> そのとき自分が何を作ったかの記録。
@@ -1324,7 +1328,6 @@
   // 同じキーに使える印が別の場所にあるなら `findHits` が落とすので、
   // ここで印が2つになることはない（移動もしない。読める説明が1つあれば足りる）。
   function discoverLatent() {
-    if (latentOverflow) { latentOverflow = false; return scanInner(document.body); }
     let n = 0;
     for (const node of latent) {
       if (!node.isConnected || isHandled(node)) { latent.delete(node); continue; }
@@ -1524,6 +1527,7 @@
       if (!observing) return;
       // 印が1つも無くても、あとで見えるかもしれない候補があるなら見に行く
       // （property だけの変化は、この経路でしか気づけない）。
+      // 控えが上限で打ち切られている場合も、控えてある分は見に行く。
       if (document.hidden || (glossed.size === 0 && latent.size === 0)) { scheduleIdleCheck(); return; }
       const run = () => { schedule({ deep: true }); scheduleIdleCheck(); };
       if (canIdle) requestIdleCallback(run, { timeout: IDLE_GAP });

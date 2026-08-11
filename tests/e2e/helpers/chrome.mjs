@@ -863,3 +863,15 @@ export const ROOTATTR_PAGE = `<!doctype html><html lang="en"><head><meta charset
 
 /* 控えの上限と、1回あたりの処理時間（RG-13-06）。
    filler 件の隠れた候補 ＋ 逃がし弁1件 ＋ 上限の外へこぼれる1件。 */
+export function latentPage(filler) {
+  const rows = [];
+  for (let i = 0; i < filler; i++) rows.push(`<p class="hid">A branch f${i}.</p>`);
+  rows.push(`<p class="hid" id="relief">A fetch relief.</p>`);
+  rows.push(`<p class="hid" id="spill">A milestone spilled.</p>`);
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>latent13</title>
+<style>.hid{display:none}</style></head><body>
+<a href="#" id="before">before</a>
+<p>A commit anchor.</p>
+${rows.join('\n')}
+</body></html>`;
+}

@@ -16,7 +16,7 @@ import { launchChrome, startTestServer, stageExtension, stageExtensionWith,
          SIGNALS_PAGE, OWNERSHIP_PAGE, LATENT_PAGE, SIGNATURE_PAGE,
          LATENT_GUARD_PAGE, DEFERRED_PAGE, SKIPNAME_PAGE, CLIPZERO_PAGE,
          PAINT_PAGE, LIFECYCLE13_PAGE, SIGNATURE13_PAGE, TRANSIENT_PAGE,
-         ROOTATTR_PAGE,
+         ROOTATTR_PAGE, latentPage,
          openPage, sleep, waitFor,
          pressKey, collectTabOrder, tabUntil } from './helpers/chrome.mjs';
 
@@ -2701,3 +2701,42 @@ test('`<html>` の属性変更に、待たずに気づく', async t => {
   await tab.close();
 });
 
+test('控えが多くても、1回の見直しを短く保ち、上限の外も取り戻す', async t => {
+  // 上限は 20,000。19,999 件の filler ＋ 逃がし弁 ＋ こぼれる1件 で境界を作る。
+  const srv = await startTestServer(latentPage(19999));
+  const chrome = await launchChrome({ port: srv.port });
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await chrome.cdp.send('Extensions.loadUnpacked', {
+    path: stageExtensionWith({ 'timing-probe.js': 'tests/e2e/timing-probe.js' },
+      js => ['timing-probe.js', ...js]) });
+  const tab = await openPage(chrome.cdp, PAGE);
+  const probe = n => tab.evaluate(`localStorage.getItem(${JSON.stringify('rg-' + n)})`);
+  const nKey = k => tab.evaluate(`document.querySelectorAll('.iiyaku-icon[data-iiyaku-key=${JSON.stringify(k)}]').length`);
+  // 痕跡の残らない見え方の変化。控えの見直しでしか拾えない経路を通す
+  const reveal = id => tab.evaluate(
+    `document.styleSheets[0].insertRule('#${id}{display:block}', document.styleSheets[0].cssRules.length); true`);
+  await waitFor('拡張が印を付ける', async () => await nKey('commit') === 1, { timeout: 90000 });
+
+  await t.test('RG-13-06 計る仕掛けが効いている（陽性対照）', async () => {
+    assert.equal(await probe('time-selftest'), '1', '予約を包めていない');
+  });
+
+  await t.test('RG-13-06 20,000 件の控えでも、1回の処理が 50ms を超えない', async () => {
+    await tab.evaluate(`localStorage.setItem('rg-reset', '1'); true`);
+    await sleep(11000);   // 暇なときの確認を5周ぶん（1回だけ短い回を見て済まさない）
+    const ms = JSON.parse(await probe('times') || '[]');
+    assert.ok(ms.length > 0, '1回も測れていない');
+    assert.ok(Math.max(...ms) < 50, `1回の処理が長すぎる: ${Math.max(...ms)}ms`);
+  });
+
+  await t.test('RG-13-06 上限を超えてこぼれた候補も、空きができれば見つける', async () => {
+    await reveal('spill');
+    await sleep(4000);
+    assert.equal(await nKey('milestone'), 0, '前提が崩れている（上限を超えていない）');
+    await reveal('relief');     // 1件が注記されて控えに空きができる
+    await waitFor('逃がし弁が注記される', async () => await nKey('fetch') === 1, { timeout: 30000 });
+    await waitFor('こぼれた候補を取り戻す', async () => await nKey('milestone') === 1, { timeout: 60000 });
+  });
+
+  await tab.close();
+});

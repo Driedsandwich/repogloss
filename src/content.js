@@ -106,13 +106,26 @@
   const LATENT_MAX = 20000;          // 安全弁。ここまで来たら**捨てずに**、増やすのをやめる
   let latentTruncated = false;
 
+  // 死んだ控え（ページから外れた・もう処理済み）を落として空きを作る。
+  let latentPruneGuard = -1;   // 直前に掃除したときの数。変わらないなら掃除し直さない
+
+  function pruneLatent() {
+    for (const n of latent) if (!n.isConnected || isHandled(n)) latent.delete(n);
+  }
+
   function rememberLatent(node) {
     // 既に控えてあるなら何もしない。ここで数え直すと、見直しのたびに上限へ達し、
     // **控えを丸ごと捨てて二度と探さなくなる**（実測: ちょうど上限の件数で発生した）。
     if (latent.has(node)) return;
-    // 上限では捨てない。捨てると「もう探さない」に化ける。増やすのをやめるだけにして、
-    // 取りこぼしがあることを別の旗で覚えておく（→ DESIGN 3-2-3o）。
-    if (latent.size >= LATENT_MAX) { latentTruncated = true; return; }
+    if (latent.size >= LATENT_MAX) {
+      // 満杯でも、まず死んだ控えを落として空きを作る。掃除せずに断ると、
+      // 一度上限へ触れただけで、以後ずっと新しい候補を取りこぼす。
+      if (latentPruneGuard !== latent.size) { latentPruneGuard = latent.size; pruneLatent(); }
+      // 上限では捨てない。捨てると「もう探さない」に化ける。増やすのをやめるだけにして、
+      // 取りこぼしがあることを旗に立て、空きができたら索引を作り直す（→ reindexLatent）。
+      if (latent.size >= LATENT_MAX) { latentTruncated = true; return; }
+      latentPruneGuard = -1;
+    }
     latent.add(node);
   }
   // このページで印を付けた辞書キー -> そのとき自分が何を作ったかの記録。
@@ -1477,9 +1490,47 @@
   // 全体を走り直さず、控えてある候補（初回に見えていなかった節点）だけを見る。
   // 同じキーに使える印が別の場所にあるなら `findHits` が落とすので、
   // ここで印が2つになることはない（移動もしない。読める説明が1つあれば足りる）。
+  // 1回で全部を見ない。控えが多いページでは、2秒ごとに毎回 30〜60ms 掛かっていた
+  // （実測: 20,000件で 32.7〜60.6ms／1回）。予算を決めて途中で止め、続きは次に回す。
+  const LATENT_BUDGET_MS = 8;
+  let latentPass = null;       // 見直し中の並び（途中で控えが増えても順番が崩れないようにする）
+  let latentCursor = 0;
+  let latentResume = null;
+
+  function scheduleLatentResume() {
+    if (latentResume !== null) return;
+    // マイクロタスクで続けると同じ処理の中で回り続け、区切った意味が無くなる。
+    // ブラウザへ一度返してから続ける。
+    latentResume = setTimeout(() => {
+      latentResume = null;
+      if (!observing) return;
+      withRenderCache(() => discoverLatent());
+    }, 0);
+  }
+
+  // 上限で控えきれなかった候補を、控えへ入れ直す。旗を立てるだけで何もしないと
+  // 「もう探さない」が黙って続く（実測: 上限の次の1件は、痕跡の残らない見え方の
+  // 変化では、そのタブを開いているあいだ説明されなかった）。
+  function reindexLatent() {
+    pruneLatent();
+    // ⚠️ 旗を下ろすのは、**実際に入れ直したときだけ**。先に下ろすと、空きが無くて
+    // 引き返した1回で旗が消え、あとで空きができても二度と入れ直さない（実測で再現）。
+    if (latent.size >= LATENT_MAX) return;
+    latentTruncated = false;
+    scanInner(document.body);                // isTarget が控えへ入れ直す
+  }
+
   function discoverLatent() {
+    if (latentPass === null) { latentPass = [...latent]; latentCursor = 0; }
+    const started = performance.now();
     let n = 0;
-    for (const node of latent) {
+    while (latentCursor < latentPass.length) {
+      if ((latentCursor & 15) === 0 && performance.now() - started > LATENT_BUDGET_MS) {
+        scheduleLatentResume();
+        return n;
+      }
+      const node = latentPass[latentCursor++];
+      if (!latent.has(node)) continue;                 // この見直しの途中で外れた
       if (!node.isConnected || isHandled(node)) { latent.delete(node); continue; }
       const el = node.parentElement;
       if (!el) { latent.delete(node); continue; }
@@ -1504,6 +1555,9 @@
       // なり、その要素をもう一度訪れて無限に回る（実際に固まった）。外すのは後。
       if (isHandled(node)) latent.delete(node);
     }
+    latentPass = null; latentCursor = 0;
+    // ひと回りし終えたときだけ、上限で取りこぼした分を入れ直す。
+    if (latentTruncated) reindexLatent();
     return n;
   }
 
@@ -1761,6 +1815,8 @@
     for (const t of ['input', 'change', 'click']) document.removeEventListener(t, onInteraction, true);
     for (const t of HOVER_SIGNALS) document.removeEventListener(t, onPointerOrFocus, true);
     if (idleTimer !== null) { clearTimeout(idleTimer); idleTimer = null; }
+    if (latentResume !== null) { clearTimeout(latentResume); latentResume = null; }
+    latentPass = null; latentCursor = 0;
     observing = false;
     hideTip();
     // 見張っていないあいだに書いた分の予定は、消費される機会が無い。

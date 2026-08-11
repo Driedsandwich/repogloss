@@ -379,13 +379,37 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
 /* ---------- 参照ボックスの 0 と、寸法不明を分けているか（RG-12-05） ---------- */
 {
   const code = stripComments(content);
-  check('箱の寸法が 0 でも、分かっているなら面積の式に使う',
-    /const useBox = Number\.isFinite\(w\) && Number\.isFinite\(h\) && w >= 0 && h >= 0/.test(code),
-    '既知の 0×0 参照ボックスを「寸法不明」と同じ扱いにしている');
-  // 陽性対照: 以前の書き方（w > 0）なら捕まえること
-  check('この検査が、以前の書き方を捕まえる（陽性対照）',
-    !/const useBox = Number\.isFinite\(w\) && Number\.isFinite\(h\) && w >= 0 && h >= 0/
-      .test('const useBox = typeof w === "number" && w > 0 && h > 0;'));
+  // 面積が 0 かどうかだけを見ていては足りない。**切り取りに面積があっても、
+  // 語がその外**にあることがある（第13回 RG-13-01。画素を数えて実測）。
+  check('語の矩形と、積み上げた切り取りの交わりで決めている',
+    /function isPaintedText/.test(code) && /function intersectRect/.test(code) &&
+    /function paintChain/.test(code),
+    '切り取りの指定が面積0かどうかだけでは、外へ置かれた語を落とせない');
+  check('文字の矩形は、面積のあるものだけを数えている',
+    /x\.width > 0 && x\.height > 0/.test(code),
+    'transform:scale(0) は箱の寸法を変えないので、面積を見ないと落とせない');
+  check('描画効果（完全に透明な filter / mask）も不可視として見ている',
+    /function paintHidesAll/.test(code) && /FILTER_OPACITY_ZERO/.test(code) &&
+    /isFullyTransparentGradient/.test(code));
+  check('絶対配置が切り取りから逃げることを見ている',
+    /function establishesContainingBlock/.test(code) && /function positionEscape/.test(code),
+    '包含ブロックでない祖先の切り取りで、読める語を落とす');
+  // スクロールで読める領域を切り取りに数えると、長い一覧の下が説明されなくなる
+  // 文の終わりまで見る。前方一致で済ませると、`|| v === 'auto'` を足した書き方も
+  // 通ってしまう（この緩さは、下の陰性対照が実際に捕まえた）。
+  const CLIPS_ONLY = /const clips = v => v === 'hidden' \|\| v === 'clip';/;
+  check('overflow の auto / scroll を切り取りに数えていない', CLIPS_ONLY.test(code),
+    '画面外というだけの語を、永久に除外してしまう');
+  check('この検査が、auto を足した書き方を捕まえる（陰性対照）',
+    !CLIPS_ONLY.test("const clips = v => v === 'hidden' || v === 'clip' || v === 'auto';"));
+  check('この検査が、いまの書き方は通す（陽性対照）',
+    CLIPS_ONLY.test("const clips = v => v === 'hidden' || v === 'clip';"));
+  // 1px 四方まで潰す書き方は、切り取りの指定を持たないこともある
+  check('読める幅が残らない帯を不可視としている',
+    /function rectIsEmpty/.test(code) && /<= 1/.test(code));
+  check('大きさの目安だけで不可視と決めていない',
+    !/\btiny\b/.test(code),
+    '1px の箱でも、負の inset で外へ描かれていれば読める（実測で362画素）');
 }
 
 /* ---------- 可視性の判定が祖先まで見ているか ---------- */

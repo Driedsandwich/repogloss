@@ -780,3 +780,43 @@ export async function waitFor(label, fn, { timeout = 15000, interval = 200 } = {
   }
   throw new Error(`待ち時間内に成立しなかった: ${label}`);
 }
+
+/* ===================== 第13回監査（v1.8.12）の反例 ===================== */
+
+/* 語が実際に描かれている場所だけへ注記する（RG-13-01）。
+   隠れている側と、後ろの読める側に同じ語を置く。落としすぎの対照も並べる。 */
+export const PAINT_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>paint</title><style>
+  .clipbox{position:relative;width:120px;height:40px}
+  .out{position:absolute;left:160px;top:5px;white-space:nowrap}
+  .scroller{width:120px;height:40px;overflow:auto}
+  .tall{height:400px}
+</style></head><body>
+  <a href="#" id="before">before</a>
+  <div id="h-ovh"><div class="clipbox" style="overflow:hidden"><span class="out">A branch away.</span></div></div>
+  <p id="l-ovh">A branch later.</p>
+  <div id="h-ovc"><div class="clipbox" style="overflow:clip"><span class="out">A commit away.</span></div></div>
+  <p id="l-ovc">A commit later.</p>
+  <div id="h-cpi"><div class="clipbox" style="width:240px;clip-path:inset(0 120px 0 0)"><span class="out" style="left:150px">A merge away.</span></div></div>
+  <p id="l-cpi">A merge later.</p>
+  <div id="h-flt" style="filter:opacity(0)">A fetch away.</div>
+  <p id="l-flt">A fetch later.</p>
+  <div id="h-trs" style="transform:scale(0)">A rebase away.</div>
+  <p id="l-trs">A rebase later.</p>
+  <div id="h-msk" style="mask-image:linear-gradient(transparent,transparent);-webkit-mask-image:linear-gradient(transparent,transparent)">A webhook away.</div>
+  <p id="l-msk">A webhook later.</p>
+  <!-- ここから下は「落としてはいけない」対照 -->
+  <div id="h-neg" style="position:relative;width:1px;height:1px;overflow:visible;white-space:nowrap;clip-path:inset(-100px)">A token painted.</div>
+  <p id="l-neg">A token later.</p>
+  <div id="h-part"><div class="clipbox" style="overflow:hidden;width:400px"><span class="out" style="left:20px">A wiki partly.</span></div></div>
+  <p id="l-part">A wiki later.</p>
+  <!-- 絶対配置は、包含ブロックでない祖先の切り取りからは逃げる -->
+  <div id="h-esc" style="position:static;width:120px;height:40px;overflow:hidden">
+    <span style="position:absolute;left:400px;top:0;white-space:nowrap">A release escaped.</span></div>
+  <p id="l-esc">A release later.</p>
+  <!-- スクロールできる領域の画面外は、読めるので落とさない -->
+  <div id="h-scr" class="scroller"><div class="tall"><p style="margin-top:300px">A milestone below.</p></div></div>
+  <p id="l-scr">A milestone later.</p>
+</body></html>`;
+
+/* 生成した印の生命周期（RG-13-04） */

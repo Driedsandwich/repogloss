@@ -15,6 +15,7 @@ import { launchChrome, startTestServer, stageExtension, stageExtensionWith,
          USABILITY_PAGE, NAMESPACE_CLIP_PAGE, PROTECTED_PAGE, CONVERGE_PAGE,
          SIGNALS_PAGE, OWNERSHIP_PAGE, LATENT_PAGE, SIGNATURE_PAGE,
          LATENT_GUARD_PAGE, DEFERRED_PAGE, SKIPNAME_PAGE, CLIPZERO_PAGE,
+         PAINT_PAGE,
          openPage, sleep, waitFor,
          pressKey, collectTabOrder, tabUntil } from './helpers/chrome.mjs';
 
@@ -2478,3 +2479,51 @@ test('自分の class 名を、ページ側の同名要素へ当てはめない'
 
   await tab.close();
 });
+
+/* ===================== 第13回監査（v1.8.12）の受入条件 ===================== */
+
+test('語が実際に描かれている場所だけへ注記する', async t => {
+  const srv = await startTestServer(PAINT_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await chrome.cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(chrome.cdp, PAGE);
+  const nIn = sel => tab.evaluate(`document.querySelectorAll(${JSON.stringify(sel)} + ' .iiyaku-icon').length`);
+  // 前提は「どこかに印が付いた」だけにする。場所まで前提にすると、場所を
+  // 間違える実装では**個々のケースの判定に届かず**、何を落としているか分からない。
+  await waitFor('拡張が印を付ける', async () =>
+    await tab.evaluate(`document.querySelectorAll('.iiyaku-icon').length`) > 0);
+  await sleep(600);
+
+  // 隠れている側に付けてはいけない（付けると「最初の1回」を使い切り、
+  // 後ろの読める同じ語が永久に説明されなくなる）
+  for (const [id, why] of [
+    ['ovh', 'overflow:hidden の切り取りの外'],
+    ['ovc', 'overflow:clip の切り取りの外'],
+    ['cpi', '面積のある clip-path の外'],
+    ['flt', 'filter:opacity(0) で完全に透明'],
+    ['trs', 'transform:scale(0) で面積0'],
+    ['msk', '完全に透明な mask']
+  ]) {
+    await t.test(`RG-13-01 ${why}には注記しない`, async () => {
+      assert.deepEqual([await nIn(`#h-${id}`), await nIn(`#l-${id}`)], [0, 1],
+        `隠れている側に印が付いている（${why}）`);
+    });
+  }
+
+  // 逆向きの対照。ここが 0/1 になったら落としすぎている
+  for (const [id, why] of [
+    ['neg', '1px の箱でも、負の inset で外へ描かれている'],
+    ['part', '切り取りに一部が掛かっているだけ'],
+    ['esc', '絶対配置で、包含ブロックでない祖先の切り取りからは逃げている'],
+    ['scr', 'スクロールすれば読める（overflow:auto の画面外）']
+  ]) {
+    await t.test(`RG-13-01【対照】${why}語は落とさない`, async () => {
+      assert.deepEqual([await nIn(`#h-${id}`), await nIn(`#l-${id}`)], [1, 0],
+        `読める語を落としている（${why}）`);
+    });
+  }
+
+  await tab.close();
+});
+

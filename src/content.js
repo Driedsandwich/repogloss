@@ -152,171 +152,57 @@
 
   let visibleCache = null;   // 走査1回のあいだだけ有効
 
-  // 読み上げ専用テキストの定番の書き方: 1px 四方まで潰し、clip で中身を隠す。
-  // checkVisibility はこれを不可視と見なさない（実測で true が返る）。
+  // 語が「実際に画面へ描かれている場所」に出ているか。
   //
-  // GitHub も使っている。実測では `prc-src-InternalVisuallyHidden-…` の中の
-  // "Repository files navigation" に印が付いており、目に見える repository より先に
-  // 「ページで最初の1回」を使い切っていた。クラス名は版ごとに変わる自動生成なので、
-  // 名前ではなく形（1px 以下 ＋ clip）で判定する。
+  // 切り取りの**指定が面積0か**だけを見ていては足りなかった。切り取り自体に面積が
+  // あっても、その語が切り取りの外に置かれていることがある。実測（画面の画素を数えた）:
+  // `overflow:hidden` / `overflow:clip` / 面積のある `clip-path` の外に置いた語は
+  // **0画素しか描かれていない**のに印が付き、後ろの読める同じ語が説明されなかった。
+  // 描画効果でも同じことが起きる（`filter:opacity(0)` ・`transform:scale(0)` ・
+  // 完全に透明な mask。いずれも0画素）。
   //
-  // 大きな箱へ全面の切り取りを掛ける書き方もある（実測で、この形の中の語に
-  // 印が付いていた）。1px という大きさだけを条件にすると取りこぼすので、
-  // 「全面を切り落とす指定」もあわせて見る。
-  // ただし CSS2 の clip は **絶対配置の要素にしか効かない**。position が static や
-  // relative のままの要素に rect(0 0 0 0) と書いても、中身はふつうに見えている。
-  // 位置を見ずに「全面の切り取り」とみなすと、読める文章のほうを除外してしまう
-  // （実測: position:static・幅1264px の要素にある語へ印が付かなかった）。
-  // clip-path は position に関係なく効くので、こちらは位置を問わない。
-  // 決まった書き方だけを文字列で照合するのはやめる。`rect(0 0 0 0)` と
-  // `inset(50%)` だけを見ていたため、**面積は 0 なのに座標が 0 でない**書き方を
-  // 取りこぼしていた（実測: `rect(5px,5px,5px,5px)` と `inset(100%)` の中の語に
-  // 印が付き、後ろの読める同じ語が説明されなくなった）。値として解いて面積で決める。
+  // 逆に落としすぎもあった。1px 四方の箱に切り取りの指定があるだけで不可視と決めて
+  // いたため、`clip-path: inset(-100px)` で外へ広がって**362画素が実際に描かれて
+  // いる**語を除外していた（実測）。
+  //
+  // だから、大きさの目安ではなく **viewport 座標の矩形**で決める。祖先が課す切り取りを
+  // 積み上げ、**語そのものの矩形と交わるか**を見る。交わらなければ描かれていない。
   const CLIP_POSITIONS = ['absolute', 'fixed'];   // legacy clip が効く配置
 
-  // clip: rect(top, right, bottom, left)。comma でも空白でも書ける。
-  // 面積が 0 になるのは right <= left か bottom <= top のとき。
-  // auto が混ざっていたら、その辺は決められないので「全面非表示」と断定しない。
-  function rectClipsAll(v) {
-    const m = /^rect\((.+)\)$/.exec(v);
-    if (!m) return false;
-    const parts = m[1].split(/\s*,\s*|\s+/).filter(Boolean);
-    if (parts.length !== 4) return false;
-    if (parts.some(p => p === 'auto')) return false;
-    const n = parts.map(p => parseFloat(p));
-    if (n.some(x => !Number.isFinite(x))) return false;
-    const [top, right, bottom, left] = n;
-    return right <= left || bottom <= top;
+  // 矩形は viewport 座標の { x1, y1, x2, y2 }。null は「制限なし」。
+  function intersectRect(a, b) {
+    if (a === null) return b;
+    if (b === null) return a;
+    return { x1: Math.max(a.x1, b.x1), y1: Math.max(a.y1, b.y1),
+             x2: Math.min(a.x2, b.x2), y2: Math.min(a.y2, b.y2) };
+  }
+  // 幅か高さが 1px 以下の帯には、読める文字は残らない。読み上げ専用テキストの
+  // 定番（1px 四方 ＋ overflow:hidden）は切り取りの指定を持たないこともあるので、
+  // 「面積 0」ではなく「読める幅が残らない」を境目にする。
+  function rectIsEmpty(r) {
+    return r !== null && (r.x2 - r.x1 <= 1 || r.y2 - r.y1 <= 1);
   }
 
-  // clip-path: inset(...)。1〜4値を上右下左へ展開する。
-  //
-  // 百分率だけを見ていては足りなかった。ブラウザが返す computed 値には
-  // `inset(50% 0px)` のように**長さと百分率が混ざる**（`inset(50% 0 50% 0)` と
-  // 書いただけでこうなる）。混在を「決められない」として捨てていたため、
-  // 全面が隠れているのに可視と答えていた（実測: 隠れた側に印が付き、
-  // 後ろの読める同じ語が説明されなくなった）。
-  // 箱の寸法が分かるならそこへ換算し、**px で面積を判定する**。
-  //
-  // `calc()` ・`polygon()` ・`path()` ・`shape()` は解かない。値だけからは
-  // 面積を決められないので、**断定しないほうへ倒す**（可視として扱う）。
-  // これは既知の制約として DESIGN.md に書いてある。
+  const px = s => { const n = parseFloat(s); return Number.isFinite(n) ? n : 0; };
   const LEN_PX = /^(-?\d*\.?\d+)px$/;
   const LEN_PCT = /^(-?\d*\.?\d+)%$/;
+  const SHAPE_KEYWORD = /^(closest|farthest)-side$/;
+  const UNRESOLVED = /calc\(|var\(|min\(|max\(|clamp\(/;
 
-  // 1つの値を px にする。base はその辺の長さ。決められなければ null。
+  // 1つの値を px にする。base はその辺の長さ。解けなければ null。
   function lenToPx(part, base) {
     if (part === '0') return 0;
     let m = LEN_PX.exec(part);
     if (m) return parseFloat(m[1]);
     m = LEN_PCT.exec(part);
-    if (m) return base === null ? null : parseFloat(m[1]) / 100 * base;
+    if (m) return parseFloat(m[1]) / 100 * base;
     return null;                     // calc() や未知の単位
-  }
-
-  // w / h は border box の寸法。取れないときは null を渡す（百分率だけで判定する）。
-  function insetClipsAll(v, w = null, h = null) {
-    const m = /^inset\((.*)\)$/.exec(v);
-    if (!m) return false;
-    const body = m[1].split(/\s+round\s+/)[0].trim();
-    if (/calc\(|var\(|min\(|max\(|clamp\(/.test(body)) return false;   // 解かない
-    const parts = body.split(/\s+/).filter(Boolean);
-    if (parts.length < 1 || parts.length > 4) return false;
-    const [t, r, b, l] =
-      parts.length === 1 ? [parts[0], parts[0], parts[0], parts[0]]
-      : parts.length === 2 ? [parts[0], parts[1], parts[0], parts[1]]
-      : parts.length === 3 ? [parts[0], parts[1], parts[2], parts[1]]
-      : parts;
-    // 「寸法が分からない（null）」と「箱が潰れている（0）」は別のこと。
-    // 一緒に扱うと、既知の 0×0 参照ボックスへ inset(0) を掛けた形——中身は
-    // まったく見えない——を可視と答える（実測: 隠れた側に印が付き、後ろの読める語が0）。
-    // 寸法が分かっているなら 0 でもそのまま面積の式に入れる。負の inset で外へ広がる
-    // 形も同じ式で正しく出る（`bh - top - bottom > 0` なら可視）。
-    // 分からないときだけ、百分率で言えることに限る（px は箱に対する割合が決まらない）。
-    const useBox = Number.isFinite(w) && Number.isFinite(h) && w >= 0 && h >= 0;
-    const bw = useBox ? w : null;
-    const bh = useBox ? h : null;
-    const top = lenToPx(t, bh), bottom = lenToPx(b, bh);
-    const left = lenToPx(l, bw), right = lenToPx(r, bw);
-    if (useBox) {
-      if (top !== null && bottom !== null && (top + bottom) >= bh) return true;
-      if (left !== null && right !== null && (left + right) >= bw) return true;
-      return false;
-    }
-    // 箱が分からないときは、百分率だけで言えることに限る
-    const pct = s => { const mm = LEN_PCT.exec(s); return mm ? parseFloat(mm[1]) : (s === '0' ? 0 : null); };
-    const [pt, pr, pb, pl] = [pct(t), pct(r), pct(b), pct(l)];
-    if (pt !== null && pb !== null && (pt + pb) >= 100) return true;
-    if (pl !== null && pr !== null && (pl + pr) >= 100) return true;
-    return false;
-  }
-
-  // circle() / ellipse() は半径が 0 なら面積も 0。
-  // 中心（at …）は面積に関係しないので落とす。
-  //
-  // 半径にはキーワードも書ける（closest-side / farthest-side）。実測の computed 値は
-  // `ellipse(0px closest-side)` のように**数値とキーワードが混ざる**。混在を
-  // 「解けない」として捨てていたため、全面が隠れているのに可視と答えていた。
-  // キーワード側は 0 ではない（辺までの距離）ので、**片方が 0 なら面積は 0**。
-  const SHAPE_KEYWORD = /^(closest|farthest)-side$/;
-  // 位置を、参照ボックスの中の px へ直す。解けなければ null。
-  function posToPx(s, size) {
-    if (s === '0') return 0;
-    if (LEN_PX.test(s)) return parseFloat(s);
-    if (LEN_PCT.test(s)) return parseFloat(s) / 100 * size;
-    return null;
-  }
-  // 引数を「半径の並び」と「中心の位置」に分ける。
-  // 半径を省くと、computed 値は `circle(at 0px 50%)` のように **at から始まる**。
-  // `\s+at\s+` で切ると、この形では at の前に空白が無いので切れず、半径の側へ
-  // 丸ごと入ってしまう（実測で取りこぼした）。行頭の at も切れるようにする。
-  function splitShapeArgs(inner) {
-    const m = /(^|\s)at\s+/.exec(inner);
-    if (!m) return { radii: inner.trim(), pos: null };
-    return { radii: inner.slice(0, m.index).trim(), pos: inner.slice(m.index + m[0].length).trim() };
-  }
-
-  // 半径を省いたときの既定は closest-side——中心から参照ボックスのいちばん近い辺
-  // までの距離が半径になる。中心が辺の上にあれば 0 で、全面が切り取られる
-  // （実測: `circle(closest-side at 0 50%)` は computed 値から半径が消え、
-  // 当たり判定でも文字に触れなかった）。中心が箱の外なら負になり、やはり 0。
-  function defaultRadiusClipsAll(pos, w, h) {
-    if (!(w > 0 && h > 0) || !pos) return false;
-    const at = pos.split(/\s+/);
-    if (at.length !== 2) return false;
-    const cx = posToPx(at[0], w), cy = posToPx(at[1], h);
-    if (cx === null || cy === null) return false;
-    return Math.min(cx, w - cx, cy, h - cy) <= 0;
-  }
-
-  function shapeClipsAll(v, w = null, h = null) {
-    const zero = s => s === '0' || /^0(\.0+)?(px|%)$/.test(s);
-    const known = s => zero(s) || LEN_PX.test(s) || LEN_PCT.test(s) || SHAPE_KEYWORD.test(s);
-    let m = /^circle\((.*)\)$/.exec(v);
-    if (m) {
-      const { radii, pos } = splitShapeArgs(m[1]);
-      return radii !== '' ? zero(radii) : defaultRadiusClipsAll(pos, w, h);
-    }
-    m = /^ellipse\((.*)\)$/.exec(v);
-    if (m) {
-      const { radii, pos } = splitShapeArgs(m[1]);
-      if (radii === '') return defaultRadiusClipsAll(pos, w, h);   // 縦横とも省略＝closest-side
-      const rr = radii.split(/\s+/).filter(Boolean);
-      // 縦横どちらかが 0 なら、その時点で面積は 0
-      return rr.length > 0 && rr.length <= 2 && rr.some(zero) && rr.every(known);
-    }
-    return false;
   }
 
   // clip-path は `<basic-shape> || <geometry-box>` を取る。実測の computed 値は
   // `inset(50%) content-box` のように**参照ボックスが後ろに付く**。これを外して
-  // 形だけを解き、百分率はその参照ボックスの実寸に対して解決する
-  // （content-box の 50% は、padding を除いた内側の 50%）。
-  // 付いていなければ border-box が既定。
-  //
-  // **参照ボックスだけを書くこともできる**（`clip-path: content-box`）。そのときは
-  // その箱の辺がそのまま切り取り線になるので、箱の幅か高さが 0 なら全面が消える。
-  // 先頭一致も認めないと、形が無い書き方をまるごと取りこぼす（実測で再現）。
+  // 形だけを解き、百分率はその参照ボックスの実寸に対して解決する。
+  // **参照ボックスだけを書くこともできる**（`clip-path: content-box`）。
   const GEOMETRY_BOX = /(?:^|\s+)(border-box|padding-box|content-box|margin-box|fill-box|stroke-box|view-box)$/;
 
   function splitGeometryBox(v) {
@@ -324,81 +210,263 @@
     return m ? { shape: v.slice(0, m.index).trim(), box: m[1] } : { shape: v, box: 'border-box' };
   }
 
-  // 参照ボックスの実寸。取れなければ null を返す（＝箱の大きさを使わない判定へ）。
-  const px = s => { const n = parseFloat(s); return Number.isFinite(n) ? n : 0; };
-  function refBoxSize(el, cs, box) {
-    const bw = el.offsetWidth, bh = el.offsetHeight;   // border box
-    if (!(bw > 0 && bh > 0)) return null;
-    if (box === 'border-box' || box === 'view-box' || box === 'stroke-box') return { w: bw, h: bh };
-    const bl = px(cs.borderLeftWidth), br = px(cs.borderRightWidth);
-    const bt = px(cs.borderTopWidth), bb = px(cs.borderBottomWidth);
-    if (box === 'padding-box') return { w: bw - bl - br, h: bh - bt - bb };
-    if (box === 'content-box' || box === 'fill-box') {
-      const pl = px(cs.paddingLeft), pr = px(cs.paddingRight);
-      const pt = px(cs.paddingTop), pb = px(cs.paddingBottom);
-      return { w: bw - bl - br - pl - pr, h: bh - bt - bb - pt - pb };
-    }
+  // 参照ボックスを viewport 座標の矩形で返す。border box は実測値をそのまま使う。
+  // 変形が掛かっているときは辺の削り込みをしない（回転すると軸に沿った外接矩形に
+  // なるため、削ると小さくしすぎる＝落としすぎる方へ倒れる）。
+  function refBoxRect(cs, border, transformed, box) {
+    const b = { x1: border.left, y1: border.top, x2: border.right, y2: border.bottom };
+    if (box === 'border-box' || box === 'view-box' || box === 'stroke-box' || transformed) return b;
     if (box === 'margin-box') {
-      const ml = px(cs.marginLeft), mr = px(cs.marginRight);
-      const mt = px(cs.marginTop), mb = px(cs.marginBottom);
-      return { w: bw + ml + mr, h: bh + mt + mb };
+      return { x1: b.x1 - px(cs.marginLeft), y1: b.y1 - px(cs.marginTop),
+               x2: b.x2 + px(cs.marginRight), y2: b.y2 + px(cs.marginBottom) };
     }
-    return { w: bw, h: bh };
+    const l = px(cs.borderLeftWidth), r = px(cs.borderRightWidth);
+    const t = px(cs.borderTopWidth), bo = px(cs.borderBottomWidth);
+    if (box === 'padding-box') return { x1: b.x1 + l, y1: b.y1 + t, x2: b.x2 - r, y2: b.y2 - bo };
+    // content-box / fill-box
+    return { x1: b.x1 + l + px(cs.paddingLeft), y1: b.y1 + t + px(cs.paddingTop),
+             x2: b.x2 - r - px(cs.paddingRight), y2: b.y2 - bo - px(cs.paddingBottom) };
   }
 
-  let clipCache = null;   // 走査1回のあいだだけ有効
+  // inset(...) を矩形にする。解けなければ null（＝制限しない側へ倒す）。
+  function insetRect(body, ref) {
+    const s = body.split(/\s+round\s+/)[0].trim();
+    if (UNRESOLVED.test(s)) return null;
+    const parts = s.split(/\s+/).filter(Boolean);
+    if (parts.length < 1 || parts.length > 4) return null;
+    const [t, r, b, l] =
+      parts.length === 1 ? [parts[0], parts[0], parts[0], parts[0]]
+      : parts.length === 2 ? [parts[0], parts[1], parts[0], parts[1]]
+      : parts.length === 3 ? [parts[0], parts[1], parts[2], parts[1]]
+      : parts;
+    const w = ref.x2 - ref.x1, h = ref.y2 - ref.y1;
+    const top = lenToPx(t, h), bottom = lenToPx(b, h);
+    const left = lenToPx(l, w), right = lenToPx(r, w);
+    if (top === null || bottom === null || left === null || right === null) return null;
+    return { x1: ref.x1 + left, y1: ref.y1 + top, x2: ref.x2 - right, y2: ref.y2 - bottom };
+  }
 
-  function clipsAwayContent(n) {
-    if (clipCache) {
-      const hit = clipCache.get(n);
-      if (hit !== undefined) return hit;
+  // 引数を「半径の並び」と「中心の位置」に分ける。
+  // 半径を省くと computed 値は `circle(at 0px 50%)` のように **at から始まる**。
+  function splitShapeArgs(inner) {
+    const m = /(^|\s)at\s+/.exec(inner);
+    if (!m) return { radii: inner.trim(), pos: null };
+    return { radii: inner.slice(0, m.index).trim(), pos: inner.slice(m.index + m[0].length).trim() };
+  }
+
+  // 中心。省略時は 50% 50%。解けなければ null。
+  function centerOf(pos, ref) {
+    const w = ref.x2 - ref.x1, h = ref.y2 - ref.y1;
+    if (!pos) return { cx: ref.x1 + w / 2, cy: ref.y1 + h / 2 };
+    const at = pos.split(/\s+/).filter(Boolean);
+    if (at.length !== 2) return null;
+    const x = lenToPx(at[0], w), y = lenToPx(at[1], h);
+    if (x === null || y === null) return null;
+    return { cx: ref.x1 + x, cy: ref.y1 + y };
+  }
+
+  // 半径1つ。キーワードは中心から辺までの距離で解く（省略時の既定は closest-side）。
+  function radiusOf(v, c, ref, axis) {
+    const w = ref.x2 - ref.x1, h = ref.y2 - ref.y1;
+    const near = axis === 'x' ? Math.min(c.cx - ref.x1, ref.x2 - c.cx)
+               : axis === 'y' ? Math.min(c.cy - ref.y1, ref.y2 - c.cy)
+               : Math.min(c.cx - ref.x1, ref.x2 - c.cx, c.cy - ref.y1, ref.y2 - c.cy);
+    const far = axis === 'x' ? Math.max(c.cx - ref.x1, ref.x2 - c.cx)
+              : axis === 'y' ? Math.max(c.cy - ref.y1, ref.y2 - c.cy)
+              : Math.max(c.cx - ref.x1, ref.x2 - c.cx, c.cy - ref.y1, ref.y2 - c.cy);
+    if (v === '' || v === 'closest-side') return near;
+    if (v === 'farthest-side') return far;
+    if (SHAPE_KEYWORD.test(v)) return near;
+    // circle の百分率は対角線を基準にする（仕様）。ellipse は各軸。
+    const base = axis === 'x' ? w : axis === 'y' ? h : Math.sqrt((w * w + h * h) / 2);
+    return lenToPx(v, base);
+  }
+
+  // 形を、それを囲む矩形にする。囲む矩形は本物の形より**広い**ので、
+  // 「交わらない」と言えるときだけ落とす、という向きを崩さない。
+  function shapeBoundsRect(shape, ref) {
+    if (shape === '') return ref;                       // 参照ボックスだけの指定
+    if (UNRESOLVED.test(shape)) return null;
+    let m = /^inset\((.*)\)$/.exec(shape);
+    if (m) return insetRect(m[1], ref);
+    m = /^circle\((.*)\)$/.exec(shape);
+    if (m) {
+      const { radii, pos } = splitShapeArgs(m[1]);
+      const c = centerOf(pos, ref);
+      if (!c) return null;
+      const r = radiusOf(radii, c, ref, null);
+      if (r === null) return null;
+      return { x1: c.cx - r, y1: c.cy - r, x2: c.cx + r, y2: c.cy + r };
     }
-    let v = false;
-    // 大きさの確認は安い。ここを先に見て、多くの要素で getComputedStyle を避ける。
-    // 寸法は inset() の百分率・絶対長を面積へ換算するのにも使う（border box）。
-    const bw = n.offsetWidth, bh = n.offsetHeight;
-    const tiny = bw <= 1 && bh <= 1;
-    const cs = getComputedStyle(n);
-    // display:contents の要素は箱を作らないので、clip も clip-path も**効かない**。
-    // 通常の箱と同じに扱うと、見えている文章のほうを落とす（実測: 当たり判定でも
-    // 文字に指が当たるのに、印が後ろの文章へ回っていた）。箱を持つ先祖は別に見る。
-    if (cs.display === 'contents') {
-      if (clipCache) clipCache.set(n, false);
-      return false;
+    m = /^ellipse\((.*)\)$/.exec(shape);
+    if (m) {
+      const { radii, pos } = splitShapeArgs(m[1]);
+      const c = centerOf(pos, ref);
+      if (!c) return null;
+      const rr = radii === '' ? ['', ''] : radii.split(/\s+/).filter(Boolean);
+      if (rr.length !== 2) return null;
+      const rx = radiusOf(rr[0], c, ref, 'x'), ry = radiusOf(rr[1], c, ref, 'y');
+      if (rx === null || ry === null) return null;
+      return { x1: c.cx - rx, y1: c.cy - ry, x2: c.cx + rx, y2: c.cy + ry };
     }
-    const clip = CLIP_POSITIONS.includes(cs.position) && cs.clip && cs.clip !== 'auto'
-      ? cs.clip.replace(/\s+/g, ' ').trim() : '';
-    const path = cs.clipPath && cs.clipPath !== 'none' ? cs.clipPath.trim() : '';
-    if (clip || path) {
-      // 1px 四方まで潰したうえで切り取る書き方（読み上げ専用の定番）か、
-      // 面積が 0 になる書き方か。inset は参照ボックスの実寸へ換算して面積で決める。
-      const { shape, box } = splitGeometryBox(path);
-      const ref = path ? refBoxSize(n, cs, box) : null;
-      // 参照ボックスだけを書いた場合。その箱が潰れていれば、中身は全部消える。
-      const boxOnly = path !== '' && shape === '';
-      v = tiny || rectClipsAll(clip)
-        || (boxOnly && ref !== null && (ref.w <= 0 || ref.h <= 0))
-        || insetClipsAll(shape, ref ? ref.w : null, ref ? ref.h : null)
-        || shapeClipsAll(shape, ref ? ref.w : null, ref ? ref.h : null);
+    // polygon() / path() / shape() / rect() / xywh() は解かない。
+    // 断定できないので制限しない側（可視）へ倒す。DESIGN.md の既知の限界に書いてある。
+    return null;
+  }
+
+  // legacy clip: rect(top, right, bottom, left)。border box の左上からの距離。
+  // auto はその辺を切らない。
+  function legacyClipRect(v, border) {
+    const m = /^rect\((.+)\)$/.exec(v.replace(/\s+/g, ' ').trim());
+    if (!m) return null;
+    const parts = m[1].split(/\s*,\s*|\s+/).filter(Boolean);
+    if (parts.length !== 4) return null;
+    const [t, r, b, l] = parts;
+    const num = (s, edge) => {
+      if (s === 'auto') return edge;
+      const n = lenToPx(s, 0);
+      return n === null ? null : n;
+    };
+    const top = num(t, 0), right = num(r, border.width),
+          bottom = num(b, border.height), left = num(l, 0);
+    if (top === null || right === null || bottom === null || left === null) return null;
+    return { x1: border.left + left, y1: border.top + top,
+             x2: border.left + right, y2: border.top + bottom };
+  }
+
+  // 描画効果だけで完全に消えている形。**断定できるものだけ**を並べる。
+  const FILTER_OPACITY_ZERO = /(^|[\s(])opacity\(\s*0(\.0+)?%?\s*\)/;
+
+  function isFullyTransparentGradient(v) {
+    if (!/^(-webkit-)?(linear|radial|conic|repeating-linear|repeating-radial)-gradient\(/.test(v)) return false;
+    const colors = v.match(/rgba?\([^)]*\)/g);
+    if (!colors || colors.length === 0) return false;
+    return colors.every(c => {
+      const m = /^rgba\(([^)]*)\)$/.exec(c);
+      if (!m) return false;                       // rgb(...) は不透明
+      const parts = m[1].split(/\s*[,/]\s*|\s+/).filter(Boolean);
+      return parts.length >= 4 && parseFloat(parts[parts.length - 1]) === 0;
+    });
+  }
+
+  function paintHidesAll(cs) {
+    if (cs.filter && cs.filter !== 'none' && FILTER_OPACITY_ZERO.test(cs.filter)) return true;
+    const mi = cs.maskImage || cs.webkitMaskImage;
+    if (mi && mi !== 'none' && isFullyTransparentGradient(mi)) return true;
+    return false;
+  }
+
+  // その要素が課す切り取り。効かないなら null。
+  function ownClipRect(el, cs) {
+    if (cs.display === 'contents') return null;      // 箱を作らないので切り取りも効かない
+    const border = el.getBoundingClientRect();
+    const transformed = cs.transform !== 'none';
+    let r = null;
+    // ① overflow。切り取り線は padding box（overflow clip edge）。
+    //    `auto` と `scroll` は**入れない**——中身はスクロールで読めるので、
+    //    画面外というだけで永久に除外すると、長い一覧の下のほうが説明されなくなる。
+    const clips = v => v === 'hidden' || v === 'clip';
+    const cx = clips(cs.overflowX), cy = clips(cs.overflowY);
+    if (cx || cy) {
+      let x1 = border.left, y1 = border.top, x2 = border.right, y2 = border.bottom;
+      if (!transformed) {
+        x1 += px(cs.borderLeftWidth); y1 += px(cs.borderTopWidth);
+        x2 -= px(cs.borderRightWidth); y2 -= px(cs.borderBottomWidth);
+      }
+      const m = px(cs.overflowClipMargin);   // overflow:clip は外側へ余白を足せる
+      if (m > 0) { x1 -= m; y1 -= m; x2 += m; y2 += m; }
+      if (!cx) { x1 = -Infinity; x2 = Infinity; }
+      if (!cy) { y1 = -Infinity; y2 = Infinity; }
+      r = intersectRect(r, { x1, y1, x2, y2 });
     }
-    if (clipCache) clipCache.set(n, v);
+    // ② legacy clip。**絶対配置の要素にしか効かない**（position を見ずに判定すると、
+    //    読める文章のほうを除外する。実測で再現済み）。
+    if (CLIP_POSITIONS.includes(cs.position) && cs.clip && cs.clip !== 'auto') {
+      const lc = legacyClipRect(cs.clip, border);
+      if (lc) r = intersectRect(r, lc);
+    }
+    // ③ clip-path
+    if (cs.clipPath && cs.clipPath !== 'none') {
+      const { shape, box } = splitGeometryBox(cs.clipPath.trim());
+      const sr = shapeBoundsRect(shape, refBoxRect(cs, border, transformed, box));
+      if (sr) r = intersectRect(r, sr);
+    }
+    return r;
+  }
+
+  // 絶対・固定配置の箱は、包含ブロックでない祖先の切り取りからは**逃げる**。
+  // ここを見ないと、読める文章を切り取られたものとして落としてしまう。
+  function establishesContainingBlock(cs, forFixed) {
+    if (!forFixed && cs.position !== 'static') return true;
+    if (cs.transform !== 'none' || cs.perspective !== 'none') return true;
+    if (cs.filter !== 'none') return true;
+    if (cs.willChange && /transform|perspective|filter/.test(cs.willChange)) return true;
+    if (cs.contain && /paint|layout|strict|content/.test(cs.contain)) return true;
+    if (cs.containerType && cs.containerType !== 'normal') return true;
+    return false;
+  }
+
+  function positionEscape(cs) {
+    if (cs.display === 'contents') return 'none';    // 箱を作らないので配置もされない
+    return cs.position === 'fixed' ? 'fixed' : cs.position === 'absolute' ? 'absolute' : 'none';
+  }
+
+  // 祖先までさかのぼって、その場所の文字に効く事情を1回で集める。
+  //   clip        … 積み上げた切り取り（null は制限なし）
+  //   hidden      … 描画効果だけで完全に消えている
+  //   transformed … 途中に変形があり、箱の寸法から見た目を推し量れない
+  // 逃げ方（mode）によって答えが変わるので、覚えるときも mode ごとに分ける。
+  let chainCache = null;
+
+  function paintChain(el, mode) {
+    // <body> と <html> の overflow は viewport へ伝わる（要素自身は切り取らない）。
+    // ここを切り取りに数えると、画面の下にあるだけの本文が全部「見えない」になる。
+    if (!el || el === document.body || el === document.documentElement) {
+      return { clip: null, hidden: false, transformed: false };
+    }
+    const cache = chainCache && chainCache[mode];
+    if (cache) { const hit = cache.get(el); if (hit !== undefined) return hit; }
+    const cs = getComputedStyle(el);
+    const applies = mode === 'none' || establishesContainingBlock(cs, mode === 'fixed');
+    const up = paintChain(el.parentElement, applies ? positionEscape(cs) : mode);
+    let clip = up.clip;
+    if (applies) {
+      const own = ownClipRect(el, cs);
+      if (own) clip = intersectRect(clip, own);
+    }
+    // 描画効果は包含ブロックを作るので、逃げられない。配置に関わらず見る。
+    const v = { clip, hidden: up.hidden || paintHidesAll(cs),
+                transformed: up.transformed || cs.transform !== 'none' };
+    if (cache) cache.set(el, v);
     return v;
   }
 
-  // 祖先をたどった結果そのものを覚える。要素ごとの判定だけを覚えても、
-  // 候補が変わるたびに同じ祖先の連なりを何度も上りなおすことになる。
-  // 連なりの答えを覚えると、同じ枝の2件目からは1回で済む。
-  let clipChainCache = null;
+  // 文字そのものの矩形。**面積のあるものだけ**を返す。
+  // `transform: scale(0)` は箱の寸法（offsetWidth）を変えないので、面積を見ないと
+  // 落とせない（実測: 0画素しか描かれていないのに印が付いた）。
+  function textRects(el) {
+    const r = document.createRange();
+    r.selectNodeContents(el);
+    const out = [];
+    for (const x of r.getClientRects()) if (x.width > 0 && x.height > 0) out.push(x);
+    return out;
+  }
 
-  function isClipHidden(el) {
-    if (!el || el === document.body) return false;
-    if (clipChainCache) {
-      const hit = clipChainCache.get(el);
-      if (hit !== undefined) return hit;
-    }
-    const v = clipsAwayContent(el) || isClipHidden(el.parentElement);
-    if (clipChainCache) clipChainCache.set(el, v);
-    return v;
+  // その要素の文字が、切り取りを越えて実際に描かれているか。
+  function isPaintedText(el) {
+    const chain = paintChain(el, 'none');
+    if (chain.hidden) return false;
+    if (rectIsEmpty(chain.clip)) return false;
+    // 切り取りも変形も無いなら、箱の大きさで足りる（Range を作らない）。
+    // ここを毎回 Range にすると、用語の多いページで初期走査が目に見えて遅くなる。
+    if (!chain.clip && !chain.transformed && el.offsetWidth > 0 && el.offsetHeight > 0) return true;
+    const rects = textRects(el);
+    if (rects.length === 0) return false;
+    if (!chain.clip) return true;
+    const c = chain.clip;
+    // 1px 以下の帯しか残らない交わりは、読める文字にならない
+    return rects.some(r => Math.min(r.right, c.x2) - Math.max(r.left, c.x1) > 1 &&
+                           Math.min(r.bottom, c.y2) - Math.max(r.top, c.y1) > 1);
   }
 
   // display:contents は箱を作らない。可視性を判断できる最も近い先祖まで上がる。
@@ -408,45 +476,26 @@
     return n;
   }
 
-  // 文字そのものが描かれているか。display:contents の要素は箱を持たないので
-  // offsetWidth / offsetHeight が 0 になるが、中の文字は普通に見えている。
-  // 要素の箱ではなく、文字の範囲で確かめる。
-  //
-  // ⚠️ これ単独では可視性の証明にならない。content-visibility:hidden で飛ばされた
-  // 中身にも Range は矩形を返す（実測で 3 個）。描かれていない文字にも矩形が出る。
-  function hasRenderedText(el) {
-    const r = document.createRange();
-    r.selectNodeContents(el);
-    return r.getClientRects().length > 0;
-  }
-
   // display:contents の要素にある文字が、実際に読めるか。
   //
   // 箱を持つ先祖の可視性を、そのまま子の答えに使ってはいけない。実測の反例が2つある:
   //   - 先祖が content-visibility:hidden … 先祖自身は描画されたままなので、
-  //     先祖に聞くと「見えている」と答える。しかし中身は飛ばされていて読めない
-  //     （Range の矩形も出るので、矩形の有無でも見抜けない）。
+  //     先祖に聞くと「見えている」と答える。しかし中身は飛ばされていて読めない。
   //   - 先祖が visibility:hidden で、子が visibility:visible に戻している …
   //     先祖に聞くと「見えていない」。しかし子の文字は見えている。
   // どちらも「先祖の1つの答え」を子へ転用したことが原因なので、性質ごとに分ける。
   //   visibility            … 継承する。子の computed 値が正しい
   //   display:none / opacity / 先祖の content-visibility … 継承しない。先祖に聞く
-  //   文字が実際に描かれているか … 子の Range で見る
-  //   clip                  … 子から上へたどる（既存の判定）
+  //   実際に描かれているか … 子の Range と、積み上げた切り取りで見る
   // content-visibility:auto は落とさない（画面外というだけで永久に除外しないため）。
   function isVisibleContentsText(el, cs) {
     if (cs.visibility !== 'visible') return false;
     const host = boxedAncestor(el);
     if (host) {
-      // visibility を外して聞く。display:none と opacity と、
-      // さらに上の content-visibility:hidden は、これで落ちる。
       if (!host.checkVisibility(CONTENTS_HOST_OPTS)) return false;
-      // 先祖自身が中身を飛ばしている場合、その先祖は描画されたままなので
-      // checkVisibility では落ちない。ここだけは名指しで見る。
       if (getComputedStyle(host).contentVisibility === 'hidden') return false;
     }
-    if (!hasRenderedText(el)) return false;
-    return !isClipHidden(el);
+    return isPaintedText(el);
   }
 
   function isVisibleOccurrence(el) {
@@ -463,24 +512,20 @@
       // それは「隠れている」ではなく「箱が無い」という意味なので、転用できない。
       ok = HAS_CHECK_VISIBILITY
         ? isVisibleContentsText(el, cs)
-        : (cs.visibility === 'visible' && hasRenderedText(el) && !isClipHidden(el));
+        : (cs.visibility === 'visible' && isPaintedText(el));
     } else if (HAS_CHECK_VISIBILITY) {
       ok = el.checkVisibility(CHECK_VISIBILITY_OPTS);
       // その要素自身が content-visibility:hidden のとき、**中身**は隠れているのに
       // 要素自体は描画されているので checkVisibility は true を返す（実測）。
-      // 直接テキストを持つ場合はここで落とさないと、見えない語に印が付く。
       if (ok && cs.contentVisibility === 'hidden') ok = false;
-      // 箱をまったく持たず、文字も描かれていないもの
-      if (ok && el.offsetWidth === 0 && el.offsetHeight === 0) ok = hasRenderedText(el);
-      if (ok && isClipHidden(el)) ok = false;
+      if (ok && !isPaintedText(el)) ok = false;
     } else {
       // checkVisibility が無い環境。manifest の minimum_chrome_version より古い
       // Chrome か、拡張を手で読み込んだ場合にしか起きない。祖先の opacity や
       // content-visibility は見抜けないので、ここは「落ちないための保険」にすぎない。
       ok = !(cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0');
       if (ok && cs.contentVisibility === 'hidden') ok = false;
-      if (ok && el.offsetWidth === 0 && el.offsetHeight === 0) ok = hasRenderedText(el);
-      if (ok && isClipHidden(el)) ok = false;
+      if (ok && !isPaintedText(el)) ok = false;
     }
     if (visibleCache) visibleCache.set(el, ok);
     return ok;
@@ -1300,13 +1345,15 @@
   function withRenderCache(fn) {
     const owner = renderCache === null;
     if (owner) { renderCache = new WeakMap(); visibleCache = new WeakMap();
-                 clipCache = new WeakMap(); clipChainCache = new WeakMap();
+                 // 積み上げた切り取りは「どう逃げているか」で答えが変わるので、
+                 // 覚えるときも逃げ方ごとに分ける（混ぜると別の答えを使い回す）。
+                 chainCache = { none: new WeakMap(), absolute: new WeakMap(), fixed: new WeakMap() };
                  usableCache = new WeakMap(); skipCache = new WeakMap(); }
     try {
       return fn();
     } finally {
-      if (owner) { renderCache = null; visibleCache = null; clipCache = null;
-                   clipChainCache = null; usableCache = null; skipCache = null; }
+      if (owner) { renderCache = null; visibleCache = null; chainCache = null;
+                   usableCache = null; skipCache = null; }
     }
   }
 

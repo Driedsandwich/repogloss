@@ -2016,10 +2016,21 @@
   // 静的なファイルへ書けないためである。そこで、値が自分のものでない要素からは
   // 自分の装飾を引き上げる規則を、走り出しに1つだけ足す。
   // 消すのではなく「与えない」だけなので、ページ側の要素を壊さない。
-  // `styles.css` がこの3つの class へ与えている性質。**ここに漏れがあると、
-  // ページ側の同名要素へ自分の見た目が残る**（実測: ページが置いた
-  // `class="iiyaku-tooltip" data-iiyaku-owner="page"` の要素が、画面に固定され
-  // z-index も最大値になっていた）。styles.css との突き合わせは verify.mjs が行う。
+  // ページ側の同名要素から**自分の見た目だけ**を引き上げる規則。
+  //
+  // 以前は `styles.css` が与える性質すべてを `revert` していたが、それは
+  // **ページ自身の author style まで打ち消して**いた（実測: ページの
+  // `display:grid`・赤・140×30px が block・黒・740×24px になった）。
+  // いまは2段構えにする:
+  //   ① `styles.css` をカスケードレイヤーへ入れた。ページが同じ性質を指定していれば
+  //      必ずページが勝つので、打ち消す必要がない
+  //   ② ページが指定していない性質だけが残る。そのうち**画面を乗っ取るもの**
+  //      （固定配置・重なり順・当たり判定・押せる形）を、ここで初期値へ戻す
+  // 絞り込みの規則は **`repogloss` より後ろのレイヤー**へ入れる。順序は
+  //   repogloss（自分の見た目） < repogloss-scope（この規則） < ページのレイヤー無し規則
+  // なので、自分の見た目は確実に打ち消せて、**ページ自身の指定には必ず負ける**。
+  // 以前はレイヤー無しで書いていたため、ページの指定まで打ち消していた（実測:
+  // ページの `display:grid`・赤・140×30px が block・黒・740×24px になった）。
   const OWN_STYLE_PROPS = [
     'align-items', 'background', 'background-color', 'border', 'border-radius', 'border-top',
     'bottom', 'box-shadow', 'box-sizing', 'color', 'content', 'cursor', 'display',
@@ -2031,23 +2042,24 @@
   ];
 
   let ownStyle = null;
+  let ownStyleText = '';
+
+  function ownStyleRules() {
+    const mine = `[data-iiyaku-owner="${CSS.escape(UID)}"]`;
+    const sels = OWN_CLASSES.map(c => `.${c}[data-iiyaku-owner]:not(${mine})`);
+    const inner = ['iiyaku-tooltip-item', 'iiyaku-tooltip-term']
+      .map(c => `.iiyaku-tooltip[data-iiyaku-owner]:not(${mine}) .${c}`);
+    const revert = OWN_STYLE_PROPS.map(p => `${p}:revert`).join(';');
+    return `@layer repogloss-scope{` +
+           `${sels.concat(inner).join(',')}{${revert}}` +
+           `${sels.map(s => `${s}::after`).join(',')}{content:none}}`;
+  }
 
   function scopeOwnStyle() {
     try {
       const st = document.createElement('style');
-      const mine = `[data-iiyaku-owner="${CSS.escape(UID)}"]`;
-      // 印だけでなく、吹き出しと切替ボタンも今回の合言葉へ絞る。
-      // 合言葉の**有無**しか見ない静的な条件を残すと、ページ側が同じ class と
-      // 適当な合言葉を書いただけで、自分の見た目がその要素へ乗る。
-      const sels = OWN_CLASSES.map(c => `.${c}[data-iiyaku-owner]:not(${mine})`);
-      // 中の部品にも同じ名前を使っているので、そこも一緒に戻す。
-      // ページ側の**他の**子孫には触れない（名前を名乗っているものだけ）。
-      const inner = ['iiyaku-tooltip-item', 'iiyaku-tooltip-term']
-        .map(c => `.iiyaku-tooltip[data-iiyaku-owner]:not(${mine}) .${c}`);
-      const revert = OWN_STYLE_PROPS.map(p => `${p}:revert`).join(';');
-      st.textContent =
-        `${sels.concat(inner).join(',')}{${revert}}` +
-        `${sels.map(s => `${s}::after`).join(',')}{content:none}`;
+      ownStyleText = ownStyleRules();
+      st.textContent = ownStyleText;
       (document.head || document.documentElement).appendChild(st);
       ownStyle = st;
     } catch (e) {
@@ -2058,7 +2070,10 @@
 
   // ページ側が消したら足し直す。消されたままだと、複製や同名要素へ自分の見た目が戻る。
   function ensureOwnStyle() {
-    if (ownStyle && ownStyle.isConnected) return;
+    // 「在ること」だけでなく「書いたとおりであること」も見る。中身を書き換えられると、
+    // 外されたのと同じになる（ページ側の同名要素へ自分の見た目が戻る）。
+    if (ownStyle && ownStyle.isConnected && ownStyle.textContent === ownStyleText) return;
+    if (ownStyle && ownStyle.isConnected) removeOwn(ownStyle);
     ownStyle = null;
     scopeOwnStyle();
   }

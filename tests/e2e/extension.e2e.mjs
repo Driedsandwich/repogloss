@@ -17,7 +17,7 @@ import { launchChrome, startTestServer, stageExtension, stageExtensionWith,
          LATENT_GUARD_PAGE, DEFERRED_PAGE, SKIPNAME_PAGE, CLIPZERO_PAGE,
          PAINT_PAGE, LIFECYCLE13_PAGE, SIGNATURE13_PAGE, TRANSIENT_PAGE,
          ROOTATTR_PAGE, latentPage,
-         WORDRECT_PAGE,
+         WORDRECT_PAGE, NAMESPACE14_PAGE,
          openPage, sleep, waitFor,
          pressKey, collectTabOrder, tabUntil } from './helpers/chrome.mjs';
 
@@ -2810,3 +2810,47 @@ test('一致した語そのものの位置で、描かれているかを決め�
   await tab.close();
 });
 
+test('ページ所有の同名要素を、見た目も中身も変えない（第14回）', async t => {
+  const srv = await startTestServer(NAMESPACE14_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await chrome.cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(chrome.cdp, PAGE);
+  await waitFor('拡張が印を付ける', async () => await tab.evaluate(
+    `document.querySelectorAll('#src .iiyaku-icon').length`) === 1);
+
+  await t.test('RG-14-07 ページ側が指定した見た目を打ち消さない', async () => {
+    assert.deepEqual(await tab.evaluate(`(() => { const c = getComputedStyle(document.getElementById('page-box'));
+      return [c.display, c.color, c.width, c.height]; })()`),
+      ['grid', 'rgb(255, 0, 0)', '140px', '30px'], 'ページ自身の指定を打ち消している');
+  });
+
+  await t.test('RG-14-04 ページ所有の空 SUP から、class も role も剥がさない', async () => {
+    assert.deepEqual(await tab.evaluate(`(() => { const e = document.getElementById('page-sup');
+      return e ? [e.className, e.getAttribute('role'), e.getAttribute('tabindex')] : null; })()`),
+      ['iiyaku-icon', 'button', '0'], 'ページの持ち物を書き換えている');
+  });
+
+  await t.test('RG-14-04 空の Text を足した複製も、Tab の停止点にしない', async () => {
+    await tab.evaluate(`(() => {
+      const c = document.querySelector('#src .iiyaku-icon').cloneNode(true);
+      c.id = 'dup'; c.removeAttribute('data-iiyaku-owner');
+      c.appendChild(document.createTextNode(''));
+      document.getElementById('sink').appendChild(c); })(); true`);
+    await waitFor('複製が無力になる', async () => await tab.evaluate(
+      `(() => { const d = document.getElementById('dup');
+        return !d || (d.tabIndex < 0 && d.getAttribute('role') !== 'button'); })()`));
+  });
+
+  await t.test('RG-14-05 印へ aria-hidden と中身を入れられたら、作り直す', async () => {
+    await tab.evaluate(`(() => { const ic = document.querySelector('.iiyaku-icon[data-iiyaku-key="commit"]');
+      ic.setAttribute('aria-hidden', 'true'); ic.appendChild(document.createTextNode('PAGE')); })(); true`);
+    await waitFor('正しい印へ戻る', async () => await tab.evaluate(
+      `(() => { const ic = document.querySelector('.iiyaku-icon[data-iiyaku-key="commit"]');
+        return !!ic && !ic.hasAttribute('aria-hidden') && ic.textContent === ''; })()`));
+    assert.equal(await tab.evaluate(
+      `document.querySelectorAll('.iiyaku-icon[data-iiyaku-key="commit"]').length`), 1, '印が増減している');
+  });
+
+  await tab.close();
+});

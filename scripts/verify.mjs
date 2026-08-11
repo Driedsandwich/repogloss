@@ -934,26 +934,33 @@ check('content.js が保存キー iiyakuEnabled を変えていない', content.
   check('見た目の絞り込みが外されたら足し直す',
     /function ensureOwnStyle/.test(code) && /ensureOwnStyle\(\);/.test(code));
 
-  // `styles.css` が与える性質と、絞り込みで戻す性質の一覧がそろっていること。
-  // 片方だけ増えると、ページ側の同名要素へ自分の見た目が残る。
+  // ページ側の指定を打ち消さないこと。styles.css をカスケードレイヤーへ入れ、
+  // 走り出しの規則は「画面を乗っ取る3つ」だけへ絞る（第14回 RG-14-07）。
   {
-    const css = read('styles.css').replace(/\/\*[\s\S]*?\*\//g, '');
+    const css = read('styles.css');
+    check('styles.css がカスケードレイヤーに入っている',
+      /^@layer repogloss \{/m.test(css.replace(/\/\*[\s\S]*?\*\//g, '').trim()),
+      'ページ側が同じ性質を指定していても、自分の見た目が勝ってしまう');
+    check('レイヤーの順序を、styles.css で先に宣言している',
+      /@layer repogloss, repogloss-scope;/.test(css),
+      '絞り込みの規則がページ側の指定より強くなってしまう');
+    check('絞り込みの規則が、後ろのレイヤーに入っている',
+      /@layer repogloss-scope\{/.test(content),
+      'レイヤー無しで書くと、ページ自身の author style まで打ち消す');
+    // 戻す性質の一覧は、styles.css が与えるものを網羅していること
     const want = new Set();
-    for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-      const sel = m[1];
-      if (!/\.iiyaku-(icon|tooltip|toggle)\[data-iiyaku-owner\]/.test(sel)) continue;
+    for (const m of css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      if (!/\.iiyaku-(icon|tooltip|toggle)\[data-iiyaku-owner\]/.test(m[1])) continue;
       for (const d of m[2].split(';')) if (d.includes(':')) want.add(d.split(':')[0].trim());
     }
     const listed = new Set((/const OWN_STYLE_PROPS = \[([\s\S]*?)\];/.exec(content) || [, ''])[1]
       .split(',').map(x => x.replace(/['\s\n]/g, '')).filter(Boolean));
     const missing = [...want].filter(x => !listed.has(x));
-    const extra = [...listed].filter(x => !want.has(x));
-    check('絞り込みで戻す性質の一覧が、styles.css と一致している',
-      want.size > 0 && missing.length === 0 && extra.length === 0,
-      `styles.css にあって一覧に無い: ${missing.join(',') || 'なし'} / 一覧にあって styles.css に無い: ${extra.join(',') || 'なし'}`);
-    // 陽性対照: 抜き出しが実際に動いていること（0件なら比較そのものが無意味）
-    check('styles.css からの抜き出しが動いている（陽性対照）', want.size >= 10,
-      `抜き出せた性質は ${want.size} 個`);
+    check('戻す性質の一覧が、styles.css と一致している',
+      want.size >= 10 && missing.length === 0 && [...listed].every(x => want.has(x)),
+      `styles.css にあって一覧に無い: ${missing.join(',') || 'なし'}（抜き出せた数 ${want.size}）`);
+    check('走り出しの規則の中身も見て、書き換えられたら足し直す',
+      /ownStyle\.textContent === ownStyleText/.test(content));
   }
 
   // 配布する DESIGN.md が、現行の実装と食い違っていないこと（RG-13-07）

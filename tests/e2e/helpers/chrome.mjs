@@ -907,3 +907,12 @@ export const WORDRECT_PAGE = `<!doctype html><html lang="en"><head><meta charset
 </body></html>`;
 
 /* 名前の衝突と、生成した印の不変条件（RG-14-04/05/07） */
+export const NAMESPACE14_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>ns14</title><style>.pgbox{display:grid;color:rgb(255,0,0);width:140px;height:30px}</style>
+</head><body>
+  <a href="#" id="before">before</a>
+  <p id="src">A branch here.</p><div id="sink"></div>
+  <p id="tam">A commit here.</p>
+  <sup id="page-sup" class="iiyaku-icon" role="button" tabindex="0" data-iiyaku-owner="page"></sup>
+  <div id="page-box" class="pgbox iiyaku-tooltip" data-iiyaku-owner="page">PAGE OWNED</div>
+</body></html>`;

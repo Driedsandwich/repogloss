@@ -163,7 +163,7 @@
   const CONTENTS_HOST_OPTS = { opacityProperty: true, checkOpacity: true };
   const HAS_CHECK_VISIBILITY = typeof Element.prototype.checkVisibility === 'function';
 
-  let visibleCache = null;   // 走査1回のあいだだけ有効
+  // 可視性は語の範囲ごとに変わるので、要素を鍵にした覚え書きは持たない
 
   // 語が「実際に画面へ描かれている場所」に出ているか。
   //
@@ -295,8 +295,40 @@
     return lenToPx(v, base);
   }
 
+  // 軸に沿った矩形と楕円が交わるか。矩形のうち中心にいちばん近い点が楕円の内側なら交わる。
+  // 外接矩形で代用してはいけない——実測: `circle(50px at 60px 60px)` の角に置いた語は
+  // 0画素しか描かれていないのに、外接矩形の中なので可視と答えていた。
+  function rectHitsEllipse(r, cx, cy, rx, ry) {
+    if (!(rx > 0 && ry > 0)) return false;
+    const nx = Math.max(r.left, Math.min(cx, r.right));
+    const ny = Math.max(r.top, Math.min(cy, r.bottom));
+    const dx = (nx - cx) / rx, dy = (ny - cy) / ry;
+    return dx * dx + dy * dy <= 1;
+  }
+
+  // 角丸の矩形と交わるか。角の四分円の外側だけを落とす。
+  function rectHitsRounded(r, box, radius) {
+    if (r.right <= box.x1 || r.left >= box.x2 || r.bottom <= box.y1 || r.top >= box.y2) return false;
+    if (!(radius > 0)) return true;
+    const rr = Math.min(radius, (box.x2 - box.x1) / 2, (box.y2 - box.y1) / 2);
+    // 角の四分円の中心
+    for (const [cx, cy, qx1, qy1, qx2, qy2] of [
+      [box.x1 + rr, box.y1 + rr, box.x1, box.y1, box.x1 + rr, box.y1 + rr],
+      [box.x2 - rr, box.y1 + rr, box.x2 - rr, box.y1, box.x2, box.y1 + rr],
+      [box.x1 + rr, box.y2 - rr, box.x1, box.y2 - rr, box.x1 + rr, box.y2],
+      [box.x2 - rr, box.y2 - rr, box.x2 - rr, box.y2 - rr, box.x2, box.y2]
+    ]) {
+      // その角の正方形の**中だけ**に収まっている矩形は、四分円との交差で決める
+      if (r.left >= qx1 && r.right <= qx2 && r.top >= qy1 && r.bottom <= qy2) {
+        return rectHitsEllipse(r, cx, cy, rr, rr);
+      }
+    }
+    return true;
+  }
+
   // 形を、それを囲む矩形にする。囲む矩形は本物の形より**広い**ので、
   // 「交わらない」と言えるときだけ落とす、という向きを崩さない。
+  // 形そのものとの交差は shapeHitTest が別に見る（外接矩形だけでは落としきれない）。
   function shapeBoundsRect(shape, ref) {
     if (shape === '') return ref;                       // 参照ボックスだけの指定
     if (UNRESOLVED.test(shape)) return null;
@@ -369,12 +401,23 @@
     return false;
   }
 
-  // その要素が課す切り取り。効かないなら null。
-  function ownClipRect(el, cs) {
+  // その要素が課す切り取りを、**逃げられるものと逃げられないものに分けて**返す。
+  //   overflow … 絶対・固定配置は、包含ブロックでない祖先のこれを逃れる（CSS 2.2）
+  //   shape    … `clip` と `clip-path`。要素と**子孫の描画そのもの**を制限するので逃げられない
+  //   tests    … 形そのものとの交差判定（外接矩形だけでは、円や角丸の外を落とせない）
+  // 一緒くたにしていたため、包含ブロックでない祖先の clip-path が丸ごと無視されていた
+  // （実測: 0画素の語に印が付き、後ろの読める同じ語が説明されなかった）。
+  function ownClips(el, cs) {
     if (cs.display === 'contents') return null;      // 箱を作らないので切り取りも効かない
     const border = el.getBoundingClientRect();
-    const transformed = cs.transform !== 'none';
-    let r = null;
+    // 変形があっても、**平行移動だけ**なら辺の削り込みはそのまま使える。
+    // 回転や拡大縮小のときだけ、軸に沿った外接矩形になるので削らない（落としすぎ防止）。
+    const m = /^matrix\(([^)]*)\)$/.exec(cs.transform || '');
+    const n = m ? m[1].split(',').map(Number) : null;
+    const skewed = cs.transform !== 'none' &&
+      !(n && n.length === 6 && n[0] === 1 && n[1] === 0 && n[2] === 0 && n[3] === 1);
+    let overflow = null, shape = null;
+    const tests = [];
     // ① overflow。切り取り線は padding box（overflow clip edge）。
     //    `auto` と `scroll` は**入れない**——中身はスクロールで読めるので、
     //    画面外というだけで永久に除外すると、長い一覧の下のほうが説明されなくなる。
@@ -382,33 +425,74 @@
     const cx = clips(cs.overflowX), cy = clips(cs.overflowY);
     if (cx || cy) {
       let x1 = border.left, y1 = border.top, x2 = border.right, y2 = border.bottom;
-      if (!transformed) {
+      if (!skewed) {
         x1 += px(cs.borderLeftWidth); y1 += px(cs.borderTopWidth);
         x2 -= px(cs.borderRightWidth); y2 -= px(cs.borderBottomWidth);
       }
-      const m = px(cs.overflowClipMargin);   // overflow:clip は外側へ余白を足せる
-      if (m > 0) { x1 -= m; y1 -= m; x2 += m; y2 += m; }
+      const mg = px(cs.overflowClipMargin);   // overflow:clip は外側へ余白を足せる
+      if (mg > 0) { x1 -= mg; y1 -= mg; x2 += mg; y2 += mg; }
       if (!cx) { x1 = -Infinity; x2 = Infinity; }
       if (!cy) { y1 = -Infinity; y2 = Infinity; }
-      r = intersectRect(r, { x1, y1, x2, y2 });
+      overflow = { x1, y1, x2, y2 };
     }
     // ② legacy clip。**絶対配置の要素にしか効かない**（position を見ずに判定すると、
     //    読める文章のほうを除外する。実測で再現済み）。
     if (CLIP_POSITIONS.includes(cs.position) && cs.clip && cs.clip !== 'auto') {
       const lc = legacyClipRect(cs.clip, border);
-      if (lc) r = intersectRect(r, lc);
+      if (lc) shape = intersectRect(shape, lc);
     }
-    // ③ clip-path
+    // ③ clip-path。外接矩形に加えて、形そのものとの交差も控える。
     if (cs.clipPath && cs.clipPath !== 'none') {
-      const { shape, box } = splitGeometryBox(cs.clipPath.trim());
-      const sr = shapeBoundsRect(shape, refBoxRect(cs, border, transformed, box));
-      if (sr) r = intersectRect(r, sr);
+      const { shape: sh, box } = splitGeometryBox(cs.clipPath.trim());
+      const ref = refBoxRect(cs, border, skewed, box);
+      const sr = shapeBoundsRect(sh, ref);
+      if (sr) shape = intersectRect(shape, sr);
+      const t = shapeHitTest(sh, ref);
+      if (t) tests.push(t);
     }
-    return r;
+    return { overflow, shape, tests };
   }
 
-  // 絶対・固定配置の箱は、包含ブロックでない祖先の切り取りからは**逃げる**。
-  // ここを見ないと、読める文章を切り取られたものとして落としてしまう。
+  // 形そのものとの交差判定。矩形で足りる形は null を返す（外接矩形だけで決まる）。
+  function shapeHitTest(shape, ref) {
+    let m = /^circle\((.*)\)$/.exec(shape);
+    if (m) {
+      const { radii, pos } = splitShapeArgs(m[1]);
+      const c = centerOf(pos, ref);
+      if (!c) return null;
+      const r = radiusOf(radii, c, ref, null);
+      if (r === null) return null;
+      return rect => rectHitsEllipse(rect, c.cx, c.cy, r, r);
+    }
+    m = /^ellipse\((.*)\)$/.exec(shape);
+    if (m) {
+      const { radii, pos } = splitShapeArgs(m[1]);
+      const c = centerOf(pos, ref);
+      if (!c) return null;
+      const rr = radii === '' ? ['', ''] : radii.split(/\s+/).filter(Boolean);
+      if (rr.length !== 2) return null;
+      const rx = radiusOf(rr[0], c, ref, 'x'), ry = radiusOf(rr[1], c, ref, 'y');
+      if (rx === null || ry === null) return null;
+      return rect => rectHitsEllipse(rect, c.cx, c.cy, rx, ry);
+    }
+    // inset(... round R)。角丸を捨てると、角に置かれた語を可視と答える（実測）。
+    m = /^inset\((.*)\)$/.exec(shape);
+    if (m) {
+      const parts = m[1].split(/\s+round\s+/);
+      if (parts.length !== 2) return null;
+      const box = insetRect(parts[0], ref);
+      if (!box) return null;
+      const w = box.x2 - box.x1, h = box.y2 - box.y1;
+      const first = parts[1].trim().split(/[\s/]+/)[0];
+      const rad = lenToPx(first, Math.min(w, h));
+      if (rad === null) return null;
+      return rect => rectHitsRounded(rect, box, rad);
+    }
+    return null;
+  }
+
+  // 絶対・固定配置の箱は、包含ブロックでない祖先の **overflow** からは逃げる。
+  // `clip` と `clip-path` は逃げられない（要素と子孫の描画そのものを制限するため）。
   function establishesContainingBlock(cs, forFixed) {
     if (!forFixed && cs.position !== 'static') return true;
     if (cs.transform !== 'none' || cs.perspective !== 'none') return true;
@@ -426,29 +510,33 @@
 
   // 祖先までさかのぼって、その場所の文字に効く事情を1回で集める。
   //   clip        … 積み上げた切り取り（null は制限なし）
+  //   tests       … 形そのものとの交差判定の並び
   //   hidden      … 描画効果だけで完全に消えている
   //   transformed … 途中に変形があり、箱の寸法から見た目を推し量れない
   // 逃げ方（mode）によって答えが変わるので、覚えるときも mode ごとに分ける。
   let chainCache = null;
 
   function paintChain(el, mode) {
-    // <body> と <html> の overflow は viewport へ伝わる（要素自身は切り取らない）。
-    // ここを切り取りに数えると、画面の下にあるだけの本文が全部「見えない」になる。
-    if (!el || el === document.body || el === document.documentElement) {
-      return { clip: null, hidden: false, transformed: false };
-    }
+    if (!el) return { clip: null, tests: [], hidden: false, transformed: false };
     const cache = chainCache && chainCache[mode];
     if (cache) { const hit = cache.get(el); if (hit !== undefined) return hit; }
     const cs = getComputedStyle(el);
     const applies = mode === 'none' || establishesContainingBlock(cs, mode === 'fixed');
     const up = paintChain(el.parentElement, applies ? positionEscape(cs) : mode);
     let clip = up.clip;
-    if (applies) {
-      const own = ownClipRect(el, cs);
-      if (own) clip = intersectRect(clip, own);
+    let tests = up.tests;
+    const own = ownClips(el, cs);
+    if (own) {
+      // <body> と <html> の overflow は viewport へ伝わる（要素自身は切り取らない）。
+      // ここを切り取りに数えると、画面の下にあるだけの本文が全部「見えない」になる。
+      // ただし **root の clip-path・clip・描画効果は効く**ので、そちらは無視しない。
+      const isRoot = el === document.body || el === document.documentElement;
+      if (applies && own.overflow && !isRoot) clip = intersectRect(clip, own.overflow);
+      if (own.shape) clip = intersectRect(clip, own.shape);         // 形は逃げられない
+      if (own.tests.length) tests = tests.concat(own.tests);
     }
     // 描画効果は包含ブロックを作るので、逃げられない。配置に関わらず見る。
-    const v = { clip, hidden: up.hidden || paintHidesAll(cs),
+    const v = { clip, tests, hidden: up.hidden || paintHidesAll(cs),
                 transformed: up.transformed || cs.transform !== 'none' };
     if (cache) cache.set(el, v);
     return v;
@@ -457,24 +545,30 @@
   // 文字そのものの矩形。**面積のあるものだけ**を返す。
   // `transform: scale(0)` は箱の寸法（offsetWidth）を変えないので、面積を見ないと
   // 落とせない（実測: 0画素しか描かれていないのに印が付いた）。
-  function textRects(el) {
+  function rangeRects(node, start, end) {
     const r = document.createRange();
-    r.selectNodeContents(el);
+    if (start === null) r.selectNodeContents(node);
+    else { r.setStart(node, start); r.setEnd(node, end); }
     const out = [];
     for (const x of r.getClientRects()) if (x.width > 0 && x.height > 0) out.push(x);
     return out;
   }
 
-  // その要素の文字が、切り取りを越えて実際に描かれているか。
-  function isPaintedText(el) {
+  // **その語**が、切り取りを越えて実際に描かれているか。
+  //
+  // 親要素まるごとで測ってはいけない。同じ親の中に見えている文字が1つでもあれば、
+  // 対象の語が完全に切り取りの外でも可視と答えてしまう（実測: 幅120pxの
+  // `overflow:hidden` の段落で、先頭だけが見えていると、はみ出した先の語に印が付き、
+  // 後ろの読める同じ語が説明されなかった。その語の矩形の画素は0）。
+  //   node … 語を含むテキスト節点／start,end … 語の文字範囲（null なら要素の中身全部）
+  function isPaintedRange(el, node, start, end) {
     const chain = paintChain(el, 'none');
     if (chain.hidden) return false;
     if (rectIsEmpty(chain.clip)) return false;
-    // 切り取りも変形も無いなら、箱の大きさで足りる（Range を作らない）。
-    // ここを毎回 Range にすると、用語の多いページで初期走査が目に見えて遅くなる。
-    if (!chain.clip && !chain.transformed && el.offsetWidth > 0 && el.offsetHeight > 0) return true;
-    const rects = textRects(el);
+    const rects = rangeRects(node, start, end);
     if (rects.length === 0) return false;
+    // 形そのものとの交差（円・楕円・角丸）。外接矩形だけでは角の外を落とせない
+    for (const t of chain.tests) if (!rects.some(r => t(r))) return false;
     if (!chain.clip) return true;
     const c = chain.clip;
     // 1px 以下の帯しか残らない交わりは、読める文字にならない
@@ -501,22 +595,19 @@
   //   display:none / opacity / 先祖の content-visibility … 継承しない。先祖に聞く
   //   実際に描かれているか … 子の Range と、積み上げた切り取りで見る
   // content-visibility:auto は落とさない（画面外というだけで永久に除外しないため）。
-  function isVisibleContentsText(el, cs) {
+  function isVisibleContentsText(el, cs, node, start, end) {
     if (cs.visibility !== 'visible') return false;
     const host = boxedAncestor(el);
     if (host) {
       if (!host.checkVisibility(CONTENTS_HOST_OPTS)) return false;
       if (getComputedStyle(host).contentVisibility === 'hidden') return false;
     }
-    return isPaintedText(el);
+    return isPaintedRange(el, node, start, end);
   }
 
-  function isVisibleOccurrence(el) {
+  // その語が読める場所に描かれているか。**語の範囲**で測る。
+  function isVisibleOccurrence(el, node, start, end) {
     if (!el || !el.isConnected) return false;
-    if (visibleCache) {
-      const hit = visibleCache.get(el);
-      if (hit !== undefined) return hit;
-    }
     // レイアウトを起こすので高い。1要素につき1回だけ取って使い回す。
     const cs = getComputedStyle(el);
     let ok;
@@ -524,23 +615,22 @@
       // 箱を作らない要素。Chrome は checkVisibility に false を返すが（実測）、
       // それは「隠れている」ではなく「箱が無い」という意味なので、転用できない。
       ok = HAS_CHECK_VISIBILITY
-        ? isVisibleContentsText(el, cs)
-        : (cs.visibility === 'visible' && isPaintedText(el));
+        ? isVisibleContentsText(el, cs, node, start, end)
+        : (cs.visibility === 'visible' && isPaintedRange(el, node, start, end));
     } else if (HAS_CHECK_VISIBILITY) {
       ok = el.checkVisibility(CHECK_VISIBILITY_OPTS);
       // その要素自身が content-visibility:hidden のとき、**中身**は隠れているのに
       // 要素自体は描画されているので checkVisibility は true を返す（実測）。
       if (ok && cs.contentVisibility === 'hidden') ok = false;
-      if (ok && !isPaintedText(el)) ok = false;
+      if (ok && !isPaintedRange(el, node, start, end)) ok = false;
     } else {
       // checkVisibility が無い環境。manifest の minimum_chrome_version より古い
       // Chrome か、拡張を手で読み込んだ場合にしか起きない。祖先の opacity や
       // content-visibility は見抜けないので、ここは「落ちないための保険」にすぎない。
       ok = !(cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0');
       if (ok && cs.contentVisibility === 'hidden') ok = false;
-      if (ok && !isPaintedText(el)) ok = false;
+      if (ok && !isPaintedRange(el, node, start, end)) ok = false;
     }
-    if (visibleCache) visibleCache.set(el, ok);
     return ok;
   }
 
@@ -585,10 +675,18 @@
     // 2,500段落の祖先を隠す／戻すを繰り返す試験では、ここが費用の大半だった。
     // 可視でないだけの節点は**印を付けない**が処理済みにもしない（あとで見えたら注記する）。
     if (!matcher.test(v)) { markHandled(node); return false; }
-    if (isVisibleOccurrence(el)) return true;
+    // 可視性は**一致した語の範囲**で見る。親要素まるごとで測ると、同じ親に
+    // 見えている文字が1つでもあるだけで、切り取りの外の語まで可視と答える。
+    if (visibleHits(node, el).length > 0) return true;
     // 見えないだけの節点は処理済みにしない。あとで見えたときに拾えるよう控える。
     rememberLatent(node);
     return false;
+  }
+
+  // その節点のうち、**実際に描かれている**一致だけを返す。
+  function visibleHits(node, el) {
+    const hits = matcher.findHits(node.nodeValue, key => usableGloss(key) !== null);
+    return hits.filter(h => isVisibleOccurrence(el, node, h.end - h.match.length, h.end));
   }
 
   /* ---------- 3. 入口（trigger）の解決 ---------- */
@@ -841,6 +939,17 @@
   const OWN_SEMANTIC_ATTRS = ['role', 'tabindex', 'aria-label', 'aria-expanded', 'aria-hidden'];
   const OWN_CLASSES = ['iiyaku-icon', 'iiyaku-tooltip', 'iiyaku-toggle'];
 
+  // ページが失って困る中身があるか。Comment や空の Text は中身ではない——
+  // それを「中身がある」と数えていたため、複製に空の Text を1つ足すだけで
+  // 後始末をすり抜け、見えない Tab の停止点が残った（実測）。
+  function hasPageContent(el) {
+    for (const n of el.childNodes) {
+      if (n.nodeType === Node.ELEMENT_NODE) return true;
+      if (n.nodeType === Node.TEXT_NODE && n.nodeValue.trim() !== '') return true;
+    }
+    return false;
+  }
+
   function stripOperability(el) {
     for (const a of OWN_SEMANTIC_ATTRS) el.removeAttribute(a);
   }
@@ -875,7 +984,7 @@
       // 見るのは「**いま**自分の正規の印か」。「作ったことがある」で除くと、
       // 退役した印をページが DOM へ戻したときに素通りし、同じ語の印が2つ並ぶ（実測）。
       if (ownedIcons.has(el) || isOurChrome(el)) continue;
-      if (el.childNodes.length === 0) removeOwn(el);
+      if (!hasPageContent(el)) removeOwn(el);
       else stripOwnIdentity(el);
     }
     // ② 合言葉を消された／書き換えられた複製。断定はできないので、条件を重ねる:
@@ -886,12 +995,16 @@
       if (ownedIcons.has(el)) continue;
       if (el.getAttribute('data-iiyaku-owner') === UID) continue;   // ① で扱った
       if (el.tagName !== 'SUP') continue;
-      if (el.childNodes.length !== 0) continue;                     // ページの中身がある
+      if (hasPageContent(el)) continue;                             // ページの中身がある
       if (!el.hasAttribute('tabindex') && el.getAttribute('role') !== 'button') continue;
-      // 自分の名札がまだ1つでも残っているなら、自分の作ったものの複製と見てよい。
-      // 1つも無ければ、名前が同じだけかもしれないので**操作性だけ**を外す。
-      if (OWN_DATA_ATTRS.some(a => el.hasAttribute(a))) stripOwnIdentity(el);
-      else stripOperability(el);
+      // **自分の名札が2つ以上そろっているものだけ**を扱う。1つだけなら、名前が
+      // 同じだけのページの持ち物と区別できない（実測: ページが置いた
+      // `<sup class="iiyaku-icon" role="button" tabindex="0" data-iiyaku-owner="page">`
+      // から class も role も tabindex も剥がしていた）。自分が作る印は必ず
+      // key・説明・用語・合言葉の4つを持つので、1つ消されても2つ以上は残る。
+      // 名札を全部消された複製は、見えない停止点として残る——これは既知の限界。
+      if (OWN_DATA_ATTRS.filter(a => el.hasAttribute(a)).length < 2) continue;
+      stripOwnIdentity(el);
     }
     // 入口の目印も複製される。引き当てには使っていないので実害は無いが、
     // ページに自分の合言葉だけが残るのは紛らわしいので外す。
@@ -1215,6 +1328,9 @@
     if (rec.icon.dataset.iiyakuKey !== rec.key) return false;
     if (rec.icon.dataset.iiyaku !== DICT[rec.key]) return false;
     if (rec.icon.dataset.iiyakuTerm !== rec.term) return false;
+    // 自分が作る印は**必ず空**。ページが中へ書き込んだものを、自分の UI として
+    // 抱えたままにしない（実測: 印の中へ入れた文字がそのまま残った）。
+    if (rec.icon.firstChild) return false;
     if (rec.placementKind === 'hosted') {
       // 装飾扱い。読み上げに出さず、Tab の順路にも入れない
       if (rec.icon.getAttribute('aria-hidden') !== 'true') return false;
@@ -1223,6 +1339,9 @@
       if (rec.icon.getAttribute('role') !== 'button') return false;
       if (rec.icon.getAttribute('tabindex') !== '0') return false;
       if (rec.icon.getAttribute('aria-label') !== `「${rec.term}」の解説`) return false;
+      // 読み上げから隠されたまま Tab で止まる印を残さない（実測: ページが
+      // `aria-hidden="true"` を足しても、tabindex=0 のまま正規の記録として残った）。
+      if (rec.icon.hasAttribute('aria-hidden')) return false;
       // 開閉の状態は出し入れで変わるので、値そのものではなく**取りうる値か**を見る
       const ex = rec.icon.getAttribute('aria-expanded');
       if (ex !== 'true' && ex !== 'false') return false;
@@ -1285,7 +1404,10 @@
   }
 
   function computeUsable(rec) {
-    if (!isVisibleOccurrence(rec.icon.parentElement)) return false;
+    // 記録した語の範囲で見る。印の親要素まるごとで測ると、同じ親の別の文字が
+    // 見えているだけで「まだ読める」と答えてしまう。
+    const start = rec.splitOffset - rec.term.length;
+    if (!isVisibleOccurrence(rec.termNode.parentElement, rec.termNode, start, rec.splitOffset)) return false;
     const now = resolvePlacement(rec.parent);
     if (now.kind !== rec.placementKind) return false;
     if (rec.placementKind === 'hosted') {
@@ -1333,7 +1455,7 @@
       // 外すのは自分が入れた <sup> だけ。ただしページがその節点を作り替えて
       // 中身を入れているなら、消すとページの本文まで消える（実測: 使い回された
       // 節点が、その中の文章ごと画面から無くなった）。そのときは手を引くだけにする。
-      if (rec.icon.childNodes.length === 0) removeOwn(rec.icon);
+      if (!hasPageContent(rec.icon)) removeOwn(rec.icon);
       else stripOwnIdentity(rec.icon);
     }
     // 印が既にページ側から外されていても、ここへ来る。記録があるので、
@@ -1389,8 +1511,13 @@
     // 同じ語はページで最初の1回だけ。説明は一度読めば足りるうえ、
     // git の解説ページのような文書では印が数百個になり本文が読めなくなる。
     // ただし前に付けた印が「もう説明として使えない」なら、付け直す。
-    const hits = matcher.findHits(node.nodeValue, key => usableGloss(key) !== null);
-    if (hits.length === 0) { markHandled(node); return 0; }
+    // 見えている一致だけを注記する。見えない一致に印を付けると、その語の
+    // 「ページで最初の1回」を使い切って、後ろの読める同じ語が説明されなくなる。
+    const all = matcher.findHits(node.nodeValue, key => usableGloss(key) !== null);
+    if (all.length === 0) { markHandled(node); return 0; }
+    const hits = all.filter(h =>
+      isVisibleOccurrence(parent, node, h.end - h.match.length, h.end));
+    if (hits.length === 0) { rememberLatent(node); return 0; }
     // 付け直すと決まったキーについて、使えなくなった古い印を取り除く。
     // 残しておくと、同じ語の印が画面に2つあることになる。
     for (const h of hits) retireGloss(h.key);
@@ -1452,7 +1579,7 @@
   // 古い測定値で判定してしまう。
   function withRenderCache(fn) {
     const owner = renderCache === null;
-    if (owner) { renderCache = new WeakMap(); visibleCache = new WeakMap();
+    if (owner) { renderCache = new WeakMap();
                  // 積み上げた切り取りは「どう逃げているか」で答えが変わるので、
                  // 覚えるときも逃げ方ごとに分ける（混ぜると別の答えを使い回す）。
                  chainCache = { none: new WeakMap(), absolute: new WeakMap(), fixed: new WeakMap() };
@@ -1460,7 +1587,7 @@
     try {
       return fn();
     } finally {
-      if (owner) { renderCache = null; visibleCache = null; chainCache = null;
+      if (owner) { renderCache = null; chainCache = null;
                    usableCache = null; skipCache = null; }
     }
   }
@@ -1743,10 +1870,16 @@
   //
   // 見直す先が無いなら何もしない。カーソルは大量に動くので、1フレームに1回へまとめる
   // （まとめないと、動かした回数だけまとめ直しが走る）。
+  // 控えが多いページでは、カーソルを動かすたびに控え全体の見直しが始まっていた
+  // （実測: 5,000候補・40回の移動で 128 回・約887ms）。時間でも間引く。
+  const HOVER_GAP = 150;
   let hoverPending = false;
+  let hoverAt = 0;
   const onPointerOrFocus = () => {
     if (latent.size === 0 || hoverPending) return;
-    hoverPending = true;
+    const now = performance.now();
+    if (now - hoverAt < HOVER_GAP) return;
+    hoverAt = now;
     const fire = () => { hoverPending = false; if (observing) schedule({ deep: true }); };
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(fire);
     else setTimeout(fire, 16);
@@ -1792,6 +1925,10 @@
     // 「次に1回だけ起きるはず」として控えてある。見張っていなければ、その控えは
     // 消費されないまま残り、**そのあとページが起こした最初の文字変更を自分のものと
     // して捨てる**（実測: 語を消しても、次に暇なときの確認が来るまで印が動かなかった）。
+    // 見張り始める**前**に書いた予定は、消費される機会が無いまま残る。持ち越すと、
+    // あとでページが同じ変更を起こしたときに自分のものとして捨てる（実測: `<html>` の
+    // class を消して足し直すと、その変更が捨てられ、暇なときの確認まで約2秒遅れた）。
+    clearExpectations();
     observer.observe(document.body, OBSERVE_OPTS);
     // `<html>` の属性も見張る（body だけでは1件も届かない）
     observer.observe(document.documentElement, ROOT_OPTS);
@@ -1885,10 +2022,21 @@
   // 静的なファイルへ書けないためである。そこで、値が自分のものでない要素からは
   // 自分の装飾を引き上げる規則を、走り出しに1つだけ足す。
   // 消すのではなく「与えない」だけなので、ページ側の要素を壊さない。
-  // `styles.css` がこの3つの class へ与えている性質。**ここに漏れがあると、
-  // ページ側の同名要素へ自分の見た目が残る**（実測: ページが置いた
-  // `class="iiyaku-tooltip" data-iiyaku-owner="page"` の要素が、画面に固定され
-  // z-index も最大値になっていた）。styles.css との突き合わせは verify.mjs が行う。
+  // ページ側の同名要素から**自分の見た目だけ**を引き上げる規則。
+  //
+  // 以前は `styles.css` が与える性質すべてを `revert` していたが、それは
+  // **ページ自身の author style まで打ち消して**いた（実測: ページの
+  // `display:grid`・赤・140×30px が block・黒・740×24px になった）。
+  // いまは2段構えにする:
+  //   ① `styles.css` をカスケードレイヤーへ入れた。ページが同じ性質を指定していれば
+  //      必ずページが勝つので、打ち消す必要がない
+  //   ② ページが指定していない性質だけが残る。そのうち**画面を乗っ取るもの**
+  //      （固定配置・重なり順・当たり判定・押せる形）を、ここで初期値へ戻す
+  // 絞り込みの規則は **`repogloss` より後ろのレイヤー**へ入れる。順序は
+  //   repogloss（自分の見た目） < repogloss-scope（この規則） < ページのレイヤー無し規則
+  // なので、自分の見た目は確実に打ち消せて、**ページ自身の指定には必ず負ける**。
+  // 以前はレイヤー無しで書いていたため、ページの指定まで打ち消していた（実測:
+  // ページの `display:grid`・赤・140×30px が block・黒・740×24px になった）。
   const OWN_STYLE_PROPS = [
     'align-items', 'background', 'background-color', 'border', 'border-radius', 'border-top',
     'bottom', 'box-shadow', 'box-sizing', 'color', 'content', 'cursor', 'display',
@@ -1900,23 +2048,24 @@
   ];
 
   let ownStyle = null;
+  let ownStyleText = '';
+
+  function ownStyleRules() {
+    const mine = `[data-iiyaku-owner="${CSS.escape(UID)}"]`;
+    const sels = OWN_CLASSES.map(c => `.${c}[data-iiyaku-owner]:not(${mine})`);
+    const inner = ['iiyaku-tooltip-item', 'iiyaku-tooltip-term']
+      .map(c => `.iiyaku-tooltip[data-iiyaku-owner]:not(${mine}) .${c}`);
+    const revert = OWN_STYLE_PROPS.map(p => `${p}:revert`).join(';');
+    return `@layer repogloss-scope{` +
+           `${sels.concat(inner).join(',')}{${revert}}` +
+           `${sels.map(s => `${s}::after`).join(',')}{content:none}}`;
+  }
 
   function scopeOwnStyle() {
     try {
       const st = document.createElement('style');
-      const mine = `[data-iiyaku-owner="${CSS.escape(UID)}"]`;
-      // 印だけでなく、吹き出しと切替ボタンも今回の合言葉へ絞る。
-      // 合言葉の**有無**しか見ない静的な条件を残すと、ページ側が同じ class と
-      // 適当な合言葉を書いただけで、自分の見た目がその要素へ乗る。
-      const sels = OWN_CLASSES.map(c => `.${c}[data-iiyaku-owner]:not(${mine})`);
-      // 中の部品にも同じ名前を使っているので、そこも一緒に戻す。
-      // ページ側の**他の**子孫には触れない（名前を名乗っているものだけ）。
-      const inner = ['iiyaku-tooltip-item', 'iiyaku-tooltip-term']
-        .map(c => `.iiyaku-tooltip[data-iiyaku-owner]:not(${mine}) .${c}`);
-      const revert = OWN_STYLE_PROPS.map(p => `${p}:revert`).join(';');
-      st.textContent =
-        `${sels.concat(inner).join(',')}{${revert}}` +
-        `${sels.map(s => `${s}::after`).join(',')}{content:none}`;
+      ownStyleText = ownStyleRules();
+      st.textContent = ownStyleText;
       (document.head || document.documentElement).appendChild(st);
       ownStyle = st;
     } catch (e) {
@@ -1927,7 +2076,10 @@
 
   // ページ側が消したら足し直す。消されたままだと、複製や同名要素へ自分の見た目が戻る。
   function ensureOwnStyle() {
-    if (ownStyle && ownStyle.isConnected) return;
+    // 「在ること」だけでなく「書いたとおりであること」も見る。中身を書き換えられると、
+    // 外されたのと同じになる（ページ側の同名要素へ自分の見た目が戻る）。
+    if (ownStyle && ownStyle.isConnected && ownStyle.textContent === ownStyleText) return;
+    if (ownStyle && ownStyle.isConnected) removeOwn(ownStyle);
     ownStyle = null;
     scopeOwnStyle();
   }

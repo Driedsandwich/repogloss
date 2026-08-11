@@ -17,6 +17,7 @@ import { launchChrome, startTestServer, stageExtension, stageExtensionWith,
          LATENT_GUARD_PAGE, DEFERRED_PAGE, SKIPNAME_PAGE, CLIPZERO_PAGE,
          PAINT_PAGE, LIFECYCLE13_PAGE, SIGNATURE13_PAGE, TRANSIENT_PAGE,
          ROOTATTR_PAGE, latentPage,
+         WORDRECT_PAGE, NAMESPACE14_PAGE,
          openPage, sleep, waitFor,
          pressKey, collectTabOrder, tabUntil } from './helpers/chrome.mjs';
 
@@ -672,8 +673,10 @@ test('checkVisibility が無いと、見えない場所へ印が付く（最低�
              opacity: { there: n('op-host'), later: n('op-later') },
              display: { there: n('dn-host'), later: n('dn-later') } };
   })()`);
-  // 祖先の content-visibility と opacity は見抜けず、見えない側へ付いてしまう
-  assert.deepEqual(r.cv, { there: 1, later: 0 },
+  // 祖先の opacity は見抜けず、見えない側へ付いてしまう。
+  // content-visibility のほうは、v1.8.13 で**語の矩形**を測るようにしたことで、
+  // checkVisibility が無くても落とせるようになった（矩形が出ないため）。
+  assert.deepEqual(r.cv, { there: 0, later: 1 },
     `代替手段だけで content-visibility を見抜けている＝最低版の根拠が変わった: ${JSON.stringify(r.cv)}`);
   assert.deepEqual(r.opacity, { there: 1, later: 0 },
     `代替手段だけで opacity を見抜けている＝最低版の根拠が変わった: ${JSON.stringify(r.opacity)}`);
@@ -1680,7 +1683,9 @@ test('ページ側の同名 class・同名属性を壊さず、面積0の切り�
   });
 
   await t.test('RG-9-07 面積が残る切り取りと display:contents は、可視のまま扱う（落としすぎの対照）', async () => {
-    assert.deepEqual([await nIn('#c-part'), await nIn('#c-part-later')], [1, 0],
+    // v1.8.13 で期待値を直した。`clip-path: inset(10%)` の左端は x≈96 で、
+    // `tags` は x≈25〜59 にある。**語の矩形の画素は 0**（後ろの読める `tags` は 183 画素）。
+    assert.deepEqual([await nIn('#c-part'), await nIn('#c-part-later')], [0, 1],
       'inset(10%) を全面非表示と誤判定している');
     assert.deepEqual([await nIn('#c-dc'), await nIn('#c-dc-later')], [1, 0],
       'display:contents 自身の clip-path を効かせてしまっている');
@@ -2448,8 +2453,12 @@ test('潰れた参照ボックスの切り取りを、寸法不明と混ぜな�
   });
 
   await t.test('RG-12-05 対照: 負の inset で外へ広がる形は、誤って落とさない', async () => {
+    // ⚠️ v1.8.13 で一度 [0,1] へ反転させたが、それは **macOS だけの実測**だった。
+    // CI で ubuntu と windows は [1,0] を返し、折り返し次第で答えが割れると分かった。
+    // 見本のほうを折り返さない形（nowrap ＋ 広い負の inset）へ直し、
+    // 「負の inset で外へ広がった先の語は落とさない」という**性質だけ**を見る。
     assert.deepEqual([await nIn('#zero-neg'), await nIn('#neg-later')], [1, 0],
-      '見えている文章を隠れていると判定している');
+      '負の inset で外へ広がった先の語を落としている');
   });
 
   await t.test('RG-12-05 対照: 潰れていない content box の inset(0) は可視', async () => {
@@ -2759,6 +2768,88 @@ test('控えが多くても、1回の見直しを短く保ち、上限の外も�
     await reveal('relief');     // 1件が注記されて控えに空きができる
     await waitFor('逃がし弁が注記される', async () => await nKey('fetch') === 1, { timeout: 30000 });
     await waitFor('こぼれた候補を取り戻す', async () => await nKey('milestone') === 1, { timeout: 60000 });
+  });
+
+  await tab.close();
+});
+
+/* ===================== 第14回監査（v1.8.13）の受入条件 ===================== */
+
+test('一致した語そのものの位置で、描かれているかを決める', async t => {
+  const srv = await startTestServer(WORDRECT_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await chrome.cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(chrome.cdp, PAGE);
+  const nIn = sel => tab.evaluate(`document.querySelectorAll(${JSON.stringify(sel)} + ' .iiyaku-icon').length`);
+  await waitFor('拡張が印を付ける', async () =>
+    await tab.evaluate(`document.querySelectorAll('.iiyaku-icon').length`) > 0);
+  await sleep(600);
+
+  for (const [id, why] of [
+    ['pre', '同じ段落の先頭だけが見えていて、語は切り取りの外'],
+    ['zero', '親が font-size:0 で、見えているのは別の子要素'],
+    ['acp', '絶対配置でも、祖先の clip-path からは逃げられない'],
+    ['cir', '円の外（外接矩形の内）'],
+    ['rnd', '角丸の外']
+  ]) {
+    await t.test(`RG-14-01/02/03 ${why}には注記しない`, async () => {
+      assert.deepEqual([await nIn(`#h-${id}`), await nIn(`#l-${id}`)], [0, 1],
+        `語の矩形では 0 画素なのに印が付いている（${why}）`);
+    });
+  }
+  for (const [id, why] of [
+    ['aov', 'overflow:hidden からは絶対配置が本当に逃げる'],
+    ['cin', '同じ 6px でも円の内側なら読める']
+  ]) {
+    await t.test(`RG-14-01/02/03【対照】${why}語は落とさない`, async () => {
+      assert.deepEqual([await nIn(`#h-${id}`), await nIn(`#l-${id}`)], [1, 0],
+        `読める語を落としている（${why}）`);
+    });
+  }
+  await tab.close();
+});
+
+test('ページ所有の同名要素を、見た目も中身も変えない（第14回）', async t => {
+  const srv = await startTestServer(NAMESPACE14_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await chrome.cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(chrome.cdp, PAGE);
+  await waitFor('拡張が印を付ける', async () => await tab.evaluate(
+    `document.querySelectorAll('#src .iiyaku-icon').length`) === 1);
+
+  await t.test('RG-14-07 ページ側が指定した見た目を打ち消さない', async () => {
+    assert.deepEqual(await tab.evaluate(`(() => { const c = getComputedStyle(document.getElementById('page-box'));
+      return [c.display, c.color, c.width, c.height]; })()`),
+      ['grid', 'rgb(255, 0, 0)', '140px', '30px'], 'ページ自身の指定を打ち消している');
+  });
+
+  await t.test('RG-14-04 ページ所有の空 SUP から、class も role も剥がさない', async () => {
+    assert.deepEqual(await tab.evaluate(`(() => { const e = document.getElementById('page-sup');
+      return e ? [e.className, e.getAttribute('role'), e.getAttribute('tabindex')] : null; })()`),
+      ['iiyaku-icon', 'button', '0'], 'ページの持ち物を書き換えている');
+  });
+
+  await t.test('RG-14-04 空の Text を足した複製も、Tab の停止点にしない', async () => {
+    await tab.evaluate(`(() => {
+      const c = document.querySelector('#src .iiyaku-icon').cloneNode(true);
+      c.id = 'dup'; c.removeAttribute('data-iiyaku-owner');
+      c.appendChild(document.createTextNode(''));
+      document.getElementById('sink').appendChild(c); })(); true`);
+    await waitFor('複製が無力になる', async () => await tab.evaluate(
+      `(() => { const d = document.getElementById('dup');
+        return !d || (d.tabIndex < 0 && d.getAttribute('role') !== 'button'); })()`));
+  });
+
+  await t.test('RG-14-05 印へ aria-hidden と中身を入れられたら、作り直す', async () => {
+    await tab.evaluate(`(() => { const ic = document.querySelector('.iiyaku-icon[data-iiyaku-key="commit"]');
+      ic.setAttribute('aria-hidden', 'true'); ic.appendChild(document.createTextNode('PAGE')); })(); true`);
+    await waitFor('正しい印へ戻る', async () => await tab.evaluate(
+      `(() => { const ic = document.querySelector('.iiyaku-icon[data-iiyaku-key="commit"]');
+        return !!ic && !ic.hasAttribute('aria-hidden') && ic.textContent === ''; })()`));
+    assert.equal(await tab.evaluate(
+      `document.querySelectorAll('.iiyaku-icon[data-iiyaku-key="commit"]').length`), 1, '印が増減している');
   });
 
   await tab.close();

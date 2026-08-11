@@ -355,8 +355,15 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   check('複製の判定が、今回の合言葉そのもので行われている',
     /pick\(`\[data-iiyaku-owner="\$\{CSS\.escape\(UID\)\}"\]`\)/.test(content));
   check('中身のある節点は消さず、名札を外すだけにしている',
-    /el\.childNodes\.length === 0\) removeOwn\(el\);\s*\n\s*else stripOwnIdentity\(el\)/.test(content),
+    /!hasPageContent\(el\)\) removeOwn\(el\);\s*\n\s*else stripOwnIdentity\(el\)/.test(content),
     'ページが使い回している節点を、その本文ごと消す');
+  // 「空」を childNodes 0 で見ると、Comment や空の Text を1つ足すだけで抜けられる
+  check('「中身が無い」を、Comment や空の Text を数えずに判定している',
+    /function hasPageContent/.test(content) && !/childNodes\.length === 0/.test(stripComments(content)),
+    '複製に空の Text を足すだけで、見えない Tab の停止点が残る');
+  check('名札が2つ以上そろったものだけを、名前で見分けている',
+    /OWN_DATA_ATTRS\.filter\(a => el\.hasAttribute\(a\)\)\.length < 2/.test(content),
+    'ページ側の要素から class や role を剥がしてしまう');
   check('見た目の側で、印・吹き出し・切替ボタンの3つとも合言葉の値まで見ている',
     /function scopeOwnStyle/.test(content) && /:not\(\$\{mine\}\)/.test(content) &&
     /OWN_CLASSES\.map\(c => `\.\$\{c\}\[data-iiyaku-owner\]:not\(\$\{mine\}\)`\)/.test(content),
@@ -419,10 +426,23 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   const code = stripComments(content);
   // 面積が 0 かどうかだけを見ていては足りない。**切り取りに面積があっても、
   // 語がその外**にあることがある（第13回 RG-13-01。画素を数えて実測）。
-  check('語の矩形と、積み上げた切り取りの交わりで決めている',
-    /function isPaintedText/.test(code) && /function intersectRect/.test(code) &&
-    /function paintChain/.test(code),
-    '切り取りの指定が面積0かどうかだけでは、外へ置かれた語を落とせない');
+  check('一致した語の範囲で、積み上げた切り取りとの交わりを決めている',
+    /function isPaintedRange/.test(code) && /function intersectRect/.test(code) &&
+    /function paintChain/.test(code) && /function visibleHits/.test(code),
+    '親要素まるごとで測ると、同じ親に見えている文字があるだけで切り取りの外の語まで可視になる');
+  check('可視性を、要素だけを鍵にして覚えていない',
+    !/visibleCache/.test(code),
+    '語ごとに答えが変わるので、要素を鍵にした覚え書きは誤答を配る');
+  // 形そのものとの交差（外接矩形だけでは、円や角丸の外を落とせない）
+  check('円・楕円・角丸の外側を、形そのもので落としている',
+    /function rectHitsEllipse/.test(code) && /function rectHitsRounded/.test(code) &&
+    /function shapeHitTest/.test(code),
+    '外接矩形だけでは、円の角に置かれた語を可視と答える');
+  // 逃げてよいのは overflow だけ。clip と clip-path は子孫の描画そのものを制限する
+  check('包含ブロックの例外を、overflow だけに掛けている',
+    /if \(applies && own\.overflow && !isRoot\) clip = intersectRect\(clip, own\.overflow\)/.test(code) &&
+    /if \(own\.shape\) clip = intersectRect\(clip, own\.shape\)/.test(code),
+    '絶対配置が祖先の clip-path まで逃れてしまう');
   check('文字の矩形は、面積のあるものだけを数えている',
     /x\.width > 0 && x\.height > 0/.test(code),
     'transform:scale(0) は箱の寸法を変えないので、面積を見ないと落とせない');
@@ -914,26 +934,33 @@ check('content.js が保存キー iiyakuEnabled を変えていない', content.
   check('見た目の絞り込みが外されたら足し直す',
     /function ensureOwnStyle/.test(code) && /ensureOwnStyle\(\);/.test(code));
 
-  // `styles.css` が与える性質と、絞り込みで戻す性質の一覧がそろっていること。
-  // 片方だけ増えると、ページ側の同名要素へ自分の見た目が残る。
+  // ページ側の指定を打ち消さないこと。styles.css をカスケードレイヤーへ入れ、
+  // 走り出しの規則は「画面を乗っ取る3つ」だけへ絞る（第14回 RG-14-07）。
   {
-    const css = read('styles.css').replace(/\/\*[\s\S]*?\*\//g, '');
+    const css = read('styles.css');
+    check('styles.css がカスケードレイヤーに入っている',
+      /^@layer repogloss \{/m.test(css.replace(/\/\*[\s\S]*?\*\//g, '').trim()),
+      'ページ側が同じ性質を指定していても、自分の見た目が勝ってしまう');
+    check('レイヤーの順序を、styles.css で先に宣言している',
+      /@layer repogloss, repogloss-scope;/.test(css),
+      '絞り込みの規則がページ側の指定より強くなってしまう');
+    check('絞り込みの規則が、後ろのレイヤーに入っている',
+      /@layer repogloss-scope\{/.test(content),
+      'レイヤー無しで書くと、ページ自身の author style まで打ち消す');
+    // 戻す性質の一覧は、styles.css が与えるものを網羅していること
     const want = new Set();
-    for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-      const sel = m[1];
-      if (!/\.iiyaku-(icon|tooltip|toggle)\[data-iiyaku-owner\]/.test(sel)) continue;
+    for (const m of css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      if (!/\.iiyaku-(icon|tooltip|toggle)\[data-iiyaku-owner\]/.test(m[1])) continue;
       for (const d of m[2].split(';')) if (d.includes(':')) want.add(d.split(':')[0].trim());
     }
     const listed = new Set((/const OWN_STYLE_PROPS = \[([\s\S]*?)\];/.exec(content) || [, ''])[1]
       .split(',').map(x => x.replace(/['\s\n]/g, '')).filter(Boolean));
     const missing = [...want].filter(x => !listed.has(x));
-    const extra = [...listed].filter(x => !want.has(x));
-    check('絞り込みで戻す性質の一覧が、styles.css と一致している',
-      want.size > 0 && missing.length === 0 && extra.length === 0,
-      `styles.css にあって一覧に無い: ${missing.join(',') || 'なし'} / 一覧にあって styles.css に無い: ${extra.join(',') || 'なし'}`);
-    // 陽性対照: 抜き出しが実際に動いていること（0件なら比較そのものが無意味）
-    check('styles.css からの抜き出しが動いている（陽性対照）', want.size >= 10,
-      `抜き出せた性質は ${want.size} 個`);
+    check('戻す性質の一覧が、styles.css と一致している',
+      want.size >= 10 && missing.length === 0 && [...listed].every(x => want.has(x)),
+      `styles.css にあって一覧に無い: ${missing.join(',') || 'なし'}（抜き出せた数 ${want.size}）`);
+    check('走り出しの規則の中身も見て、書き換えられたら足し直す',
+      /ownStyle\.textContent === ownStyleText/.test(content));
   }
 
   // 配布する DESIGN.md が、現行の実装と食い違っていないこと（RG-13-07）

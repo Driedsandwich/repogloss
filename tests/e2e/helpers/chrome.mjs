@@ -841,3 +841,15 @@ export const SIGNATURE13_PAGE = `<!doctype html><html lang="en"><head><meta char
 </body></html>`;
 
 /* CSS だけで短時間ひらくメニュー（RG-13-02） */
+export const ROOTATTR_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>rootattr</title><style>
+  html[data-theme="b"] #themed{display:none}
+  html.theme-b #themed{display:none}
+</style></head><body>
+  <a href="#" id="before">before</a>
+  <p id="always">A commit visible.</p>
+  <p id="themed">A branch themed.</p>
+</body></html>`;
+
+/* 控えの上限と、1回あたりの処理時間（RG-13-06）。
+   filler 件の隠れた候補 ＋ 逃がし弁1件 ＋ 上限の外へこぼれる1件。 */

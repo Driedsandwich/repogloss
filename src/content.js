@@ -738,7 +738,8 @@
   // そこで、自分が書くつもりの「要素 + 属性名 + 値」を控えておき、
   // **その3つが完全に一致する変更だけ**を自分の仕業として無視する。
   // 予定と違う値になっていたら、書いたのは自分ではない。
-  const expectedAttrs = new WeakMap();   // Element -> Map<属性名, 期待する値（null は削除）>
+  // Element -> Map<属性名, [{ from, to }]>。予定は起きた順に1つずつ消費する。
+  let expectedAttrs = new WeakMap();
 
   // 本文を割るのも自分である。1回割ると、右側の節点が増える（childList）と同時に、
   // 左側の中身が短くなる（characterData）。どちらも自分の変更なので数え直しの
@@ -767,18 +768,36 @@
   function setOwnAttr(el, name, value) {
     let m = expectedAttrs.get(el);
     if (!m) expectedAttrs.set(el, m = new Map());
-    m.set(name, value);
+    // 何も起きない書き込みは予定に積まない。属性が無いものを消しても
+    // MutationRecord は出ないので、消費されない予定だけが残る。
+    if (value === null && !el.hasAttribute(name)) return;
+    let q = m.get(name);
+    if (!q) m.set(name, q = []);
+    // 予定は「いくつ起きるはずか」を含めて控える。前の値まで覚えておかないと、
+    // ページが同じ値へ書き戻した変更まで自分のものとして捨てる（→ 下の consume）。
+    q.push({ from: el.getAttribute(name), to: value });
     if (value === null) el.removeAttribute(name);
     else el.setAttribute(name, value);
   }
 
-  // その属性変更は、自分が予定したとおりのものか
-  function isExpectedAttrChange(el, name) {
+  // その属性変更は、自分が予定したとおりのものか。**1回だけ**受け取って消す。
+  // 消さずに覚えっぱなしにすると、そのあとページが同じ値へ戻した変更に気づけない。
+  // 突き合わせは変更前の値で行う（MutationRecord ごとに一意で、順序も保たれる）。
+  function consumeExpectedAttr(el, name, oldValue) {
     const m = expectedAttrs.get(el);
-    if (!m || !m.has(name)) return false;
-    const want = m.get(name);
-    const now = el.getAttribute(name);
-    return want === null ? now === null : now === want;
+    const q = m && m.get(name);
+    if (!q || q.length === 0) return false;
+    const i = q.findIndex(e => e.from === oldValue);
+    if (i === -1) return false;
+    q.splice(i, 1);
+    if (q.length === 0) m.delete(name);
+    return true;
+  }
+
+  // 見張っていないあいだの予定は、消費される機会がないまま残る。持ち越すと
+  // 再開後の最初のページ変更を自分のものとして捨てるので、切り替えのたびに捨てる。
+  function clearExpectations() {
+    expectedAttrs = new WeakMap();
   }
 
   // 印の祖先をたどって、**自分が作った印**を返す。class だけで見てはいけない。
@@ -1570,7 +1589,7 @@
       // 吹き出しと切替ボタンは自分だけのもので、記録を持たない。
       // ここの位置合わせで毎回いちばん重い経路へ入らないよう、まとめて除く。
       if (isOurChrome(t)) return true;
-      return isExpectedAttrChange(t, mu.attributeName);
+      return consumeExpectedAttr(t, mu.attributeName, mu.oldValue);
     }
     return false;
   }
@@ -1599,7 +1618,10 @@
         // 属性は絞り込まない。`type` や任意の `data-*` でも、CSS 次第で
         // 見え方は変わる（実測: data-state ひとつで display:none になった）。
         deep = true;
-        roots.push(mu.target);
+        // ただし `<html>` の属性は、走査し直す場所に**入れない**。入れると
+        // 1回の書き換えでページ全体を歩き直すことになる（`<head>` の
+        // stylesheet と同じ扱い）。見えるようになった語は控えの見直しで拾う。
+        if (mu.target !== document.documentElement) roots.push(mu.target);
         continue;
       }
       if (mu.type === 'characterData') {
@@ -1636,15 +1658,22 @@
   const OBSERVE_OPTS = {
     childList: true, subtree: true,
     characterData: true,               // 語そのものの書き換えに、その場で気づく
-    attributes: true                   // 属性は絞り込まない（→ 上のコメント）
+    attributes: true,                  // 属性は絞り込まない（→ 上のコメント）
+    attributeOldValue: true            // 予定を1件ずつ突き合わせるのに要る
   };
+
+  // `<html>` の属性は、body を見張っていても**1件も届かない**（実測: `data-color-mode`
+  // を変えて表示が消えても、まとめ直しは1回も走らず、暇なときの確認まで約2秒かかった）。
+  // 見た目を切り替える指定は `<html>` に置かれることが多いので、ここも見張る。
+  // 子孫は body 側で見ているので、subtree は付けない（同じ変更を二度数えない）。
+  const ROOT_OPTS = { attributes: true, attributeOldValue: true };
 
   // `<head>` の stylesheet が変わると、body には何の変更も出ないまま見え方が変わる。
   // ここは記録の確認だけでよいので、走査し直す場所は渡さない。
   const headObserver = new MutationObserver(muts => {
     for (const mu of muts) if (!isSelfMutation(mu)) { schedule({ deep: true }); return; }
   });
-  const HEAD_OPTS = { childList: true, subtree: true, attributes: true };
+  const HEAD_OPTS = { childList: true, subtree: true, attributes: true, attributeOldValue: true };
 
   // DOM の変更を伴わない合図。CSS の遷移・アニメーションの終わり、画面の大きさの変化。
   const EXTERNAL_SIGNALS = ['transitionend', 'transitioncancel', 'animationend', 'animationcancel'];
@@ -1693,6 +1722,8 @@
     // 消費されないまま残り、**そのあとページが起こした最初の文字変更を自分のものと
     // して捨てる**（実測: 語を消しても、次に暇なときの確認が来るまで印が動かなかった）。
     observer.observe(document.body, OBSERVE_OPTS);
+    // `<html>` の属性も見張る（body だけでは1件も届かない）
+    observer.observe(document.documentElement, ROOT_OPTS);
     scan(document.body);
     if (document.head) headObserver.observe(document.head, HEAD_OPTS);
     for (const t of EXTERNAL_SIGNALS) document.addEventListener(t, onExternal, true);
@@ -1713,6 +1744,9 @@
     if (idleTimer !== null) { clearTimeout(idleTimer); idleTimer = null; }
     observing = false;
     hideTip();
+    // 見張っていないあいだに書いた分の予定は、消費される機会が無い。
+    // 残すと、再開後の最初のページ変更を自分のものとして捨てる。
+    clearExpectations();
   }
 
   // OFF でも印を DOM から消さず、CSS で隠すだけにする。消してしまうと、

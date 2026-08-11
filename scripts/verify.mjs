@@ -255,9 +255,19 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
 /* ---------- 自分の変更かどうかを、所有ではなく予定表で決めているか（RG-10-05） ---------- */
 {
   check('自分が書く属性の予定表がある',
-    /const expectedAttrs = new WeakMap\(\)/.test(content) && /function setOwnAttr/.test(content));
+    /let expectedAttrs = new WeakMap\(\)/.test(content) && /function setOwnAttr/.test(content));
   check('自分の仕業かどうかを、予定表との一致で決めている',
-    /function isExpectedAttrChange/.test(content) && /isExpectedAttrChange\(t, mu\.attributeName\)/.test(content));
+    /function consumeExpectedAttr/.test(content) &&
+    /consumeExpectedAttr\(t, mu\.attributeName, mu\.oldValue\)/.test(content));
+  // 予定は**1回だけ**受け取って消すこと。消さないと、ページが同じ値へ書き戻した
+  // 変更まで自分の仕業として捨てる（RG-13-05）。
+  check('属性の予定を、1回受け取ったら消している',
+    /q\.splice\(i, 1\)/.test(content),
+    '予定が残り続けると、ページが同じ値へ戻した変更に気づけない');
+  check('変更前の値で突き合わせるため、oldValue を受け取っている',
+    /attributeOldValue: true/.test(content));
+  check('見張っていない間の予定を持ち越していない',
+    /function clearExpectations/.test(content) && /clearExpectations\(\);/.test(content));
   // 所有だけで無視すると、ページ側が自分の印へ加えた変更まで見落とす
   check('所有だけを根拠に属性変更を無視していない',
     !/if \(isOurNode\(mu\.target\)\) continue;[\s\S]{0,80}attributes/.test(content));

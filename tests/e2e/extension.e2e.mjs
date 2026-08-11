@@ -15,7 +15,7 @@ import { launchChrome, startTestServer, stageExtension, stageExtensionWith,
          USABILITY_PAGE, NAMESPACE_CLIP_PAGE, PROTECTED_PAGE, CONVERGE_PAGE,
          SIGNALS_PAGE, OWNERSHIP_PAGE, LATENT_PAGE, SIGNATURE_PAGE,
          LATENT_GUARD_PAGE, DEFERRED_PAGE, SKIPNAME_PAGE, CLIPZERO_PAGE,
-         PAINT_PAGE, LIFECYCLE13_PAGE, SIGNATURE13_PAGE,
+         PAINT_PAGE, LIFECYCLE13_PAGE, SIGNATURE13_PAGE, ROOTATTR_PAGE,
          openPage, sleep, waitFor,
          pressKey, collectTabOrder, tabUntil } from './helpers/chrome.mjs';
 
@@ -2630,6 +2630,39 @@ test('自分の署名だけで片づけ、ページの持ち物には触れな�
       return { tip: s('page-tip'), toggle: s('page-toggle') }; })()`);
     assert.deepEqual(r.tip, ['static', 'auto'], 'ページの要素が自分の吹き出しの見た目になっている');
     assert.deepEqual(r.toggle, ['static', 'auto'], 'ページの要素が自分の切替ボタンの見た目になっている');
+  });
+
+  await tab.close();
+});
+
+test('`<html>` の属性変更に、待たずに気づく', async t => {
+  const srv = await startTestServer(ROOTATTR_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await chrome.cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(chrome.cdp, PAGE);
+  const nKey = k => tab.evaluate(`document.querySelectorAll('.iiyaku-icon[data-iiyaku-key=${JSON.stringify(k)}]').length`);
+  await waitFor('拡張が印を付ける', async () => await nKey('branch') === 1);
+
+  await t.test('RG-13-05 `<html>` の属性で隠したら、暇なときの確認を待たずに退役する', async () => {
+    await tab.evaluate(`document.documentElement.setAttribute('data-theme', 'b'); true`);
+    await sleep(500);   // 2秒の確認より十分早い
+    assert.equal(await nKey('branch'), 0, '`<html>` の属性変更が合図になっていない');
+  });
+
+  await t.test('RG-13-05 自分が書いた値へページが戻す変更も、外部の変更として扱う', async () => {
+    await tab.evaluate(`document.documentElement.removeAttribute('data-theme'); true`);
+    await waitFor('戻る', async () => await nKey('branch') === 1);
+    // `class` は**自分が書く属性**（ON/OFF の印を付け外しする）。予定を1回で
+    // 消費しないと、ページが同じ値へ書き戻した変更を自分の仕業として捨てる。
+    const mine = await tab.evaluate(`document.documentElement.getAttribute('class')`);
+    await tab.evaluate(`document.documentElement.setAttribute('class', 'theme-b'); true`);
+    await sleep(500);
+    assert.equal(await nKey('branch'), 0, '前提が崩れている（class で隠せていない）');
+    // ここで**自分が最後に書いた値へ戻す**。捨てられると、この語は説明されないまま残る
+    await tab.evaluate(`document.documentElement.setAttribute('class', ${JSON.stringify('')} + ${JSON.stringify(mine ?? '')}); true`);
+    await sleep(500);
+    assert.equal(await nKey('branch'), 1, '自分が書いた値と同じ変更を、外部のものと見ていない');
   });
 
   await tab.close();

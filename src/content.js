@@ -1318,13 +1318,28 @@
     let n = 0;
     for (const node of latent) {
       if (!node.isConnected || isHandled(node)) { latent.delete(node); continue; }
+      const el = node.parentElement;
+      if (!el) { latent.delete(node); continue; }
+      // ---- ここまでで、まだ本文の文字には触れていない ----
+      // **触れてよい場所かを、文字を読む前に確かめる。** 走査の入口（isTarget）と
+      // 同じ順序にする。控えへ入れたあとで、ページがその場所を編集領域・コード・
+      // aria-hidden・inert・hidden へ変えることがある。順序を崩すと、触れないと
+      // 約束した本文を読むことになる（実測: 編集中の本文が2秒ごとに読まれていた）。
+      // 触れない場所へ移ったものは、読まずに控えから外す。戻ってきたときは、
+      // その属性変更が走査し直す場所として渡ってくるので、そこで入り直す。
+      if (inSkip(el)) { latent.delete(node); continue; }
       // 見え方を測る前に、「まだ読める説明が無い語」を含むかだけを見る。
       // ここは文字列の照合だけで、レイアウトを起こさない。印は1語につき1つなので、
       // 既に読める印がある語しか入っていない節点は、見えるようになっても何も足せない。
       // 控えからは外さない——その印があとで退役すれば、また候補に戻るからである。
       const v = node.nodeValue;
       if (!v || matcher.findHits(v, key => usableGloss(key) !== null).length === 0) continue;
-      if (isTarget(node)) { latent.delete(node); n += annotate(node); }
+      if (!isTarget(node)) continue;
+      n += annotate(node);
+      // 外すのは「もう当たらない」と決まったときだけ。入口がまだ無い節点は控えに残す。
+      // ⚠️ ここで先に外して annotate に戻させると、**反復中の Set へ追加**することに
+      // なり、その要素をもう一度訪れて無限に回る（実際に固まった）。外すのは後。
+      if (isHandled(node)) latent.delete(node);
     }
     return n;
   }

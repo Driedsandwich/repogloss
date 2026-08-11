@@ -1682,6 +1682,23 @@
   // 利用者の操作は、属性に出ない状態（checked など）を変えうる
   const onInteraction = () => schedule({ deep: true });
 
+  // カーソルとフォーカスも合図にする。`:hover` / `:focus-within` だけで開く
+  // メニューは、DOM も属性も transition も動かさないので、どの合図にも乗らない。
+  // 実測: 400ms 出しただけのメニューには説明が1つも付かず、開けたまま2秒の確認を
+  // またいで初めて付いた。短いメニューは、それより先に閉じる。
+  //
+  // 見直す先が無いなら何もしない。カーソルは大量に動くので、1フレームに1回へまとめる
+  // （まとめないと、動かした回数だけまとめ直しが走る）。
+  let hoverPending = false;
+  const onPointerOrFocus = () => {
+    if (latent.size === 0 || hoverPending) return;
+    hoverPending = true;
+    const fire = () => { hoverPending = false; if (observing) schedule({ deep: true }); };
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(fire);
+    else setTimeout(fire, 16);
+  };
+  const HOVER_SIGNALS = ['pointerover', 'pointerout', 'focusin', 'focusout'];
+
   // 属性にも DOM にも出ない変化（property だけの書き換え）は、どの合図にも乗らない。
   // 暇なときにだけ、記録の見え方を確かめ直す。画面が見えていないときは何もしない。
   const IDLE_GAP = 2000;
@@ -1730,6 +1747,7 @@
     window.addEventListener('resize', onViewport);
     window.addEventListener('orientationchange', onViewport);
     for (const t of ['input', 'change', 'click']) document.addEventListener(t, onInteraction, true);
+    for (const t of HOVER_SIGNALS) document.addEventListener(t, onPointerOrFocus, true);
     scheduleIdleCheck();
   }
 
@@ -1741,6 +1759,7 @@
     window.removeEventListener('resize', onViewport);
     window.removeEventListener('orientationchange', onViewport);
     for (const t of ['input', 'change', 'click']) document.removeEventListener(t, onInteraction, true);
+    for (const t of HOVER_SIGNALS) document.removeEventListener(t, onPointerOrFocus, true);
     if (idleTimer !== null) { clearTimeout(idleTimer); idleTimer = null; }
     observing = false;
     hideTip();

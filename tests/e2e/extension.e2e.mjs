@@ -15,7 +15,8 @@ import { launchChrome, startTestServer, stageExtension, stageExtensionWith,
          USABILITY_PAGE, NAMESPACE_CLIP_PAGE, PROTECTED_PAGE, CONVERGE_PAGE,
          SIGNALS_PAGE, OWNERSHIP_PAGE, LATENT_PAGE, SIGNATURE_PAGE,
          LATENT_GUARD_PAGE, DEFERRED_PAGE, SKIPNAME_PAGE, CLIPZERO_PAGE,
-         PAINT_PAGE, LIFECYCLE13_PAGE, SIGNATURE13_PAGE, ROOTATTR_PAGE,
+         PAINT_PAGE, LIFECYCLE13_PAGE, SIGNATURE13_PAGE, TRANSIENT_PAGE,
+         ROOTATTR_PAGE,
          openPage, sleep, waitFor,
          pressKey, collectTabOrder, tabUntil } from './helpers/chrome.mjs';
 
@@ -2630,6 +2631,38 @@ test('自分の署名だけで片づけ、ページの持ち物には触れな�
       return { tip: s('page-tip'), toggle: s('page-toggle') }; })()`);
     assert.deepEqual(r.tip, ['static', 'auto'], 'ページの要素が自分の吹き出しの見た目になっている');
     assert.deepEqual(r.toggle, ['static', 'auto'], 'ページの要素が自分の切替ボタンの見た目になっている');
+  });
+
+  await tab.close();
+});
+
+test('CSS だけで短時間ひらく場所の語も説明する', async t => {
+  const srv = await startTestServer(TRANSIENT_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  await waitFor('拡張が印を付ける', async () => await tab.evaluate(
+    `document.querySelectorAll('.iiyaku-icon').length`) > 0);
+  const move = (x, y) => cdp.send('Input.dispatchMouseEvent',
+    { type: 'mouseMoved', x, y, button: 'none', buttons: 0, clickCount: 0 }, tab.sessionId);
+  const nKey = k => tab.evaluate(`document.querySelectorAll('.iiyaku-icon[data-iiyaku-key=${JSON.stringify(k)}]').length`);
+
+  await t.test('RG-13-02 hover で開いた 400ms のあいだに印が付く', async () => {
+    assert.equal(await nKey('branch'), 0, '前提が崩れている（最初から見えている）');
+    const p = await tab.evaluate(`(() => { const r = document.getElementById('host').getBoundingClientRect();
+      return [Math.round(r.x + 5), Math.round(r.y + r.height / 2)]; })()`);
+    await move(p[0], p[1]);
+    await sleep(400);   // 暇なときの確認（2秒）より十分早い
+    assert.equal(await tab.evaluate(`getComputedStyle(document.getElementById('menu')).display`),
+      'block', '前提が崩れている（メニューが開いていない）');
+    assert.equal(await nKey('branch'), 1, '開いているあいだに説明が付いていない');
+    await move(5, 5);
+  });
+
+  await t.test('RG-13-02 閉じたあとに、見えない印を残さない', async () => {
+    await waitFor('見えない印が片づく', async () => await nKey('branch') === 0);
   });
 
   await tab.close();

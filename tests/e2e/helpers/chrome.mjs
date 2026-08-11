@@ -841,6 +841,16 @@ export const SIGNATURE13_PAGE = `<!doctype html><html lang="en"><head><meta char
 </body></html>`;
 
 /* CSS だけで短時間ひらくメニュー（RG-13-02） */
+export const TRANSIENT_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>transient</title><style>
+  #menu{display:none} #host:hover #menu{display:block} #host:focus-within #menu{display:block}
+</style></head><body>
+  <a href="#" id="before">before</a>
+  <p>A commit anchor.</p>
+  <div id="host" tabindex="0" style="padding:20px">hover me <span id="menu">A branch transient.</span></div>
+</body></html>`;
+
+/* `<html>` の属性と、予定の消費（RG-13-05） */
 export const ROOTATTR_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <title>rootattr</title><style>
   html[data-theme="b"] #themed{display:none}

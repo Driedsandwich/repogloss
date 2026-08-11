@@ -107,14 +107,19 @@
 
     // text の中の一致を前から順に返す。同じキーは1つ目だけ残す（説明は一度読めば足りる）。
     // isGlossed(key) が true を返したキーは、既にページのどこかで説明済みとみなして飛ばす。
-    function findHits(text, isGlossed) {
+    //
+    // `all` を true にすると、**キーで絞らずに全部**返す。1つ目だけを残してから
+    // 見え方で選び直すと、「1つ目は隠れていて2つ目は読める」場合に、読めるほうが
+    // 候補から消える（第15回 RG-15-01。実測: 2行目の読める語に説明が付かなかった）。
+    // 呼び出し側は、見え方で絞ってから自分でキーを1つにする。
+    function findHits(text, isGlossed, { all = false } = {}) {
       const hits = [];
       const seen = new Set();
       scanRe.lastIndex = 0;
       let m;
       while ((m = scanRe.exec(text)) !== null) {
         const key = lookupKey(m[0]);
-        if (key && !seen.has(key) && !(isGlossed && isGlossed(key))) {
+        if (key && (all || !seen.has(key)) && !(isGlossed && isGlossed(key))) {
           seen.add(key);
           hits.push({ index: m.index, end: m.index + m[0].length, key, match: m[0] });
         }

@@ -684,9 +684,21 @@
   }
 
   // その節点のうち、**実際に描かれている**一致だけを返す。
+  //
+  // キーで1つに絞るのは**見え方で選んだあと**。先に絞ると、「1つ目は隠れていて
+  // 2つ目は読める」場合に読めるほうが候補から消える（実測: 2行目の読める語に
+  // 説明が付かなかった）。
   function visibleHits(node, el) {
-    const hits = matcher.findHits(node.nodeValue, key => usableGloss(key) !== null);
-    return hits.filter(h => isVisibleOccurrence(el, node, h.end - h.match.length, h.end));
+    const all = matcher.findHits(node.nodeValue, key => usableGloss(key) !== null, { all: true });
+    const out = [];
+    const seen = new Set();
+    for (const h of all) {
+      if (seen.has(h.key)) continue;
+      if (!isVisibleOccurrence(el, node, h.end - h.match.length, h.end)) continue;
+      seen.add(h.key);
+      out.push(h);
+    }
+    return out;
   }
 
   /* ---------- 3. 入口（trigger）の解決 ---------- */
@@ -1513,10 +1525,10 @@
     // ただし前に付けた印が「もう説明として使えない」なら、付け直す。
     // 見えている一致だけを注記する。見えない一致に印を付けると、その語の
     // 「ページで最初の1回」を使い切って、後ろの読める同じ語が説明されなくなる。
-    const all = matcher.findHits(node.nodeValue, key => usableGloss(key) !== null);
-    if (all.length === 0) { markHandled(node); return 0; }
-    const hits = all.filter(h =>
-      isVisibleOccurrence(parent, node, h.end - h.match.length, h.end));
+    if (matcher.findHits(node.nodeValue, key => usableGloss(key) !== null).length === 0) {
+      markHandled(node); return 0;
+    }
+    const hits = visibleHits(node, parent);
     if (hits.length === 0) { rememberLatent(node); return 0; }
     // 付け直すと決まったキーについて、使えなくなった古い印を取り除く。
     // 残しておくと、同じ語の印が画面に2つあることになる。

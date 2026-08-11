@@ -602,7 +602,11 @@ export const CLIPZERO_PAGE = `<!doctype html><html lang="en"><head><meta charset
 <title>clipzero</title><style>
   .box{box-sizing:border-box;width:100px;height:100px}
   #zero{padding:50px;clip-path:inset(0) content-box}
-  #zero-neg{padding:50px;clip-path:inset(-20px) content-box}
+  /* 負の inset は、潰れた参照ボックスの外へ切り取りを広げる。**折り返しに依存させない**
+     ——0幅の content box では本文が1文字ずつ折り返し、対象語が1行目に載るか2行目に
+     落ちるかがフォント寸法で変わる（実測: macOS では2行目＝切り取りの外、
+     ubuntu と windows では1行目＝内側。同じ見本で答えが割れた）。 */
+  #zero-neg{padding:50px;clip-path:inset(-60px) content-box;white-space:nowrap}
   #nonzero{padding:10px;clip-path:inset(0) content-box}
 </style></head><body>
   <div id="zero" class="box">A branch hidden.</div><p id="zero-later">A branch later.</p>

@@ -287,17 +287,26 @@ v1.8.2 までは全項目を「収集しない」とする方針だったが、�
 
 ### 8-2. v1.8.11 の作り方（現在の提出候補）
 
-**v1.8.11 はまだ commit していないため、提出候補の ZIP はありません。** 作り方は v1.8.10 と同じで、**提出するのは CI が作った成果物**だけです。手元で作ったものは `--release` 検査で落ちます。
+**提出するのは CI が作った成果物**だけです。手元で作ったものは `--release` 検査で落ちます。
+
+#### 8-2-1. v1.8.11 の提出物（2026-08-11 実測）
 
 | 項目 | 値 |
 |---|---|
-| ZIP | **未作成**（`repogloss-1.8.11.zip` になる予定） |
-| SHA-256 | **未確定** |
+| ZIP | `repogloss-1.8.11.zip`（107.74 KiB＝110,325 バイト・13ファイル・展開後 265,025 バイト） |
+| **SHA-256** | **`a3da61d5083900da8e535e6ec346b6d8f76f85841339b090c2e03a5a4933ea3f`** |
+| 中身の合算ハッシュ | `3fd697f0fc6c0457c20c0a0e6340e1c7c21411a1adb008448c45e30d6461cba3` |
+| 配布13ファイルの合算 | `5356ea8539b1ba12598756148c075c18b0d3defd52e225846df8d7cef9957db6`（ubuntu / macos / windows / 手元 macOS の4者で一致） |
+| 出どころ | CI の run [`31455701813`](https://github.com/Driedsandwich/repogloss/actions/runs/31455701813) の `release-zip` ジョブ（artifact `repogloss-store-zip`） |
+| 対象コミット | `92bd593e35839b448f97b051ab427e7a1384c398`（タグ `v1.8.11`） |
 | 変更点 | `manifest.json`／`src/content.js`／`README.md`／`DESIGN.md`／`PRIVACY.md` の5ファイル。辞書・`src/matcher.js`・`styles.css`・アイコン・`LICENSE` は無変更 |
+| 置き場所 | 掲載用素材フォルダの直下（`repogloss-1.8.10.zip` は `_superseded/` へ退避済み） |
+
+**照合済み**: ダウンロードした成果物の SHA-256 が同梱の身元 JSON と一致し（110,325 バイト・13ファイルも一致）、展開した13ファイルがタグ `v1.8.11` と **1バイトも違わない**（対照の `v1.8.10` とは5ファイルで相違。1バイト変えれば検出できることも同じ実行で確認）。`npm run package:verify-zip -- --release` にも合格します（`EXIT=0`）。**この検査に判別力があることも実測しました** — ZIP の `src/content.js` に6バイト足すと `EXIT=1`・`NG: src/content.js の中身が今のファイルと違う` になります。
 
 **掲載文で差し替えが要る箇所（v1.8.11）**: なし（動作環境・権限・データの扱いは v1.8.10 から変わらない）。
 
-**⚠️ v1.8.10 は提出しません**（第12回監査の指摘）。`repogloss-1.8.10.zip`（`c194a9cb…`）は `_superseded/` へ退避します。
+**⚠️ v1.8.10 は提出しません**（第12回監査の指摘）。`repogloss-1.8.10.zip`（`c194a9cb…`）は `_superseded/` へ退避済みです。
 
 ### 8-2u. v1.8.10 の作り方（履歴）
 
@@ -312,7 +321,7 @@ v1.8.2 までは全項目を「収集しない」とする方針だったが、�
 | 出どころ | CI の run [`31443666381`](https://github.com/Driedsandwich/repogloss/actions/runs/31443666381) の `release-zip` ジョブ（artifact `repogloss-store-zip`） |
 | 対象コミット | `aaa770d687ed5861785f629e494662823ba7d875`（タグ `v1.8.10`） |
 | 変更点 | `manifest.json`／`src/content.js`／`styles.css`／`README.md`／`DESIGN.md`／`PRIVACY.md` の6ファイル。辞書・`src/matcher.js`・アイコン・`LICENSE` は無変更 |
-| 置き場所 | `_superseded/` へ退避予定（第12回監査の指摘で提出しないため） |
+| 置き場所 | `_superseded/` へ退避済み（第12回監査の指摘で提出しないため） |
 
 **照合済み**: ダウンロードした成果物の SHA-256 が同梱の身元 JSON と一致し（107,631 バイト・13ファイルも一致）、展開した13ファイルがタグ `v1.8.10` と **1バイトも違わない**（対照の `v1.8.9` とは6ファイルで相違。1バイト変えれば検出できることも同じ実行で確認）。`npm run package:verify-zip -- --release` にも合格します（`EXIT=0`）。**この検査に判別力があることも実測しました** — ZIP の `styles.css` に8バイト足すと `EXIT=1`・`NG: styles.css の中身が今のファイルと違う` になります。
 

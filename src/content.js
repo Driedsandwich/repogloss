@@ -415,8 +415,15 @@
   }
 
   // 角丸の矩形と交わるか。角ごとの四分楕円の外側だけを落とす。
-  function rectHitsRounded(r, box, radii) {
-    if (r.right <= box.x1 || r.left >= box.x2 || r.bottom <= box.y1 || r.top >= box.y2) return false;
+  function rectHitsRounded(r0, box, radii) {
+    if (r0.right <= box.x1 || r0.left >= box.x2 || r0.bottom <= box.y1 || r0.top >= box.y2) return false;
+    // ⚠️ **先に box で切る**（第17回 RG-17-02）。切らずに「角の箱へまるごと収まるか」を
+    // 見ていたため、箱の外へはみ出した矩形は角の判定に入らず、無条件で可視になっていた
+    // （実測: `inset(0 round 60px)` の左上の外に置いた0画素の語に印が付いた）。
+    // 切ったあとの矩形が角の箱の中だけにあるなら、その四分楕円との交差で決まる。
+    const r = { left: Math.max(r0.left, box.x1), top: Math.max(r0.top, box.y1),
+                right: Math.min(r0.right, box.x2), bottom: Math.min(r0.bottom, box.y2) };
+    if (r.right <= r.left || r.bottom <= r.top) return false;
     // 上左・上右・下右・下左。それぞれ角の正方形と、その四分楕円の中心。
     // 半径は cornerRadii が used value まで縮めてあるので、ここでは頭打ちにしない
     // （辺の長さで角ごとに切ると、比例縮小のかかった形と食い違う）。

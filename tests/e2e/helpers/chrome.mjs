@@ -966,3 +966,84 @@ export const HOVER15_PAGE = `<!doctype html><html lang="en"><head><meta charset=
   <div class="host" id="h1" style="padding:16px">one <span class="menu">A branch one.</span></div>
   <div class="host" id="h2" style="padding:16px">two <span class="menu">A rebase two.</span></div>
 </body></html>`;
+
+/* ===================== 第16回監査（v1.8.15）の反例 ===================== */
+/* 第16回の反例。画面内で画素を数えて確かめられる形だけをここへ置く。
+   ①非正方形の箱の `round 50%` ②隣り合う角が重なる半径 ③回転した形
+   ④透明な縁取り／影／背景の抜き ⑤`filter` の並び順 ⑥`overflow:hidden` の余白 */
+export const PAINT16_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>paint16</title><style>html,body{background:#fff;color:#000}
+ .slot{height:170px;position:relative}</style></head><body>
+  <button id="before">before</button>
+  <!-- ① 百分率の半径は、横は幅・縦は高さで解く（中の語は読める） -->
+  <div class="slot" id="h-pct"><div style="position:relative;width:200px;height:50px;clip-path:inset(0 round 50%);background:#eee"><span style="position:absolute;left:35px;top:3px;font:4px/4px Arial">branch</span></div></div>
+  <p id="l-pct">A branch later.</p>
+  <!-- ② 隣り合う角の和が辺を超えたら、全部の半径を同じ割合で縮める -->
+  <div class="slot" id="h-over"><div style="position:relative;width:100px;height:50px;clip-path:inset(0 round 80px 80px 0 0);background:#eee"><span style="position:absolute;left:20px;top:5px;font:4px/4px Arial">commit</span></div></div>
+  <p id="l-over">A commit later.</p>
+  <!-- ③ 回転した楕円の外（読めないので落とす） -->
+  <div class="slot" id="h-rot"><div style="position:relative;width:120px;height:120px;transform:rotate(35deg);transform-origin:60px 60px;clip-path:ellipse(50px 20px at 60px 60px);background:#eee"><span style="position:absolute;left:35px;top:20px;font:4px/4px Arial">rebase</span></div></div>
+  <p id="l-rot">A rebase later.</p>
+  <!-- ③対照 回転した楕円の内（落としてはいけない） -->
+  <div class="slot" id="h-rotin"><div style="position:relative;width:120px;height:120px;transform:rotate(35deg);transform-origin:60px 60px;clip-path:ellipse(50px 20px at 60px 60px);background:#eee"><span style="position:absolute;left:50px;top:58px;font:4px/4px Arial">merge</span></div></div>
+  <p id="l-rotin">A merge later.</p>
+  <!-- ④ 縁取りの幅はあるが色が透明（読めない） -->
+  <div class="slot" id="h-stk"><p style="color:transparent;-webkit-text-fill-color:transparent;-webkit-text-stroke:1px transparent;font-size:20px">A fetch painted.</p></div>
+  <p id="l-stk">A fetch later.</p>
+  <!-- ④対照 黒い縁取りは読める -->
+  <div class="slot" id="h-stkb"><p style="color:transparent;-webkit-text-fill-color:transparent;-webkit-text-stroke:1px black;font-size:20px">A conflict painted.</p></div>
+  <p id="l-stkb">A conflict later.</p>
+  <!-- ④ 透明な塗りでも、影が文字の形を描く -->
+  <div class="slot" id="h-shd"><p style="color:transparent;text-shadow:0 0 0 black;font-size:20px">A diff painted.</p></div>
+  <p id="l-shd">A diff later.</p>
+  <!-- ④ 背景を文字型に抜く -->
+  <div class="slot" id="h-bgc"><p style="color:transparent;background-image:linear-gradient(black,black);-webkit-background-clip:text;background-clip:text;font-size:20px">A label painted.</p></div>
+  <p id="l-bgc">A label later.</p>
+  <!-- ⑤ opacity(0) の後ろで描き直される -->
+  <div class="slot" id="h-flt"><svg width="0" height="0" style="position:absolute"><filter id="f16"><feFlood flood-color="black"/></filter></svg><p style='filter:opacity(0) url("#f16");font-size:20px'>A remote source.</p></div>
+  <p id="l-flt">A remote later.</p>
+  <!-- ⑤対照 opacity(0) だけなら本当に消える -->
+  <div class="slot" id="h-flt0"><p style="filter:opacity(0);font-size:20px">A wiki source.</p></div>
+  <p id="l-flt0">A wiki later.</p>
+  <!-- ⑥ overflow:hidden に overflow-clip-margin は効かない -->
+  <div class="slot" id="h-ocm"><div style="position:relative;width:60px;height:30px;overflow:hidden;overflow-clip-margin:100px;background:#eee"><span style="position:absolute;left:120px;top:5px;white-space:nowrap;font-size:12px">A workflow out.</span></div></div>
+  <p id="l-ocm">A workflow later.</p>
+  <!-- ⑥対照 overflow:clip なら余白が効く -->
+  <div class="slot" id="h-ocmc"><div style="position:relative;width:60px;height:30px;overflow:clip;overflow-clip-margin:100px;background:#eee"><span style="position:absolute;left:120px;top:5px;white-space:nowrap;font-size:12px">A webhook out.</span></div></div>
+  <p id="l-ocmc">A webhook later.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* 第16回 RG-16-01。スクロールできる入れ物があるだけで到達範囲の検査をやめない。 */
+export const REACH16_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>reach16</title><style>html,body{background:#fff;color:#000}
+ .box{position:relative;width:100px;height:80px;overflow:auto;border:1px solid}</style></head><body>
+  <button id="before">before</button>
+  <!-- ① 入れ物の中の固定配置。どうスクロールしても画面へ出せない -->
+  <div class="box" id="b-fix"><p style="position:fixed;left:-10000px;top:0">A fork hidden.</p><div style="width:300px;height:300px"></div></div>
+  <p id="l-fix">A fork visible.</p>
+  <!-- ② 負の向きへ置かれた絶対配置。動かせる量（15px 前後）では届かない -->
+  <div class="box" id="b-abs"><p style="position:absolute;left:-10000px">A upstream hidden.</p><div style="width:300px;height:300px"></div></div>
+  <p id="l-abs">A upstream visible.</p>
+  <!-- ①②対照 右へスクロールすれば読める語（落としてはいけない） -->
+  <div class="box" id="b-ok"><p style="position:absolute;left:400px;top:0;white-space:nowrap">A blame reachable.</p><div style="width:600px;height:100px"></div></div>
+  <p id="l-ok">A blame visible.</p>
+  <!-- 対照 縦に長い中身も、スクロールで読めるので落とさない -->
+  <div class="box" id="b-tall"><div style="height:900px"><p style="margin-top:800px">A milestone below.</p></div></div>
+  <p id="l-tall">A milestone visible.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* 第16回 RG-16-06 / RG-16-08。ページと名前を共有しない。 */
+export const NAMESPACE16_PAGE = `<!doctype html><html lang="en" class="iiyaku-off"><head><meta charset="utf-8">
+<title>ns16</title><style>
+  html.iiyaku-off body{background:rgb(0,170,85)}
+  @layer repogloss{ .iiyaku-tooltip[data-iiyaku-owner]{
+    display:grid;position:relative;z-index:5;color:red;width:140px;height:30px} }
+</style></head><body>
+  <button id="before">before</button>
+  <p id="src">A branch here.</p>
+  <div class="iiyaku-tooltip" data-iiyaku-owner="page" id="page-own">PAGE OWN</div>
+  <div id="sink"></div>
+  <button id="after">after</button>
+</body></html>`;

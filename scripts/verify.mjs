@@ -876,6 +876,16 @@ check('content.js が保存キー iiyakuEnabled を変えていない', content.
   check('相対表現を探す検査が、実際に捕まえる（陽性対照）',
     RELATIVE.test('| 監査対象 | v1.8.9（main の先頭。タグ済み） |'));
 
+  // 監査回は毎回変わるのに、表題へ焼き込んでいたため**3巡続けて古いまま**出した
+  // （第14回 RG-14-09 → 第15回 RG-15-09 → 第16回 RG-16-10）。直す場所を毎回
+  // 探すのをやめ、変わる値を表題から追い出す。
+  const TITLE = (/^#\s+(.*)$/m.exec(audit) || [])[1] || '';
+  const ROUND = /第\s*\d+\s*回/;
+  check('AUDIT.md の表題に監査回を書いていない', !ROUND.test(TITLE),
+    '毎回変わる値を表題へ置くと、更新し忘れが繰り返される');
+  check('監査回を探す検査が、実際に捕まえる（陽性対照）',
+    ROUND.test('監査のための資料（第15回監査用）'));
+
   const st = (/^state:\s*(\S+)/m.exec(audit) || [])[1];
   const tag = (/^tag:\s*(\S+)/m.exec(audit) || [])[1];
   if (st && st !== 'uncommitted' && tag && tag !== 'null') {

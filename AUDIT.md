@@ -12,7 +12,7 @@ RepoGloss は、GitHub の画面に出てくる英語のうち Git / GitHub 固�
 
 | 項目 | 値 |
 |---|---|
-| **監査対象** | **`v1.8.16`（未コミット）** |
+| **監査対象** | **`v1.8.16` = コミット `879fc0fbccb17c63b154ff0dc96f6cd8a04f772b`**（タグ済み・提出前） |
 | 直前の版 | `v1.8.15` = コミット `f62fedcad4eeb2590c8158b7fe152aac530702ba`（**第17回監査の指摘により提出しない**） |
 | 基点コミット | `f62fedcad4eeb2590c8158b7fe152aac530702ba`（ここからの差分が今回の変更） |
 | 現在の既定ブランチ | `main` |
@@ -28,13 +28,14 @@ RepoGloss は、GitHub の画面に出てくる英語のうち Git / GitHub 固�
 差分は次のコマンドで確認できます。
 
 ```sh
-git diff --name-only v1.8.15             # 直前の版との差分（作業ツリー）
+git checkout v1.8.16                     # 監査対象を手元に出す
+git diff --name-only v1.8.15 v1.8.16     # 直前の版との差分
 # → 配布13ファイルのうち manifest.json・src/content.js・styles.css・README.md・
 #    DESIGN.md・PRIVACY.md が変わっている（辞書・matcher.js・アイコン・LICENSE は無変更）
 # → ほかに scripts/ と tests/ と docs/（配布物には入らない）
 ```
 
-**この版はまだ commit していません。** commit / push / タグ / Release / ウェブストア操作は、いずれも未実施です。
+**タグ `v1.8.16` を打ち、CI が提出候補 ZIP を作るところまで済んでいます。ストアへは未提出です。**
 
 > **監査対象と `main` の関係について（第11回 RG-11-06 の是正）。** 前回まで、監査対象を「`main` の先頭」と**相対的に**書いていました。提出候補の SHA を記録するコミットを1つ積んだ時点で、その記述は事実でなくなります（実際にそうなりました）。いまは対象をタグとコミットだけで名乗り、**現在の `main` の SHA はここに書きません**——書けば、その値もまた次のコミットで古くなるためです。両者の関係は文章ではなく検査で担保します。`state` が `uncommitted` でないとき、`verify` が「ここが名乗るタグと、いまの配布13ファイルが同じか」を `git diff` で突き合わせ、タグを引けない環境では**通しません**。
 
@@ -46,16 +47,16 @@ git diff --name-only v1.8.15             # 直前の版との差分（作業ツ�
 
 ```yaml
 version:            1.8.16
-state:              uncommitted        # commit / push / tag / Release / ストア提出はいずれも未実施
+state:              tagged             # commit / push / tag / CI 済み。Release とストア提出は未実施
 base_commit:        f62fedcad4eeb2590c8158b7fe152aac530702ba
-commit:             null
-tag:                null
-candidate_zip:      null
-candidate_bytes:    null
-candidate_sha256:   null
-content_sha256:     null
-combined_sha256:    null
-workflow_run:       null
+commit:             879fc0fbccb17c63b154ff0dc96f6cd8a04f772b
+tag:                v1.8.16
+candidate_zip:      repogloss-1.8.16.zip
+candidate_bytes:    134076
+candidate_sha256:   df4f2cff7217001857e7804af0a70a17afb26628944e0e07cc7b9f998c1cb338
+content_sha256:     a27b39b61b94046ac914e8d05251f7ac6b50f339f8946b21432e2be16b299cde
+combined_sha256:    04029e2c574ac7e57af2ecdf9ec91c261f2ea7730d669bfee065e9c7da53c85a
+workflow_run:       31571988209
 superseded:
   - version: 1.8.15
     tag: v1.8.15
@@ -120,11 +121,13 @@ superseded:
 store_published:    1.7.1
 ```
 
-取り下げた版のタグと ZIP は、すべて保存したまま動かしていません（既存20タグは今回も1つも動かしていません）。**直前の `v1.8.15`（`73880071…`）は、第17回監査の指摘により提出しません。**
+取り下げた版のタグと ZIP は、すべて保存したまま動かしていません（`v1.8.16` を打った前後で、既存20 ref が1文字も動いていないことを `refs/tags` 一覧の突き合わせで確認済み。1件の改変なら検出できることも、変異が実際に当たったことを確かめたうえで対照として示しています）。**直前の `v1.8.15`（`73880071…`）は、第17回監査の指摘により提出しません。**
 
-**この版には提出候補がまだありません。** 提出候補は `main` の CI が作るもので、手元で作ったものは `--release` 検査で落ちます（実測: `EXIT=1`）。
+**提出候補は、タグの中身と1バイトも違いません。** CI の run `31571988209` の `release-zip` が出した成果物を落として展開し、13ファイルを `git show v1.8.16:<path>` と突き合わせて **13/13 一致**（対照の `v1.8.15` とは5ファイルで相違）。`--release` 検査にも合格しています（`EXIT=0`。中身に6バイト足した写しでは `EXIT=1`）。
 
-**ZIP は誰でも再現できます。** 日時を 1980-01-01 に固定し、並び順を配布一覧の順に固定してあるため、同じ内容からは1バイト違わない同じものができます。
+> **⚠️ ZIP のハッシュだけでは、CI の成果物と手元ビルドを区別できません。** ビルドが決定的なので、同じ内容からは同じ ZIP ができます（実測: 手元の `--allow-uncommitted` ビルドと CI の成果物は**バイト単位で同一**）。区別が付くのは **sidecar だけ**です——検査したのは `builtInCI: true` / `workflowRunId: 31571988209` を持つほうです。`--release` 検査が落とすのも、ZIP の中身ではなくこの sidecar の申告です。
+
+**ZIP は誰でも再現できます。** 日時を 1980-01-01 に固定し、並び順を配布一覧の順に固定してあるため、同じ内容からは1バイト違わない同じものができます。配布13ファイルの合算ハッシュは **ubuntu / macos / windows / 手元 macOS の4者で完全に一致**しています（`04029e2c…`）。
 
 ```sh
 npm run package:zip -- --allow-uncommitted   # commit 前に試す場合。名前に UNCOMMITTED が入る
@@ -263,12 +266,12 @@ v1.8.2 と v1.8.3 で、**注記される語の集合は3ページとも完全�
 
 ### 4-1. 手元（macOS 26 / Google Chrome 151.0.7922.76 / Node.js v22.22.3・2026-08-12）
 
-下は手元での実行結果です。**この版はまだ CI に掛けていません**（未コミットのため）。
+下は手元での実行結果です（CI の結果は §4-2）。
 
 | command | exit | 結果 |
 |---|---:|---|
 | `node --check src/matcher.js` / `src/content.js` | 0 | 構文 OK |
-| `npm test` | 0 | 単体 **63件**全成功 / 構成検査 **293項目**・不一致0（辞書61語・version 1.8.16） |
+| `npm test` | 0 | 単体 **63件**全成功 / 構成検査 **296項目**・不一致0（辞書61語・version 1.8.16） |
 | `npm run test:e2e` | 0 | **267件**全成功（v1.8.15 は 241件。**+26件**） |
 | `npm run package:stage` / `:verify` | 0 | 13ファイル一致 |
 | `npm run package:zip -- --allow-uncommitted` / `:verify-zip` | 0 | 13ファイル（名前に `UNCOMMITTED` が入る。**提出候補ではない**） |
@@ -300,9 +303,18 @@ v1.8.2 と v1.8.3 で、**注記される語の集合は3ページとも完全�
 
 **上限は「減らす仕組み」ではなく「使いすぎを止める仕組み」です。** 軽いページでは発動せず、費用は変わりません。候補数への比例そのものも残ります（§7 の既知の制約）。
 
-### 4-2. CI
+### 4-2. CI（`main` の run [`31571988209`](https://github.com/Driedsandwich/repogloss/actions/runs/31571988209)・2026-08-12）
 
-**この版はまだ CI に掛けていません**（未コミットのため）。直前の `v1.8.15` は `main` の run [`31557715222`](https://github.com/Driedsandwich/repogloss/actions/runs/31557715222) で8ジョブすべて success でした（`verify` 293項目・`e2e` と `e2e-windows` が各241件・3 OS の合算 `1962deec…` 一致）。**その版は第17回監査の指摘により提出しません。**
+**8ジョブすべて success。** マージコミット `879fc0fb…`（＝タグ `v1.8.16` が指すもの）に対する実行です。
+
+| ジョブ | 結果 |
+|---|---|
+| `verify` | 構成検査 **293項目**・不一致0（当時は `state: uncommitted`） |
+| `e2e`（ubuntu） / `e2e-windows` | どちらも **267件**全成功 |
+| `package-hash` 3 OS / `hash-compare` | 合算が `04029e2c…` で3 OS 一致（`OK: 3 OS すべてで同じ`） |
+| `release-zip` | 提出候補 ZIP（`df4f2cff…`）を生成 |
+
+PR #26 の CI（run `31571666230`）も同じジョブが success でした（`release-zip` は skip）。
 
 ---
 
@@ -407,7 +419,7 @@ manifest.json の差分:         version の1行だけ（実測: `git diff v1.8.
 | 配布物の検査（壊した ZIP を9種ぶつける） | [`tests/package.test.js`](tests/package.test.js) |
 | 提出物の身元の schema と、その検査（28件） | [`scripts/provenance.mjs`](scripts/provenance.mjs) / [`tests/provenance.test.js`](tests/provenance.test.js) |
 | 配布物の一覧（唯一の正本） | [`scripts/package-files.mjs`](scripts/package-files.mjs) |
-| 構成と文書の整合検査（293項目） | [`scripts/verify.mjs`](scripts/verify.mjs) |
+| 構成と文書の整合検査（296項目） | [`scripts/verify.mjs`](scripts/verify.mjs) |
 | ZIP の読み書き（自作） | [`scripts/zip.mjs`](scripts/zip.mjs) |
 | ZIP の検査 | [`scripts/verify-zip.mjs`](scripts/verify-zip.mjs) |
 | CI | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |

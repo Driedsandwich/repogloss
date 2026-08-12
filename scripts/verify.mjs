@@ -361,9 +361,25 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   check('「中身が無い」を、Comment や空の Text を数えずに判定している',
     /function hasPageContent/.test(content) && !/childNodes\.length === 0/.test(stripComments(content)),
     '複製に空の Text を足すだけで、見えない Tab の停止点が残る');
-  check('名札が2つ以上そろったものだけを、名前で見分けている',
-    /OWN_DATA_ATTRS\.filter\(a => el\.hasAttribute\(a\)\)\.length < 2/.test(content),
+  // 名札の**数**で複製かどうかを当てていた（2つ以上そろっていたら自分の複製）。
+  // 名札を全部消された複製は見分けられず、見えない Tab の停止点として残った
+  // （第16回 RG-16-08。実測: 実際に Tab で 0×0 の要素へフォーカスが移った）。
+  // いまは、自分が作る要素へ**読み込みごとに変わる合言葉を class として**付け、
+  // それが付いているかどうかだけで決める（class は cloneNode でそのまま複製される）。
+  check('自分が作る要素に、合言葉の class を付けている',
+    /icon\.className = 'iiyaku-icon ' \+ UID/.test(content) &&
+    /tip\.className = 'iiyaku-tooltip ' \+ UID/.test(content) &&
+    /btn\.className = 'iiyaku-toggle ' \+ UID/.test(content),
+    'これが無いと、名札を全部消された複製を見分けられない');
+  check('複製の判定を、名札の数の当て推量でしていない',
+    !/OWN_DATA_ATTRS\.filter\(a => el\.hasAttribute\(a\)\)\.length < 2/.test(content),
+    '数え上げでは、名札を全部消された複製が素通りする');
+  check('合言葉の class を持つ他人の要素だけを、複製として無力化している',
+    /pick\('\.' \+ CSS\.escape\(UID\)\)/.test(content),
     'ページ側の要素から class や role を剥がしてしまう');
+  check('無力化するとき、合言葉の class も外している',
+    /classList\.remove\(\.\.\.OWN_CLASSES, UID\)/.test(content),
+    '外し忘れると、同じ要素を毎回つかみ直す');
   check('見た目の側で、印・吹き出し・切替ボタンの3つとも合言葉の値まで見ている',
     /function scopeOwnStyle/.test(content) && /:not\(\$\{mine\}\)/.test(content) &&
     /OWN_CLASSES\.map\(c => `\.\$\{c\}\[data-iiyaku-owner\]:not\(\$\{mine\}\)`\)/.test(content),

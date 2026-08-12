@@ -1216,7 +1216,7 @@
   }
   function stripOwnIdentity(el) {
     for (const a of OWN_DATA_ATTRS) el.removeAttribute(a);
-    el.classList.remove(...OWN_CLASSES);
+    el.classList.remove(...OWN_CLASSES, UID);
     stripOperability(el);
     removeDescribedBy(el, TIP_ID);
   }
@@ -1248,28 +1248,20 @@
       if (!hasPageContent(el)) removeOwn(el);
       else stripOwnIdentity(el);
     }
-    // ② 合言葉を消された／書き換えられた複製。断定はできないので、条件を重ねる:
-    //    自分が作る印と同じ形（<sup> ＋ 自分の class）で、**中身が空**で、
-    //    押せる／Tab で止まれる状態のものだけを扱う。ページ側が中身を持つ要素には
-    //    触れない（名前だけが同じ要素は、そのページの持ち物である）。
-    for (const el of pick('.' + OWN_CLASSES[0])) {
-      if (ownedIcons.has(el)) continue;
+    // ② 合言葉の属性を消された／書き換えられた複製。
+    //    自分が作る要素には、**読み込みごとに変わる合言葉を class としても**付けて
+    //    ある。class は cloneNode でそのまま複製されるので、属性を全部消された
+    //    複製でもここで捕まる。そしてページ側の持ち物がこの class を名乗ることは
+    //    ない（値は毎回変わり、ページからは読めない隔離された世界で決めている）。
+    //
+    //    以前は「自分の data 名札が2つ以上」で見分けていた。名札を全部消された複製は
+    //    見分けられず、幅0・Tab で止まれる点として残っていた（第16回 RG-16-08。
+    //    実測: 実際に Tab を押すと 0×0 の要素へフォーカスが移った）。
+    //    数え上げの当て推量をやめ、**自分の印が付いているかどうか**だけで決める。
+    for (const el of pick('.' + CSS.escape(UID))) {
+      if (ownedIcons.has(el) || isOurChrome(el)) continue;
       if (el.getAttribute('data-iiyaku-owner') === UID) continue;   // ① で扱った
-      if (el.tagName !== 'SUP') continue;
-      if (hasPageContent(el)) continue;                             // ページの中身がある
-      if (!el.hasAttribute('tabindex') && el.getAttribute('role') !== 'button') continue;
-      // **自分の名札が2つ以上そろっているものだけ**を扱う。1つだけなら、名前が
-      // 同じだけのページの持ち物と区別できない（実測: ページが置いた
-      // `<sup class="iiyaku-icon" role="button" tabindex="0" data-iiyaku-owner="page">`
-      // から class も role も tabindex も剥がしていた）。自分が作る印は必ず
-      // key・説明・用語・合言葉の4つを持つので、1つ消されても2つ以上は残る。
-      // 名札を全部消された複製は、見えない停止点として残る——これは既知の限界。
-      if (OWN_DATA_ATTRS.filter(a => el.hasAttribute(a)).length < 2) {
-        // 名札を全部消されていても、**自分が書く読み上げ名**が残っていれば複製と分かる
-        // （第15回 RG-15-08。実測: 幅0・tabindex=0 の見えない停止点が残った）。
-        // ページ側がこの文面を偶然持つことはない。
-        if (!/^「.+」の解説$/.test(el.getAttribute('aria-label') || '')) continue;
-      }
+      if (hasPageContent(el)) continue;   // ページが中身を入れた節点は壊さない
       stripOwnIdentity(el);
     }
     // 入口の目印も複製される。引き当てには使っていないので実害は無いが、
@@ -1290,7 +1282,7 @@
   // styles.css の ::after で丸と "i" を描くので、フォントに左右されない。
   function makeIcon(key, term, ja) {
     const icon = document.createElement('sup');
-    icon.className = 'iiyaku-icon';
+    icon.className = 'iiyaku-icon ' + UID;
     // title 属性は使わない。ブラウザ標準のツールチップは表示までに
     // 1秒前後の待ちがあり、こちらからは短くできないため。
     icon.dataset.iiyaku = ja;
@@ -1442,7 +1434,7 @@
     hideTip();
 
     tip = document.createElement('div');
-    tip.className = 'iiyaku-tooltip';
+    tip.className = 'iiyaku-tooltip ' + UID;
     tip.dataset.iiyakuOwner = UID;   // 見た目は合言葉つきの要素にだけ与える
     tip.id = TIP_ID;
     tip.setAttribute('role', 'tooltip');
@@ -2264,7 +2256,7 @@
 
   function createToggle() {
     const btn = document.createElement('button');
-    btn.className = 'iiyaku-toggle';
+    btn.className = 'iiyaku-toggle ' + UID;
     btn.dataset.iiyakuOwner = UID;   // 見た目は合言葉つきの要素にだけ与える
     btn.type = 'button';
     toggleBtn = btn;

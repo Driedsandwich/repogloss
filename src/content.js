@@ -233,14 +233,24 @@
   // 平行移動しか生まないので、線形部分には効かない（だから origin を解かなくてよい）。
   // 平行移動ぶんは、あとで外接矩形の実測値と突き合わせて解く。
   //   戻り値 { m, flat } … m は 2D の線形行列（恒等なら null）、flat は 2D で表せるか
-  function ownLinear(v) {
-    if (!v || v === 'none') return { m: null, flat: true };
+  // `zoom` も見る（第17回 RG-17-03）。`zoom` は箱の寸法を変えずに**描画だけ**を
+  // 拡大するので、これを写像へ入れないと `getBoundingClientRect()` と食い違う
+  // （実測: `zoom:2` の 120px の箱は、計算後のスタイルでは 120px、矩形では 240px）。
+  // 一様な拡大なので、変形の線形部分とは掛ける順序を気にしなくてよい。
+  function ownLinear(cs) {
+    const v = cs.transform;
+    const z = parseFloat(cs.zoom);
+    const zoom = isFinite(z) && z > 0 ? z : 1;
+    const scale = zoom === 1 ? null : { a: zoom, b: 0, c: 0, d: zoom };
+    if (!v || v === 'none') return { m: scale, flat: true };
     const m = /^matrix\(([^)]*)\)$/.exec(v);
     if (!m) return { m: null, flat: false };        // matrix3d など。解かない
     const n = m[1].split(',').map(Number);
     if (n.length !== 6 || n.some(x => !isFinite(x))) return { m: null, flat: false };
-    if (n[0] === 1 && n[1] === 0 && n[2] === 0 && n[3] === 1) return { m: null, flat: true };
-    return { m: { a: n[0], b: n[1], c: n[2], d: n[3] }, flat: true };
+    const t = (n[0] === 1 && n[1] === 0 && n[2] === 0 && n[3] === 1)
+      ? null : { a: n[0], b: n[1], c: n[2], d: n[3] };
+    if (!t) return { m: scale, flat: true };
+    return { m: scale ? mul(scale, t) : t, flat: true };
   }
 
   const IDENTITY = { a: 1, b: 0, c: 0, d: 1 };
@@ -674,11 +684,14 @@
         // 中にある語が落ちた**（第16回 RG-16-03。実測: 回転した楕円の外の語は
         // 0画素なのに印が付き、後ろの読める同じ語が説明されなかった）。
         // 形は変形前の座標で解き、**語の矩形のほうを変形前へ戻して**当てる。
-        const bw = px(cs.width) + px(cs.paddingLeft) + px(cs.paddingRight) +
-                   px(cs.borderLeftWidth) + px(cs.borderRightWidth);
-        const bh = px(cs.height) + px(cs.paddingTop) + px(cs.paddingBottom) +
-                   px(cs.borderTopWidth) + px(cs.borderBottomWidth);
-        const map = localToViewport(L, bw, bh, border);
+        // ⚠️ 変形前の箱は `offsetWidth` / `offsetHeight` で取る（第17回 RG-17-03）。
+        // 計算後のスタイルの `width` から padding と border を足していたが、
+        // `box-sizing: border-box` では `width` に既に両方が入っているので**二重に
+        // 足していた**（実測: 120px の箱を 148px と見なし、切り抜きの外の0画素の語に
+        // 印が付いた）。`offsetWidth` は border box そのもので、`zoom` も変形も
+        // 掛からない生の寸法なので、そのまま変形前の座標に使える。
+        const bw = el.offsetWidth, bh = el.offsetHeight;
+        const map = (bw > 0 && bh > 0) ? localToViewport(L, bw, bh, border) : null;
         if (map) {
           const ref = refBoxLocal(cs, bw, bh, box);
           const sr = shapeBoundsRect(sh, ref);
@@ -774,7 +787,7 @@
     let tests = up.tests;
     // 変形は祖先から掛け合わさる。自分の分まで含めた線形部分を先に出しておく
     // （clip-path の形は、この要素の変形前の座標で定義されているため）。
-    const t = ownLinear(cs.transform);
+    const t = ownLinear(cs);
     const linear = t.m ? mul(up.linear, t.m) : up.linear;
     const flat = up.flat && t.flat;
     const own = ownClips(el, cs, linear, flat);

@@ -583,8 +583,15 @@
     if (cx || cy) {
       const b = padBox();
       let { x1, y1, x2, y2 } = b;
-      const mg = px(cs.overflowClipMargin);   // overflow:clip は外側へ余白を足せる
-      if (mg > 0) { x1 -= mg; y1 -= mg; x2 += mg; y2 += mg; }
+      // `overflow-clip-margin` が効くのは **`clip` の軸だけ**。`hidden` にも足して
+      // いたため、余白のぶん外まで可視扱いになっていた（第16回 RG-16-07。実測:
+      // `overflow:hidden; overflow-clip-margin:100px` の外の0画素の語に印が付き、
+      // 後ろの読める同じ語が説明されなかった）。
+      const mg = px(cs.overflowClipMargin);
+      if (mg > 0) {
+        if (cs.overflowX === 'clip') { x1 -= mg; x2 += mg; }
+        if (cs.overflowY === 'clip') { y1 -= mg; y2 += mg; }
+      }
       if (!cx) { x1 = -Infinity; x2 = Infinity; }
       if (!cy) { y1 = -Infinity; y2 = Infinity; }
       overflow = { x1, y1, x2, y2 };

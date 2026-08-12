@@ -842,11 +842,11 @@ for (const cls of ['iiyaku-icon', 'iiyaku-toggle', 'iiyaku-tooltip']) {
 // 説明の文章に出てくる名前まで数えないよう、**コメントを外してから**見る
 // （たまたま通っているだけの検査にしない）。
 const cssCode = css.replace(/\/\*[\s\S]*?\*\//g, '');
-check('OFF の目印がページの class ではなく属性である',
-  content.includes("const OFF_ATTR = 'data-iiyaku-off'") && !/iiyaku-off/.test(stripComments(content).replace(/OFF_ATTR = 'data-iiyaku-off'/, '')),
-  'ページ側が同じ名前の class を持つと、起動時にそれを消してしまう');
+check('OFF の目印が、名前ごと読み込みごとに変わる',
+  /const OFF_ATTR = 'data-' \+ UID \+ '-off'/.test(content) && !/iiyaku-off/.test(stripComments(content)),
+  '固定名だと、ページが同じ名前を使っているときに上書き・削除してしまう');
 check('OFF の目印を探す検査が、実際に捕まえる（陽性対照）',
-  /iiyaku-off/.test(stripComments("const OFF_CLASS = 'iiyaku-off';")));
+  /iiyaku-off/.test(stripComments("const OFF_ATTR = 'data-iiyaku-off';")));
 check('OFF の規則を styles.css に固定で置いていない', !/\.iiyaku-off/.test(cssCode),
   '合言葉つきの属性で絞るので、規則は content.js が走り出しに足す');
 check('OFF の規則を探す検査が、実際に捕まえる（陽性対照）',

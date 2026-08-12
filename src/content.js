@@ -6,13 +6,14 @@
   // 設定は chrome.storage.local に置く。localStorage は「いま開いているサイト側」の
   // 保管庫なので、拡張の設定を入れると github.com のデータを汚すことになる。
   const STORE_KEY = 'iiyakuEnabled';
-  // OFF の目印。**ページの class には触れない**——以前は `<html>` へ `iiyaku-off`
-  // という class を付けており、ページが同じ名前の class を持っていると起動時に
-  // 消していた（第16回 RG-16-06）。属性の値には下の合言葉を入れるので、
-  // ページ側が同じ属性を書いても自分の印は隠れない。
-  const OFF_ATTR = 'data-iiyaku-off';
   // 同じ ID がページ側や他の拡張と衝突しないよう、読み込みごとに変える。
   const UID = 'iiyaku-' + Math.random().toString(36).slice(2, 10);
+  // OFF の目印。**名前ごと読み込みごとに変える**（第17回 RG-17-05）。
+  // 以前は `<html>` の class（第16回 RG-16-06 で是正）→ 固定名の属性、と来たが、
+  // 固定名である限りページと共有してしまう。実測: ページが置いた
+  // `data-iiyaku-off="page"` を、OFF にすると自分の値で上書きし、ON へ戻すと消していた
+  // （消す側だけ直しても、書く側で壊れる）。名前が毎回変われば、そもそも重ならない。
+  const OFF_ATTR = 'data-' + UID + '-off';
   const TIP_ID = UID + '-tip';
   // カスケードレイヤーの名前。styles.css の宣言と揃える（verify.mjs が突き合わせる）。
   const SCOPE_LAYER = 'repogloss-e7b41d-scope';
@@ -233,14 +234,24 @@
   // 平行移動しか生まないので、線形部分には効かない（だから origin を解かなくてよい）。
   // 平行移動ぶんは、あとで外接矩形の実測値と突き合わせて解く。
   //   戻り値 { m, flat } … m は 2D の線形行列（恒等なら null）、flat は 2D で表せるか
-  function ownLinear(v) {
-    if (!v || v === 'none') return { m: null, flat: true };
+  // `zoom` も見る（第17回 RG-17-03）。`zoom` は箱の寸法を変えずに**描画だけ**を
+  // 拡大するので、これを写像へ入れないと `getBoundingClientRect()` と食い違う
+  // （実測: `zoom:2` の 120px の箱は、計算後のスタイルでは 120px、矩形では 240px）。
+  // 一様な拡大なので、変形の線形部分とは掛ける順序を気にしなくてよい。
+  function ownLinear(cs) {
+    const v = cs.transform;
+    const z = parseFloat(cs.zoom);
+    const zoom = isFinite(z) && z > 0 ? z : 1;
+    const scale = zoom === 1 ? null : { a: zoom, b: 0, c: 0, d: zoom };
+    if (!v || v === 'none') return { m: scale, flat: true };
     const m = /^matrix\(([^)]*)\)$/.exec(v);
     if (!m) return { m: null, flat: false };        // matrix3d など。解かない
     const n = m[1].split(',').map(Number);
     if (n.length !== 6 || n.some(x => !isFinite(x))) return { m: null, flat: false };
-    if (n[0] === 1 && n[1] === 0 && n[2] === 0 && n[3] === 1) return { m: null, flat: true };
-    return { m: { a: n[0], b: n[1], c: n[2], d: n[3] }, flat: true };
+    const t = (n[0] === 1 && n[1] === 0 && n[2] === 0 && n[3] === 1)
+      ? null : { a: n[0], b: n[1], c: n[2], d: n[3] };
+    if (!t) return { m: scale, flat: true };
+    return { m: scale ? mul(scale, t) : t, flat: true };
   }
 
   const IDENTITY = { a: 1, b: 0, c: 0, d: 1 };
@@ -415,8 +426,15 @@
   }
 
   // 角丸の矩形と交わるか。角ごとの四分楕円の外側だけを落とす。
-  function rectHitsRounded(r, box, radii) {
-    if (r.right <= box.x1 || r.left >= box.x2 || r.bottom <= box.y1 || r.top >= box.y2) return false;
+  function rectHitsRounded(r0, box, radii) {
+    if (r0.right <= box.x1 || r0.left >= box.x2 || r0.bottom <= box.y1 || r0.top >= box.y2) return false;
+    // ⚠️ **先に box で切る**（第17回 RG-17-02）。切らずに「角の箱へまるごと収まるか」を
+    // 見ていたため、箱の外へはみ出した矩形は角の判定に入らず、無条件で可視になっていた
+    // （実測: `inset(0 round 60px)` の左上の外に置いた0画素の語に印が付いた）。
+    // 切ったあとの矩形が角の箱の中だけにあるなら、その四分楕円との交差で決まる。
+    const r = { left: Math.max(r0.left, box.x1), top: Math.max(r0.top, box.y1),
+                right: Math.min(r0.right, box.x2), bottom: Math.min(r0.bottom, box.y2) };
+    if (r.right <= r.left || r.bottom <= r.top) return false;
     // 上左・上右・下右・下左。それぞれ角の正方形と、その四分楕円の中心。
     // 半径は cornerRadii が used value まで縮めてあるので、ここでは頭打ちにしない
     // （辺の長さで角ごとに切ると、比例縮小のかかった形と食い違う）。
@@ -527,12 +545,29 @@
     const sw = parseFloat(cs.webkitTextStrokeWidth || '0');
     const sc = cs.webkitTextStrokeColor || '';
     if (sw > 0 && !TRANSPARENT.test(sc)) return false;
-    // ② 影。透明な塗りでも `text-shadow: 0 0 0 black` は文字の形をそのまま描く
-    if (cs.textShadow && cs.textShadow !== 'none') return false;
-    // ③ 背景を文字型に抜く指定。塗りを透明にするのは、これを使うときの定石
+    // ② 影。透明な塗りでも `text-shadow: 0 0 0 black` は文字の形をそのまま描く。
+    //    ⚠️ 「指定がある」だけで描かれると決めてはいけない（第17回 RG-17-04。実測:
+    //    `text-shadow: 0 0 0 transparent` の語は0画素なのに印が付いた）。**色を見る**。
+    if (anyOpaqueColor(cs.textShadow)) return false;
+    // ③ 背景を文字型に抜く指定。塗りを透明にするのは、これを使うときの定石。
+    //    ⚠️ これも「指定がある」だけでは描かれない（実測: `background:none` に
+    //    `background-clip:text` を付けた語は0画素なのに印が付いた）。**塗りを見る**。
     const bc = cs.backgroundClip || cs.webkitBackgroundClip;
-    if (bc === 'text') return false;
+    if (bc === 'text' &&
+        ((cs.backgroundImage && cs.backgroundImage !== 'none' &&
+          !isFullyTransparentGradient(cs.backgroundImage)) ||
+         !TRANSPARENT.test(cs.backgroundColor || ''))) return false;
     return true;
+  }
+
+  // 色の並びのうち、1つでも不透明なものがあるか。`none` は無し。
+  // 色を書いていない影（`text-shadow: 0 0 2px`）は `currentColor` なので、
+  // 塗りが透明でも描かれうる——読める側へ倒して「不透明あり」とする。
+  function anyOpaqueColor(v) {
+    if (!v || v === 'none') return false;
+    const colors = v.match(/rgba?\([^)]*\)/g);
+    if (!colors || colors.length === 0) return true;      // 色の指定が読めない
+    return colors.some(c => !TRANSPARENT.test(c));
   }
 
   // `filter` の並びは**前から順に**適用され、後段の `url()` は前段の出力とは別の
@@ -549,10 +584,34 @@
     return !fns.slice(zero + 1).some(f => /^url\(/.test(f));
   }
 
+  // `mask-image` は**層の並び**で、カンマ区切りの各層を合成した結果が最終の覆いになる。
+  // 先頭の層だけを見て「透明だから全部消えている」と断定していたため、後ろに不透明な
+  // 層がある語を落としていた（第17回 RG-17-04。実測: 透明な gradient と不透明な
+  // 画像を並べた語は 391画素描かれているのに印が付かなかった）。
+  // 断定してよいのは、**すべての層が完全に透明**なときだけ。
+  function maskHidesAll(v) {
+    const layers = splitTopLevel(v);
+    return layers.length > 0 && layers.every(l => isFullyTransparentGradient(l.trim()));
+  }
+
+  // カンマで切る。ただし `rgba(…)` や `url(…)` の中のカンマでは切らない。
+  function splitTopLevel(v) {
+    const out = [];
+    let depth = 0, cur = '';
+    for (const ch of v) {
+      if (ch === '(') depth++;
+      else if (ch === ')') depth--;
+      if (ch === ',' && depth === 0) { out.push(cur); cur = ''; continue; }
+      cur += ch;
+    }
+    if (cur.trim()) out.push(cur);
+    return out;
+  }
+
   function paintHidesAll(cs) {
     if (cs.filter && cs.filter !== 'none' && filterHidesAll(cs.filter)) return true;
     const mi = cs.maskImage || cs.webkitMaskImage;
-    if (mi && mi !== 'none' && isFullyTransparentGradient(mi)) return true;
+    if (mi && mi !== 'none' && maskHidesAll(mi)) return true;
     return false;
   }
 
@@ -562,6 +621,24 @@
   //   tests    … 形そのものとの交差判定（外接矩形だけでは、円や角丸の外を落とせない）
   // 一緒くたにしていたため、包含ブロックでない祖先の clip-path が丸ごと無視されていた
   // （実測: 0画素の語に印が付き、後ろの読める同じ語が説明されなかった）。
+  // その軸で、いまどこまでスクロールできるか。**原点は片側にある**。
+  //   横書き左→右 … scrollLeft は 0 〜 (scrollWidth - clientWidth)
+  //   右→左（`direction:rtl`）と縦書き `vertical-rl` … 負の側 〜 0
+  // 実測で確かめた値に合わせている（rtl: [-200, 0] / vertical-rl: x=[-215,0] y=[0,275]）。
+  // いまの値が 0 でないときは、その符号だけで原点の側が決まるので、書字方向を見ない。
+  function scrollRange(el, cs, axis) {
+    const span = axis === 'x' ? Math.max(0, el.scrollWidth - el.clientWidth)
+                              : Math.max(0, el.scrollHeight - el.clientHeight);
+    const now = axis === 'x' ? el.scrollLeft : el.scrollTop;
+    if (span === 0) return { min: now, max: now, now };
+    if (now < 0) return { min: -span, max: 0, now };
+    if (now > 0) return { min: 0, max: span, now };
+    const backwards = axis === 'x'
+      ? (cs.direction === 'rtl' || /^(vertical-rl|sideways-rl)$/.test(cs.writingMode))
+      : false;
+    return backwards ? { min: -span, max: 0, now } : { min: 0, max: span, now };
+  }
+
   //   L    … 祖先ぶんも含めた変形の線形部分（viewport ← 変形前の座標）
   //   flat … その変形が 2D で表せるか（3D は解かない）
   function ownClips(el, cs, L, flat) {
@@ -609,14 +686,24 @@
     // 語（どうスクロールしても画面へ出せない）に印が付き、Tab で止まれる点まで
     // できていた（第16回 RG-16-01。実測: 入れ物は 300px 中 85px しか出せない）。
     //
-    // 動かせる量は `scrollWidth - clientWidth`。向きは書字方向で符号が変わるので、
-    // **両側へ同じだけ広げる**（広く見積もる＝読める側へ倒す）。
+    // ⚠️ 量だけ見て**両側へ同じだけ広げる**のは間違いだった（第17回 RG-17-01）。
+    // スクロールの原点は片側にあり、その手前へは1pxも動かせない。実測: 横書き左→右の
+    // 入れ物では `scrollLeft` は 0〜200 で、負にはできない。`left:-150px` の語は
+    // どうやっても画面へ出せないのに印が付き、Tab で止まれる点が残っていた。
+    // いまは**軸ごとの実際の可動域**（scrollRange）から、動かせる先を出す。
     let reach = null;
     if (scrolls(cs.overflowX) || scrolls(cs.overflowY)) {
       const b = padBox();
-      const rx = scrolls(cs.overflowX) ? Math.max(0, el.scrollWidth - el.clientWidth) : Infinity;
-      const ry = scrolls(cs.overflowY) ? Math.max(0, el.scrollHeight - el.clientHeight) : Infinity;
-      reach = { x1: b.x1 - rx, y1: b.y1 - ry, x2: b.x2 + rx, y2: b.y2 + ry };
+      const rx = scrolls(cs.overflowX) ? scrollRange(el, cs, 'x') : null;
+      const ry = scrolls(cs.overflowY) ? scrollRange(el, cs, 'y') : null;
+      // scrollLeft を δ 増やすと中身は δ ぶん**左**へ動く。届く範囲は
+      //   x1 = 切り取り線の左 + (下限 - いまの値)、x2 = 右 + (上限 - いまの値)
+      reach = {
+        x1: rx ? b.x1 + rx.min - rx.now : -Infinity,
+        x2: rx ? b.x2 + rx.max - rx.now : Infinity,
+        y1: ry ? b.y1 + ry.min - ry.now : -Infinity,
+        y2: ry ? b.y2 + ry.max - ry.now : Infinity
+      };
     }
     // ② legacy clip。**絶対配置の要素にしか効かない**（position を見ずに判定すると、
     //    読める文章のほうを除外する。実測で再現済み）。
@@ -639,11 +726,14 @@
         // 中にある語が落ちた**（第16回 RG-16-03。実測: 回転した楕円の外の語は
         // 0画素なのに印が付き、後ろの読める同じ語が説明されなかった）。
         // 形は変形前の座標で解き、**語の矩形のほうを変形前へ戻して**当てる。
-        const bw = px(cs.width) + px(cs.paddingLeft) + px(cs.paddingRight) +
-                   px(cs.borderLeftWidth) + px(cs.borderRightWidth);
-        const bh = px(cs.height) + px(cs.paddingTop) + px(cs.paddingBottom) +
-                   px(cs.borderTopWidth) + px(cs.borderBottomWidth);
-        const map = localToViewport(L, bw, bh, border);
+        // ⚠️ 変形前の箱は `offsetWidth` / `offsetHeight` で取る（第17回 RG-17-03）。
+        // 計算後のスタイルの `width` から padding と border を足していたが、
+        // `box-sizing: border-box` では `width` に既に両方が入っているので**二重に
+        // 足していた**（実測: 120px の箱を 148px と見なし、切り抜きの外の0画素の語に
+        // 印が付いた）。`offsetWidth` は border box そのもので、`zoom` も変形も
+        // 掛からない生の寸法なので、そのまま変形前の座標に使える。
+        const bw = el.offsetWidth, bh = el.offsetHeight;
+        const map = (bw > 0 && bh > 0) ? localToViewport(L, bw, bh, border) : null;
         if (map) {
           const ref = refBoxLocal(cs, bw, bh, box);
           const sr = shapeBoundsRect(sh, ref);
@@ -729,7 +819,7 @@
 
   function paintChain(el, mode) {
     if (!el) return { clip: null, tests: [], hidden: false, transformed: false, fixed: false,
-                      reach: null, linear: IDENTITY, flat: true };
+                      captured: false, reach: null, linear: IDENTITY, flat: true };
     const cache = chainCache && chainCache[mode];
     if (cache) { const hit = cache.get(el); if (hit !== undefined) return hit; }
     const cs = getComputedStyle(el);
@@ -739,7 +829,7 @@
     let tests = up.tests;
     // 変形は祖先から掛け合わさる。自分の分まで含めた線形部分を先に出しておく
     // （clip-path の形は、この要素の変形前の座標で定義されているため）。
-    const t = ownLinear(cs.transform);
+    const t = ownLinear(cs);
     const linear = t.m ? mul(up.linear, t.m) : up.linear;
     const flat = up.flat && t.flat;
     const own = ownClips(el, cs, linear, flat);
@@ -756,9 +846,20 @@
     // 動かせる範囲は「いちばん内側の入れ物」で決まる。外側の入れ物の範囲と重ねては
     // いけない——高さ100pxの入れ物に5,000pxの中身がある場合、中身は文書の高さを
     // 増やさないので、文書側の範囲と重ねると読める中身まで落ちる。
+    // `position:fixed` でも、**変形などを持つ祖先が包含ブロックを作ると画面には
+    // 固定されない**——文書のスクロールで動く（第17回 RG-17-08。実測: `translateZ(0)`
+    // の中の固定要素は、文書を900px送ると y=1166 から y=266 へ動いた。それでも画面へ
+    // 固定されている扱いだったので、画面に入ってからも暇なときの確認まで説明が付かなかった）。
+    //
+    // 捕まっているかは、**上へ辿るときの逃げ方**で分かる。`mode === 'fixed'` で上って
+    // いる途中に包含ブロックを作る要素があれば、その下の固定要素は捕まっている。
+    // `up.captured` は「ここに置いた固定要素が捕まるか」の答えになっている
+    // （自分が固定なら、上へは 'fixed' で辿っているため）。
+    const captured = (mode === 'fixed' && applies) || up.captured;
     const v = { clip, tests, hidden: up.hidden || paintHidesAll(cs),
                 transformed: up.transformed || cs.transform !== 'none',
-                fixed: up.fixed || cs.position === 'fixed',
+                fixed: (cs.position === 'fixed' && !up.captured) || up.fixed,
+                captured,
                 reach: (applies && own && own.reach) ? own.reach : up.reach,
                 linear, flat };
     if (cache) cache.set(el, v);
@@ -1275,6 +1376,26 @@
       if (el.getAttribute('data-iiyaku-owner') === UID) continue;   // ① で扱った
       if (hasPageContent(el)) continue;   // ページが中身を入れた節点は壊さない
       stripOwnIdentity(el);
+    }
+    // ③ 合言葉の class まで消された複製。ここまで消されると、残るのは自分が作る印と
+    //    **同じ形**（空の <sup> ＋ 自分の class ＋ 押せる状態）だけになる（第17回
+    //    RG-17-06。実測: 実際に Tab を押すと 0×0 の要素へフォーカスが移った）。
+    //
+    //    ページの持ち物と見分ける手がかりは1つだけ残る——**別の持ち主を名乗っているか**。
+    //    第14回 RG-14-04 で壊してしまったページの要素は `data-iiyaku-owner="page"` を
+    //    持っていた。名乗りがある要素には触れない。名乗りが無く、空で、押せて、
+    //    自分の class を持つ <sup> だけを無力化する。
+    //
+    //    ⚠️ これは断定ではなく割り切りである。ページがこの形の要素を自分で作れば
+    //    巻き込む。ただし外すのは操作性だけで、対象は幅0で中身の無い要素に限られる。
+    //    そして**この形の見えない停止点は、ページが自分だけで作ることもできる**。
+    for (const el of pick('sup.' + OWN_CLASSES[0])) {
+      if (ownedIcons.has(el) || isOurChrome(el)) continue;
+      if (el.classList.contains(UID)) continue;          // ② で扱った
+      if (el.hasAttribute('data-iiyaku-owner')) continue; // 別の持ち主を名乗っている
+      if (hasPageContent(el)) continue;
+      if (!el.hasAttribute('tabindex') && el.getAttribute('role') !== 'button') continue;
+      stripOperability(el);
     }
     // 入口の目印も複製される。引き当てには使っていないので実害は無いが、
     // ページに自分の合言葉だけが残るのは紛らわしいので外す。
@@ -1926,10 +2047,13 @@
   function discoverLatent() {
     if (latentPass === null) { latentPass = [...latent]; latentCursor = 0; }
     const started = performance.now();
+    // 使った時間を積む（上限を超えたら、カーソルの合図では動かなくなる）
+    const bill = () => noteLatentCost(performance.now() - started);
     let n = 0;
     while (latentCursor < latentPass.length) {
       if ((latentCursor & 15) === 0 && performance.now() - started > LATENT_BUDGET_MS) {
         scheduleLatentResume();
+        bill();
         return n;
       }
       const node = latentPass[latentCursor++];
@@ -1959,6 +2083,7 @@
       if (isHandled(node)) latent.delete(node);
     }
     latentPass = null; latentCursor = 0;
+    bill();
     // ひと回りし終えたときだけ、上限で取りこぼした分を入れ直す。
     if (latentTruncated) reindexLatent();
     return n;
@@ -2151,12 +2276,33 @@
   // ⚠️ 間引きは「捨てる」ではなく「あとで1回やる」にする。捨てるだけだと、
   // 1つ目のメニューから 60ms で2つ目へ移ったとき、2つ目をどれだけ開いていても
   // 暇なときの確認まで説明が付かない（第15回 RG-15-07）。
+  // カーソルの合図1回の費用は、控えの件数に比例する。1件あたりの費用は下げたが
+  // （第16回 RG-16-09）、比例そのものは残る。見直す範囲を「カーソルの下の枝」へ
+  // 狭めるのは `:has()` や兄弟結合子があるため安全でないので、代わりに
+  // **使ってよい時間に上限を置く**（第17回 RG-17-07）。
+  //   直近 CPU_WINDOW の間に、控えの見直しへ CPU_BUDGET を超えて使ったら、
+  //   カーソルの合図では動かない。2秒ごとの確認は続くので、正しさは失われず遅れるだけ。
+  const CPU_WINDOW = 2000;
+  const CPU_BUDGET = 200;          // 2秒のうち 200ms（10%）まで
+  let spentAt = 0, spent = 0;
+  function noteLatentCost(ms) {
+    const now = performance.now();
+    if (now - spentAt > CPU_WINDOW) { spentAt = now; spent = 0; }
+    spent += ms;
+  }
+  function overBudget() {
+    const now = performance.now();
+    if (now - spentAt > CPU_WINDOW) { spentAt = now; spent = 0; }
+    return spent > CPU_BUDGET;
+  }
+
   const HOVER_GAP = 150;
   let hoverPending = false;
   let hoverAt = 0;
   let hoverTail = null;
   const onPointerOrFocus = () => {
     if (latent.size === 0 || hoverPending) return;
+    if (overBudget()) return;      // 使いすぎた。2秒ごとの確認に任せる
     const now = performance.now();
     if (now - hoverAt < HOVER_GAP) {
       // 最後の1回は、間引きの窓が明けたあとに必ず処理する
@@ -2256,6 +2402,7 @@
     enabled = next;
     const root = document.documentElement;
     // ページの class は読みも書きもしない。自分の属性を1つ出し入れするだけにする。
+    // 名前そのものが自分のものなので、ページの持ち物と重ならない（→ OFF_ATTR）。
     setOwnAttr(root, OFF_ATTR, enabled ? null : UID);
     if (enabled) startRuntime(); else stopRuntime();
     updateToggle();
@@ -2345,7 +2492,7 @@
     const revert = OWN_STYLE_PROPS.map(p => `${p}:revert`).join(';');
     // OFF のとき、**自分の印だけ**を隠す。目印はページと共有しない合言葉つきの属性
     // （以前は `<html>` の class を使い、ページの同名 class を消していた）。
-    const off = `${document.documentElement.tagName.toLowerCase()}[${OFF_ATTR}="${CSS.escape(UID)}"] ` +
+    const off = `${document.documentElement.tagName.toLowerCase()}[${CSS.escape(OFF_ATTR)}] ` +
                 `.${OWN_CLASSES[0]}${mine}{display:none}`;
     return `@layer ${SCOPE_LAYER}{` +
            `${sels.concat(inner).join(',')}{${revert}}` +

@@ -1047,3 +1047,93 @@ export const NAMESPACE16_PAGE = `<!doctype html><html lang="en" class="iiyaku-of
   <div id="sink"></div>
   <button id="after">after</button>
 </body></html>`;
+
+/* ===================== 第17回監査（v1.8.16）の反例 ===================== */
+/* 画面内で画素を数えて確かめられる形。①角丸の外へはみ出した語 ②box-sizing:border-box
+   ③zoom ④完全に透明な影 ⑤塗りの無い background-clip:text ⑥複数層の mask */
+export const PAINT17_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>paint17</title><style>html,body{background:#fff;color:#000}
+ .slot{height:220px;position:relative}</style></head><body>
+  <button id="before">before</button>
+  <!-- ① 角の箱を部分的にはみ出した語（切り取りの外） -->
+  <div class="slot" id="h-rnd"><div style="position:relative;width:120px;height:120px;clip-path:inset(0 round 60px);margin:20px;background:#eee"><span style="position:absolute;left:-8px;top:4px;font:5px/5px Arial">branch</span></div></div>
+  <p id="l-rnd">A branch later.</p>
+  <!-- ①対照 同じ形の中央 -->
+  <div class="slot" id="h-rndin"><div style="position:relative;width:120px;height:120px;clip-path:inset(0 round 60px);margin:20px;background:#eee"><span style="position:absolute;left:45px;top:58px;font:5px/5px Arial">commit</span></div></div>
+  <p id="l-rndin">A commit later.</p>
+  <!-- ② box-sizing:border-box（padding と border を二重に足していた） -->
+  <div class="slot" id="h-bbox"><div style="box-sizing:border-box;position:relative;width:120px;height:120px;padding:40px;border:4px solid #ccc;transform:rotate(25deg);transform-origin:60px 60px;clip-path:content-box;margin:30px;background:#eee"><span style="position:absolute;left:95px;top:5px;font:5px/5px Arial">merge</span></div></div>
+  <p id="l-bbox">A merge later.</p>
+  <!-- ③ zoom が写像に入っていない -->
+  <div class="slot" id="h-zoom"><div style="position:relative;width:120px;height:120px;padding:30px;zoom:2;clip-path:content-box;background:#eee"><span style="position:absolute;left:20px;top:20px;font:5px/5px Arial">rebase</span></div></div>
+  <p id="l-zoom">A rebase later.</p>
+  <!-- ③対照 zoom ありで content-box の中 -->
+  <div class="slot" id="h-zoomin"><div style="position:relative;width:120px;height:120px;padding:30px;zoom:2;clip-path:content-box;background:#eee"><span style="position:absolute;left:45px;top:45px;font:5px/5px Arial">fetch</span></div></div>
+  <p id="l-zoomin">A fetch later.</p>
+  <!-- ④ 完全に透明な影 -->
+  <div class="slot" id="h-shd0"><p style="color:transparent;text-shadow:0 0 0 transparent;font:20px Arial">A conflict hidden.</p></div>
+  <p id="l-shd0">A conflict later.</p>
+  <!-- ④対照 黒い影 -->
+  <div class="slot" id="h-shdb"><p style="color:transparent;text-shadow:0 0 0 black;font:20px Arial">A diff shown.</p></div>
+  <p id="l-shdb">A diff later.</p>
+  <!-- ⑤ 塗りの無い background-clip:text -->
+  <div class="slot" id="h-bgc0"><p style="background:none;color:transparent;background-clip:text;-webkit-background-clip:text;font:20px Arial">A label hidden.</p></div>
+  <p id="l-bgc0">A label later.</p>
+  <!-- ⑥ 透明 gradient ＋ 不透明 URL の複数 mask 層 -->
+  <div class="slot" id="h-mask2"><p style="font:20px Arial;-webkit-mask-image:linear-gradient(rgba(0,0,0,0),rgba(0,0,0,0)),url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMDAiIGhlaWdodD0iNDAiPjxyZWN0IHdpZHRoPSIzMDAiIGhlaWdodD0iNDAiIGZpbGw9IndoaXRlIi8+PC9zdmc+');mask-image:linear-gradient(rgba(0,0,0,0),rgba(0,0,0,0)),url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIzMDAiIGhlaWdodD0iNDAiPjxyZWN0IHdpZHRoPSIzMDAiIGhlaWdodD0iNDAiIGZpbGw9IndoaXRlIi8+PC9zdmc+')">A remote shown.</p></div>
+  <p id="l-mask2">A remote later.</p>
+  <!-- ⑥対照 単独の透明 gradient は本当に消える -->
+  <div class="slot" id="h-mask1"><p style="font:20px Arial;-webkit-mask-image:linear-gradient(rgba(0,0,0,0),rgba(0,0,0,0));mask-image:linear-gradient(rgba(0,0,0,0),rgba(0,0,0,0))">A wiki hidden.</p></div>
+  <p id="l-mask1">A wiki later.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* 第17回 RG-17-01 / RG-17-08。スクロールの原点は片側にある。 */
+export const REACH17_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>reach17</title><style>html,body{background:#fff;color:#000}
+ .box{position:relative;width:100px;height:70px;overflow:auto;border:1px solid}</style></head><body>
+  <button id="before">before</button>
+  <!-- ① 横書き左→右。scrollLeft は 0 未満へ動かせない -->
+  <div class="box" id="b-ltr"><div style="width:300px;height:1px"></div>
+    <p style="position:absolute;left:-150px;top:10px">A webhook hidden.</p></div>
+  <p id="l-ltr">A webhook visible.</p>
+  <!-- ② 右→左。scrollLeft は 0 より大きくできない -->
+  <div class="box" id="b-rtl" dir="rtl"><div style="width:300px;height:1px"></div>
+    <p style="position:absolute;right:-150px;top:10px">A token hidden.</p></div>
+  <p id="l-rtl">A token visible.</p>
+  <!-- ②対照 右→左で、動かせる範囲の中にある語 -->
+  <div class="box" id="b-rtlok" dir="rtl"><div style="width:300px;height:1px"></div>
+    <p style="position:absolute;right:150px;top:10px;white-space:nowrap">A merge reach.</p></div>
+  <p id="l-rtlok">A merge visible.</p>
+  <!-- ①対照 左→右で、右へ動かせば読める語 -->
+  <div class="box" id="b-ok"><div style="width:400px;height:1px"></div>
+    <p style="position:absolute;left:250px;top:10px;white-space:nowrap">A release reach.</p></div>
+  <p id="l-ok">A release visible.</p>
+  <!-- 対照 縦書き -->
+  <div class="box" id="b-vrl" style="writing-mode:vertical-rl"><div style="width:300px;height:200px"></div>
+    <p style="position:absolute;right:150px;top:0">A fork reach.</p></div>
+  <p id="l-vrl">A fork visible.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* 第17回 RG-17-08。変形に捕まった fixed は、画面ではなく文書の中で動く。 */
+export const CAPTURED17_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>cap17</title><style>html,body{background:#fff;color:#000;margin:0}</style></head><body>
+  <p>A commit top.</p>
+  <div style="transform:translateZ(0);margin-top:1100px;height:180px">
+    <p id="captured" style="position:fixed;top:10px;left:20px">A branch captured fixed.</p></div>
+  <!-- 対照 何にも捕まっていない、画面の外の固定要素 -->
+  <p id="true-fixed" style="position:fixed;left:-10000px;top:0">A rebase offscreen.</p>
+  <p id="l-fixed">A rebase later.</p>
+  <div style="height:400px"></div>
+</body></html>`;
+
+/* 第17回 RG-17-05 / RG-17-06。ページの持ち物に触れない。 */
+export const NAMESPACE17_PAGE = `<!doctype html><html lang="en" data-iiyaku-off="page"><head><meta charset="utf-8">
+<title>ns17</title><style>html[data-iiyaku-off] body{background:rgb(0,170,85)}</style></head><body>
+  <button id="before">before</button>
+  <p id="src">A branch here.</p>
+  <sup class="iiyaku-icon" id="pageown" role="button" tabindex="0" data-iiyaku-owner="page"></sup>
+  <div id="sink"></div>
+  <button id="after">after</button>
+</body></html>`;

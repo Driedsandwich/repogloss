@@ -2036,10 +2036,13 @@
   function discoverLatent() {
     if (latentPass === null) { latentPass = [...latent]; latentCursor = 0; }
     const started = performance.now();
+    // 使った時間を積む（上限を超えたら、カーソルの合図では動かなくなる）
+    const bill = () => noteLatentCost(performance.now() - started);
     let n = 0;
     while (latentCursor < latentPass.length) {
       if ((latentCursor & 15) === 0 && performance.now() - started > LATENT_BUDGET_MS) {
         scheduleLatentResume();
+        bill();
         return n;
       }
       const node = latentPass[latentCursor++];
@@ -2069,6 +2072,7 @@
       if (isHandled(node)) latent.delete(node);
     }
     latentPass = null; latentCursor = 0;
+    bill();
     // ひと回りし終えたときだけ、上限で取りこぼした分を入れ直す。
     if (latentTruncated) reindexLatent();
     return n;
@@ -2261,12 +2265,33 @@
   // ⚠️ 間引きは「捨てる」ではなく「あとで1回やる」にする。捨てるだけだと、
   // 1つ目のメニューから 60ms で2つ目へ移ったとき、2つ目をどれだけ開いていても
   // 暇なときの確認まで説明が付かない（第15回 RG-15-07）。
+  // カーソルの合図1回の費用は、控えの件数に比例する。1件あたりの費用は下げたが
+  // （第16回 RG-16-09）、比例そのものは残る。見直す範囲を「カーソルの下の枝」へ
+  // 狭めるのは `:has()` や兄弟結合子があるため安全でないので、代わりに
+  // **使ってよい時間に上限を置く**（第17回 RG-17-07）。
+  //   直近 CPU_WINDOW の間に、控えの見直しへ CPU_BUDGET を超えて使ったら、
+  //   カーソルの合図では動かない。2秒ごとの確認は続くので、正しさは失われず遅れるだけ。
+  const CPU_WINDOW = 2000;
+  const CPU_BUDGET = 200;          // 2秒のうち 200ms（10%）まで
+  let spentAt = 0, spent = 0;
+  function noteLatentCost(ms) {
+    const now = performance.now();
+    if (now - spentAt > CPU_WINDOW) { spentAt = now; spent = 0; }
+    spent += ms;
+  }
+  function overBudget() {
+    const now = performance.now();
+    if (now - spentAt > CPU_WINDOW) { spentAt = now; spent = 0; }
+    return spent > CPU_BUDGET;
+  }
+
   const HOVER_GAP = 150;
   let hoverPending = false;
   let hoverAt = 0;
   let hoverTail = null;
   const onPointerOrFocus = () => {
     if (latent.size === 0 || hoverPending) return;
+    if (overBudget()) return;      // 使いすぎた。2秒ごとの確認に任せる
     const now = performance.now();
     if (now - hoverAt < HOVER_GAP) {
       // 最後の1回は、間引きの窓が明けたあとに必ず処理する

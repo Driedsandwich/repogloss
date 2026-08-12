@@ -1366,6 +1366,26 @@
       if (hasPageContent(el)) continue;   // ページが中身を入れた節点は壊さない
       stripOwnIdentity(el);
     }
+    // ③ 合言葉の class まで消された複製。ここまで消されると、残るのは自分が作る印と
+    //    **同じ形**（空の <sup> ＋ 自分の class ＋ 押せる状態）だけになる（第17回
+    //    RG-17-06。実測: 実際に Tab を押すと 0×0 の要素へフォーカスが移った）。
+    //
+    //    ページの持ち物と見分ける手がかりは1つだけ残る——**別の持ち主を名乗っているか**。
+    //    第14回 RG-14-04 で壊してしまったページの要素は `data-iiyaku-owner="page"` を
+    //    持っていた。名乗りがある要素には触れない。名乗りが無く、空で、押せて、
+    //    自分の class を持つ <sup> だけを無力化する。
+    //
+    //    ⚠️ これは断定ではなく割り切りである。ページがこの形の要素を自分で作れば
+    //    巻き込む。ただし外すのは操作性だけで、対象は幅0で中身の無い要素に限られる。
+    //    そして**この形の見えない停止点は、ページが自分だけで作ることもできる**。
+    for (const el of pick('sup.' + OWN_CLASSES[0])) {
+      if (ownedIcons.has(el) || isOurChrome(el)) continue;
+      if (el.classList.contains(UID)) continue;          // ② で扱った
+      if (el.hasAttribute('data-iiyaku-owner')) continue; // 別の持ち主を名乗っている
+      if (hasPageContent(el)) continue;
+      if (!el.hasAttribute('tabindex') && el.getAttribute('role') !== 'button') continue;
+      stripOperability(el);
+    }
     // 入口の目印も複製される。引き当てには使っていないので実害は無いが、
     // ページに自分の合言葉だけが残るのは紛らわしいので外す。
     // 外すのは「自分の合言葉つきの値」を持つ、自分の入口ではない要素だけ。

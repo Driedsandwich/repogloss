@@ -529,8 +529,22 @@
     return true;
   }
 
+  // `filter` の並びは**前から順に**適用され、後段の `url()` は前段の出力とは別の
+  // 入力から新しい絵を作れる。「どこかに opacity(0) があれば消えている」と
+  // 断定していたため、`opacity(0) url(#flood)` で 1,260画素描かれている語を
+  // 落としていた（第16回 RG-16-05）。
+  // 断定してよいのは、opacity(0) の**後ろに `url()` が1つも無い**ときだけ
+  // （ぼかし・明度などは透明な入力を透明のまま返す）。
+  function filterHidesAll(v) {
+    const fns = v.match(/[a-zA-Z-]+\([^()]*(\([^()]*\)[^()]*)*\)/g);
+    if (!fns) return false;
+    const zero = fns.findIndex(f => FILTER_OPACITY_ZERO.test(f));
+    if (zero < 0) return false;
+    return !fns.slice(zero + 1).some(f => /^url\(/.test(f));
+  }
+
   function paintHidesAll(cs) {
-    if (cs.filter && cs.filter !== 'none' && FILTER_OPACITY_ZERO.test(cs.filter)) return true;
+    if (cs.filter && cs.filter !== 'none' && filterHidesAll(cs.filter)) return true;
     const mi = cs.maskImage || cs.webkitMaskImage;
     if (mi && mi !== 'none' && isFullyTransparentGradient(mi)) return true;
     return false;

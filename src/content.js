@@ -562,6 +562,24 @@
   //   tests    … 形そのものとの交差判定（外接矩形だけでは、円や角丸の外を落とせない）
   // 一緒くたにしていたため、包含ブロックでない祖先の clip-path が丸ごと無視されていた
   // （実測: 0画素の語に印が付き、後ろの読める同じ語が説明されなかった）。
+  // その軸で、いまどこまでスクロールできるか。**原点は片側にある**。
+  //   横書き左→右 … scrollLeft は 0 〜 (scrollWidth - clientWidth)
+  //   右→左（`direction:rtl`）と縦書き `vertical-rl` … 負の側 〜 0
+  // 実測で確かめた値に合わせている（rtl: [-200, 0] / vertical-rl: x=[-215,0] y=[0,275]）。
+  // いまの値が 0 でないときは、その符号だけで原点の側が決まるので、書字方向を見ない。
+  function scrollRange(el, cs, axis) {
+    const span = axis === 'x' ? Math.max(0, el.scrollWidth - el.clientWidth)
+                              : Math.max(0, el.scrollHeight - el.clientHeight);
+    const now = axis === 'x' ? el.scrollLeft : el.scrollTop;
+    if (span === 0) return { min: now, max: now, now };
+    if (now < 0) return { min: -span, max: 0, now };
+    if (now > 0) return { min: 0, max: span, now };
+    const backwards = axis === 'x'
+      ? (cs.direction === 'rtl' || /^(vertical-rl|sideways-rl)$/.test(cs.writingMode))
+      : false;
+    return backwards ? { min: -span, max: 0, now } : { min: 0, max: span, now };
+  }
+
   //   L    … 祖先ぶんも含めた変形の線形部分（viewport ← 変形前の座標）
   //   flat … その変形が 2D で表せるか（3D は解かない）
   function ownClips(el, cs, L, flat) {
@@ -609,14 +627,24 @@
     // 語（どうスクロールしても画面へ出せない）に印が付き、Tab で止まれる点まで
     // できていた（第16回 RG-16-01。実測: 入れ物は 300px 中 85px しか出せない）。
     //
-    // 動かせる量は `scrollWidth - clientWidth`。向きは書字方向で符号が変わるので、
-    // **両側へ同じだけ広げる**（広く見積もる＝読める側へ倒す）。
+    // ⚠️ 量だけ見て**両側へ同じだけ広げる**のは間違いだった（第17回 RG-17-01）。
+    // スクロールの原点は片側にあり、その手前へは1pxも動かせない。実測: 横書き左→右の
+    // 入れ物では `scrollLeft` は 0〜200 で、負にはできない。`left:-150px` の語は
+    // どうやっても画面へ出せないのに印が付き、Tab で止まれる点が残っていた。
+    // いまは**軸ごとの実際の可動域**（scrollRange）から、動かせる先を出す。
     let reach = null;
     if (scrolls(cs.overflowX) || scrolls(cs.overflowY)) {
       const b = padBox();
-      const rx = scrolls(cs.overflowX) ? Math.max(0, el.scrollWidth - el.clientWidth) : Infinity;
-      const ry = scrolls(cs.overflowY) ? Math.max(0, el.scrollHeight - el.clientHeight) : Infinity;
-      reach = { x1: b.x1 - rx, y1: b.y1 - ry, x2: b.x2 + rx, y2: b.y2 + ry };
+      const rx = scrolls(cs.overflowX) ? scrollRange(el, cs, 'x') : null;
+      const ry = scrolls(cs.overflowY) ? scrollRange(el, cs, 'y') : null;
+      // scrollLeft を δ 増やすと中身は δ ぶん**左**へ動く。届く範囲は
+      //   x1 = 切り取り線の左 + (下限 - いまの値)、x2 = 右 + (上限 - いまの値)
+      reach = {
+        x1: rx ? b.x1 + rx.min - rx.now : -Infinity,
+        x2: rx ? b.x2 + rx.max - rx.now : Infinity,
+        y1: ry ? b.y1 + ry.min - ry.now : -Infinity,
+        y2: ry ? b.y2 + ry.max - ry.now : Infinity
+      };
     }
     // ② legacy clip。**絶対配置の要素にしか効かない**（position を見ずに判定すると、
     //    読める文章のほうを除外する。実測で再現済み）。

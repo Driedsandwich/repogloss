@@ -502,14 +502,31 @@
     });
   }
 
+  const TRANSPARENT = /^rgba\([^)]*,\s*0(\.0+)?\)$/;
+
   // 文字そのものが透明なら読めない（第15回 RG-15-05。実測: `color: transparent` の
-  // 語に印が付き、後ろの読める同じ語が説明されなかった）。縁取りがあるときは読めるので外す。
+  // 語に印が付き、後ろの読める同じ語が説明されなかった）。
+  //
+  // ⚠️ 塗りが透明でも、**文字の形が別の経路で描かれる**ことがある。縁取りは幅だけを
+  // 見ていたので、幅はあるが色が透明な語を「読める」と答えていた。逆に、影と
+  // `background-clip:text` は見ていなかったので、実際に描かれている語を落としていた
+  // （第16回 RG-16-04。実測: 透明な縁取りの語は0画素なのに印が付き、影で描かれた
+  // 202画素・背景を文字型に抜いた270画素の語には印が付かなかった）。
+  // 断定できるのは「どの経路でも描かれない」ときだけ。
   function textIsInvisible(cs) {
     const fill = cs.webkitTextFillColor && cs.webkitTextFillColor !== 'currentcolor'
       ? cs.webkitTextFillColor : cs.color;
-    if (!/^rgba\([^)]*,\s*0(\.0+)?\)$/.test(fill || '')) return false;
+    if (!TRANSPARENT.test(fill || '')) return false;
+    // ① 縁取り。幅と色の**両方**がそろって初めて描かれる
     const sw = parseFloat(cs.webkitTextStrokeWidth || '0');
-    return !(sw > 0);
+    const sc = cs.webkitTextStrokeColor || '';
+    if (sw > 0 && !TRANSPARENT.test(sc)) return false;
+    // ② 影。透明な塗りでも `text-shadow: 0 0 0 black` は文字の形をそのまま描く
+    if (cs.textShadow && cs.textShadow !== 'none') return false;
+    // ③ 背景を文字型に抜く指定。塗りを透明にするのは、これを使うときの定石
+    const bc = cs.backgroundClip || cs.webkitBackgroundClip;
+    if (bc === 'text') return false;
+    return true;
   }
 
   function paintHidesAll(cs) {

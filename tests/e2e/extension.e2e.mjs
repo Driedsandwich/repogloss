@@ -20,6 +20,7 @@ import { launchChrome, startTestServer, stageExtension, stageExtensionWith,
          WORDRECT_PAGE, NAMESPACE14_PAGE,
          PAINT15_PAGE, HOVER15_PAGE,
          PAINT16_PAGE, REACH16_PAGE, NAMESPACE16_PAGE,
+         PAINT17_PAGE, REACH17_PAGE, CAPTURED17_PAGE, NAMESPACE17_PAGE,
          openPage, sleep, waitFor,
          pressKey, collectTabOrder, tabUntil } from './helpers/chrome.mjs';
 
@@ -3047,6 +3048,156 @@ test('ページと名前を共有しない（第16回）', async t => {
         return !d || (d.tabIndex < 0 && d.getAttribute('role') !== 'button'); })()`));
     const hit = await tabUntil(cdp, tab, `el.id === 'ghost'`, { steps: 40, startId: 'before' });
     assert.equal(hit, null, '実際に Tab で複製に止まった');
+  });
+
+  await tab.close();
+});
+
+/* ===================== 第17回監査（v1.8.16）の受入条件 ===================== */
+test('形と塗りの判定（第17回）', async t => {
+  const srv = await startTestServer(PAINT17_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  const nIn = sel => tab.evaluate(`document.querySelectorAll(${JSON.stringify(sel)} + ' .iiyaku-icon').length`);
+  await waitFor('拡張が印を付ける', async () =>
+    await tab.evaluate(`document.querySelectorAll('.iiyaku-icon').length`) > 0);
+  await sleep(800);
+
+  for (const [id, why, want] of [
+    ['rnd', 'RG-17-02 角の箱を部分的にはみ出した、切り取りの外の語', [0, 1]],
+    ['rndin', 'RG-17-02【対照】同じ形の中央の語', [1, 0]],
+    ['bbox', 'RG-17-03 `box-sizing:border-box` の箱の、切り取りの外の語', [0, 1]],
+    ['zoom', 'RG-17-03 `zoom` が掛かった箱の、切り取りの外の語', [0, 1]],
+    ['zoomin', 'RG-17-03【対照】`zoom` が掛かった箱の、切り取りの中の語', [1, 0]],
+    ['shd0', 'RG-17-04 完全に透明な影', [0, 1]],
+    ['shdb', 'RG-17-04【対照】黒い影', [1, 0]],
+    ['bgc0', 'RG-17-04 塗りの無い `background-clip:text`', [0, 1]],
+    ['mask2', 'RG-17-04 透明な層の後ろに不透明な層がある mask', [1, 0]],
+    ['mask1', 'RG-17-04【対照】透明な層だけの mask', [0, 1]]
+  ]) {
+    await t.test(why, async () => {
+      assert.deepEqual([await nIn(`#h-${id}`), await nIn(`#l-${id}`)], want, why);
+    });
+  }
+
+  await tab.close();
+});
+
+test('スクロールの原点は片側にある（第17回）', async t => {
+  const srv = await startTestServer(REACH17_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  const nIn = sel => tab.evaluate(`document.querySelectorAll(${JSON.stringify(sel)} + ' .iiyaku-icon').length`);
+  await waitFor('拡張が印を付ける', async () =>
+    await tab.evaluate(`document.querySelectorAll('.iiyaku-icon').length`) > 0);
+  await sleep(800);
+
+  for (const [id, why, want] of [
+    ['ltr', 'RG-17-01 横書き左→右で、原点より手前に置かれた語', [0, 1]],
+    ['rtl', 'RG-17-01 右→左で、原点より手前に置かれた語', [0, 1]],
+    ['rtlok', 'RG-17-01【対照】右→左で、動かせる範囲の中にある語', [1, 0]],
+    ['ok', 'RG-17-01【対照】左→右で、右へ動かせば読める語', [1, 0]],
+    ['vrl', 'RG-17-01【対照】縦書きの入れ物の中の語', [1, 0]]
+  ]) {
+    await t.test(why, async () => {
+      assert.deepEqual([await nIn(`#b-${id}`), await nIn(`#l-${id}`)], want, why);
+    });
+  }
+
+  await t.test('RG-17-01 出せない場所の印で、Tab が止まらない', async () => {
+    const hit = await tabUntil(cdp, tab,
+      `el.classList.contains('iiyaku-icon') && el.getBoundingClientRect().right < 0`,
+      { steps: 40, startId: 'before' });
+    assert.equal(hit, null, `画面へ出せない印で止まった: ${hit}`);
+  });
+
+  await tab.close();
+});
+
+test('変形に捕まった fixed は、文書の中で動く（第17回）', async t => {
+  const srv = await startTestServer(CAPTURED17_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  await waitFor('拡張が印を付ける', async () =>
+    await tab.evaluate(`document.querySelectorAll('.iiyaku-icon').length`) > 0);
+  await sleep(800);
+
+  await t.test('RG-17-08 画面の外でも、文書を送れば読めるので説明が付く', async () => {
+    assert.equal(await tab.evaluate(
+      `document.getElementById('captured').querySelectorAll('.iiyaku-icon').length`), 1,
+      '画面固定と決めつけ、暇なときの確認まで説明が付かない');
+  });
+
+  await t.test('RG-17-08【対照】本当に画面へ固定された語は、いまも落とす', async () => {
+    assert.deepEqual([
+      await tab.evaluate(`document.getElementById('true-fixed').querySelectorAll('.iiyaku-icon').length`),
+      await tab.evaluate(`document.getElementById('l-fixed').querySelectorAll('.iiyaku-icon').length`)
+    ], [0, 1]);
+  });
+
+  await tab.close();
+});
+
+test('ページの持ち物に触れない（第17回）', async t => {
+  const srv = await startTestServer(NAMESPACE17_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  await waitFor('拡張が印を付ける', async () =>
+    await tab.evaluate(`document.querySelectorAll('#src .iiyaku-icon').length`) > 0);
+  await sleep(800);
+
+  await t.test('RG-17-05 ページが置いた OFF の目印を消さない', async () => {
+    assert.equal(await tab.evaluate(`document.documentElement.getAttribute('data-iiyaku-off')`), 'page');
+    assert.equal(await tab.evaluate(`getComputedStyle(document.body).backgroundColor`),
+      'rgb(0, 170, 85)', 'ページの属性に紐づいた見た目まで失っている');
+  });
+
+  await t.test('RG-17-05【対照】自分の OFF は自分の合言葉で書く', async () => {
+    await tab.evaluate(`document.querySelector('.iiyaku-toggle').click(); true`);
+    await sleep(400);
+    const own = await tab.evaluate(
+      `[...document.documentElement.attributes].filter(a => /^data-iiyaku-\\w+-off$/.test(a.name)).map(a => a.name)`);
+    assert.equal(own.length, 1, `自分の目印が1つでない: ${JSON.stringify(own)}`);
+    assert.notEqual(own[0], 'data-iiyaku-off', '固定名を使っている');
+    assert.equal(await tab.evaluate(
+      `getComputedStyle(document.querySelector('#src .iiyaku-icon')).display`), 'none');
+    await tab.evaluate(`document.querySelector('.iiyaku-toggle').click(); true`);
+    await sleep(400);
+    assert.equal(await tab.evaluate(`document.documentElement.getAttribute('data-iiyaku-off')`), 'page',
+      'ON へ戻すとき、ページの値を消している');
+  });
+
+  await t.test('RG-17-06 合言葉の class まで消した複製も、Tab の停止点にしない', async () => {
+    await tab.evaluate(`(() => {
+      const c = document.querySelector('#src .iiyaku-icon').cloneNode(true);
+      for (const a of [...c.attributes])
+        if (!['role', 'tabindex', 'aria-expanded'].includes(a.name)) c.removeAttribute(a.name);
+      c.className = 'iiyaku-icon'; c.textContent = ''; c.id = 'ghost';
+      document.getElementById('sink').appendChild(c); })(); true`);
+    await waitFor('複製が無力になる', async () => await tab.evaluate(
+      `(() => { const d = document.getElementById('ghost');
+        return !d || (d.tabIndex < 0 && d.getAttribute('role') !== 'button'); })()`));
+    const hit = await tabUntil(cdp, tab, `el.id === 'ghost'`, { steps: 40, startId: 'before' });
+    assert.equal(hit, null, '実際に Tab で複製に止まった');
+  });
+
+  await t.test('RG-17-06【対照】別の持ち主を名乗るページの要素は、そのまま', async () => {
+    assert.deepEqual(await tab.evaluate(`(() => { const e = document.getElementById('pageown');
+      return [e.className, e.getAttribute('role'), e.getAttribute('tabindex'),
+              e.getAttribute('data-iiyaku-owner')]; })()`),
+      ['iiyaku-icon', 'button', '0', 'page']);
   });
 
   await tab.close();

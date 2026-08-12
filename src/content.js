@@ -463,17 +463,38 @@
     const clips = v => v === 'hidden' || v === 'clip';
     const scrolls = v => v === 'auto' || v === 'scroll';
     const cx = clips(cs.overflowX), cy = clips(cs.overflowY);
-    if (cx || cy) {
+    const padBox = () => {
       let x1 = border.left, y1 = border.top, x2 = border.right, y2 = border.bottom;
       if (!skewed) {
         x1 += px(cs.borderLeftWidth); y1 += px(cs.borderTopWidth);
         x2 -= px(cs.borderRightWidth); y2 -= px(cs.borderBottomWidth);
       }
+      return { x1, y1, x2, y2 };
+    };
+    if (cx || cy) {
+      const b = padBox();
+      let { x1, y1, x2, y2 } = b;
       const mg = px(cs.overflowClipMargin);   // overflow:clip は外側へ余白を足せる
       if (mg > 0) { x1 -= mg; y1 -= mg; x2 += mg; y2 += mg; }
       if (!cx) { x1 = -Infinity; x2 = Infinity; }
       if (!cy) { y1 = -Infinity; y2 = Infinity; }
       overflow = { x1, y1, x2, y2 };
+    }
+    // スクロールで動かせる入れ物。中身は画面の外にあっても、**動かせる範囲の中なら**読める。
+    //
+    // 以前は「スクロールできる祖先が1つでもあれば、到達範囲の検査を丸ごとやめる」と
+    // していた。実際に動かせる向きも量も見ていなかったので、`left:-10000px` に置いた
+    // 語（どうスクロールしても画面へ出せない）に印が付き、Tab で止まれる点まで
+    // できていた（第16回 RG-16-01。実測: 入れ物は 300px 中 85px しか出せない）。
+    //
+    // 動かせる量は `scrollWidth - clientWidth`。向きは書字方向で符号が変わるので、
+    // **両側へ同じだけ広げる**（広く見積もる＝読める側へ倒す）。
+    let reach = null;
+    if (scrolls(cs.overflowX) || scrolls(cs.overflowY)) {
+      const b = padBox();
+      const rx = scrolls(cs.overflowX) ? Math.max(0, el.scrollWidth - el.clientWidth) : Infinity;
+      const ry = scrolls(cs.overflowY) ? Math.max(0, el.scrollHeight - el.clientHeight) : Infinity;
+      reach = { x1: b.x1 - rx, y1: b.y1 - ry, x2: b.x2 + rx, y2: b.y2 + ry };
     }
     // ② legacy clip。**絶対配置の要素にしか効かない**（position を見ずに判定すると、
     //    読める文章のほうを除外する。実測で再現済み）。
@@ -490,9 +511,7 @@
       const t = shapeHitTest(sh, ref);
       if (t) tests.push(t);
     }
-    // スクロールで動かせる入れ物の中か（中身は画面の外でも読める）
-    const scrollable = scrolls(cs.overflowX) || scrolls(cs.overflowY);
-    return { overflow, shape, tests, scrollable };
+    return { overflow, shape, tests, reach };
   }
 
   // 形そのものとの交差判定。矩形で足りる形は null を返す（外接矩形だけで決まる）。
@@ -559,7 +578,7 @@
   let chainCache = null;
 
   function paintChain(el, mode) {
-    if (!el) return { clip: null, tests: [], hidden: false, transformed: false, fixed: false, scrollable: false };
+    if (!el) return { clip: null, tests: [], hidden: false, transformed: false, fixed: false, reach: null };
     const cache = chainCache && chainCache[mode];
     if (cache) { const hit = cache.get(el); if (hit !== undefined) return hit; }
     const cs = getComputedStyle(el);
@@ -578,10 +597,13 @@
       if (own.tests.length) tests = tests.concat(own.tests);
     }
     // 描画効果は包含ブロックを作るので、逃げられない。配置に関わらず見る。
+    // 動かせる範囲は「いちばん内側の入れ物」で決まる。外側の入れ物の範囲と重ねては
+    // いけない——高さ100pxの入れ物に5,000pxの中身がある場合、中身は文書の高さを
+    // 増やさないので、文書側の範囲と重ねると読める中身まで落ちる。
     const v = { clip, tests, hidden: up.hidden || paintHidesAll(cs),
                 transformed: up.transformed || cs.transform !== 'none',
                 fixed: up.fixed || cs.position === 'fixed',
-                scrollable: up.scrollable || !!(own && own.scrollable) };
+                reach: (applies && own && own.reach) ? own.reach : up.reach };
     if (cache) cache.set(el, v);
     return v;
   }
@@ -619,11 +641,13 @@
     const inClip = r => !c || (Math.min(r.right, c.x2) - Math.max(r.left, c.x1) > 1 &&
                                Math.min(r.bottom, c.y2) - Math.max(r.top, c.y1) > 1);
     // 画面（または動かせる範囲）の外にある語は、読めないしスクロールでも出せない。
-    // ただし**スクロールできる入れ物の中**は、その入れ物を動かせば読めるので見ない
-    // （入れ子のスクロール領域の中身を落とさないため。実測で対照が落ちた）。
-    const reach = chain.scrollable ? null : reachableRect(chain.fixed);
-    const inReach = r => !reach || (r.right > reach.x1 && r.left < reach.x2 &&
-                                    r.bottom > reach.y1 && r.top < reach.y2);
+    // スクロールできる入れ物の中なら、その入れ物を動かせる範囲で見る。ただし
+    // **入れ物そのものが文書のどこにも出せない**なら、中身も出せない。
+    const doc = reachableRect(chain.fixed);
+    const overlaps = (a, b) => a.x2 > b.x1 && a.x1 < b.x2 && a.y2 > b.y1 && a.y1 < b.y2;
+    const reach = !chain.reach ? doc : (overlaps(chain.reach, doc) ? chain.reach : null);
+    const inReach = r => !!reach && r.right > reach.x1 && r.left < reach.x2 &&
+                                    r.bottom > reach.y1 && r.top < reach.y2;
     return rects.some(r => inClip(r) && inReach(r) && chain.tests.every(t => t(r)));
   }
 

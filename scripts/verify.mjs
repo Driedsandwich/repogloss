@@ -361,9 +361,25 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   check('「中身が無い」を、Comment や空の Text を数えずに判定している',
     /function hasPageContent/.test(content) && !/childNodes\.length === 0/.test(stripComments(content)),
     '複製に空の Text を足すだけで、見えない Tab の停止点が残る');
-  check('名札が2つ以上そろったものだけを、名前で見分けている',
-    /OWN_DATA_ATTRS\.filter\(a => el\.hasAttribute\(a\)\)\.length < 2/.test(content),
+  // 名札の**数**で複製かどうかを当てていた（2つ以上そろっていたら自分の複製）。
+  // 名札を全部消された複製は見分けられず、見えない Tab の停止点として残った
+  // （第16回 RG-16-08。実測: 実際に Tab で 0×0 の要素へフォーカスが移った）。
+  // いまは、自分が作る要素へ**読み込みごとに変わる合言葉を class として**付け、
+  // それが付いているかどうかだけで決める（class は cloneNode でそのまま複製される）。
+  check('自分が作る要素に、合言葉の class を付けている',
+    /icon\.className = 'iiyaku-icon ' \+ UID/.test(content) &&
+    /tip\.className = 'iiyaku-tooltip ' \+ UID/.test(content) &&
+    /btn\.className = 'iiyaku-toggle ' \+ UID/.test(content),
+    'これが無いと、名札を全部消された複製を見分けられない');
+  check('複製の判定を、名札の数の当て推量でしていない',
+    !/OWN_DATA_ATTRS\.filter\(a => el\.hasAttribute\(a\)\)\.length < 2/.test(content),
+    '数え上げでは、名札を全部消された複製が素通りする');
+  check('合言葉の class を持つ他人の要素だけを、複製として無力化している',
+    /pick\('\.' \+ CSS\.escape\(UID\)\)/.test(content),
     'ページ側の要素から class や role を剥がしてしまう');
+  check('無力化するとき、合言葉の class も外している',
+    /classList\.remove\(\.\.\.OWN_CLASSES, UID\)/.test(content),
+    '外し忘れると、同じ要素を毎回つかみ直す');
   check('見た目の側で、印・吹き出し・切替ボタンの3つとも合言葉の値まで見ている',
     /function scopeOwnStyle/.test(content) && /:not\(\$\{mine\}\)/.test(content) &&
     /OWN_CLASSES\.map\(c => `\.\$\{c\}\[data-iiyaku-owner\]:not\(\$\{mine\}\)`\)/.test(content),
@@ -818,10 +834,23 @@ for (const [name, body] of [['README.md', readme], ['PRIVACY.md', read('PRIVACY.
 
 /* ---------- CSS と JS のクラス名 ---------- */
 const css = read('styles.css');
-for (const cls of ['iiyaku-icon', 'iiyaku-toggle', 'iiyaku-tooltip', 'iiyaku-off']) {
+for (const cls of ['iiyaku-icon', 'iiyaku-toggle', 'iiyaku-tooltip']) {
   check(`CSS に .${cls} の定義がある`, css.includes(`.${cls}`));
   check(`content.js が ${cls} を使っている`, content.includes(cls));
 }
+// OFF の目印は、ページの class ではなく自分の属性で持つ（第16回 RG-16-06）。
+// 説明の文章に出てくる名前まで数えないよう、**コメントを外してから**見る
+// （たまたま通っているだけの検査にしない）。
+const cssCode = css.replace(/\/\*[\s\S]*?\*\//g, '');
+check('OFF の目印がページの class ではなく属性である',
+  content.includes("const OFF_ATTR = 'data-iiyaku-off'") && !/iiyaku-off/.test(stripComments(content).replace(/OFF_ATTR = 'data-iiyaku-off'/, '')),
+  'ページ側が同じ名前の class を持つと、起動時にそれを消してしまう');
+check('OFF の目印を探す検査が、実際に捕まえる（陽性対照）',
+  /iiyaku-off/.test(stripComments("const OFF_CLASS = 'iiyaku-off';")));
+check('OFF の規則を styles.css に固定で置いていない', !/\.iiyaku-off/.test(cssCode),
+  '合言葉つきの属性で絞るので、規則は content.js が走り出しに足す');
+check('OFF の規則を探す検査が、実際に捕まえる（陽性対照）',
+  /\.iiyaku-off/.test('.iiyaku-off .iiyaku-icon[data-iiyaku-owner] { display: none }'));
 check('content.js が保存キー iiyakuEnabled を変えていない', content.includes("'iiyakuEnabled'"));
 // 選択子を書き換えたときに、この検査が黙って何も見なくなることがあった
 // （`.iiyaku-tooltip {` で切っていたので、合言葉を足した瞬間に空文字列を見ていた）。
@@ -846,6 +875,16 @@ check('content.js が保存キー iiyakuEnabled を変えていない', content.
     'main へ1つ commit した瞬間に、この記述は事実でなくなる');
   check('相対表現を探す検査が、実際に捕まえる（陽性対照）',
     RELATIVE.test('| 監査対象 | v1.8.9（main の先頭。タグ済み） |'));
+
+  // 監査回は毎回変わるのに、表題へ焼き込んでいたため**3巡続けて古いまま**出した
+  // （第14回 RG-14-09 → 第15回 RG-15-09 → 第16回 RG-16-10）。直す場所を毎回
+  // 探すのをやめ、変わる値を表題から追い出す。
+  const TITLE = (/^#\s+(.*)$/m.exec(audit) || [])[1] || '';
+  const ROUND = /第\s*\d+\s*回/;
+  check('AUDIT.md の表題に監査回を書いていない', !ROUND.test(TITLE),
+    '毎回変わる値を表題へ置くと、更新し忘れが繰り返される');
+  check('監査回を探す検査が、実際に捕まえる（陽性対照）',
+    ROUND.test('監査のための資料（第15回監査用）'));
 
   const st = (/^state:\s*(\S+)/m.exec(audit) || [])[1];
   const tag = (/^tag:\s*(\S+)/m.exec(audit) || [])[1];
@@ -939,14 +978,22 @@ check('content.js が保存キー iiyakuEnabled を変えていない', content.
   {
     const css = read('styles.css');
     check('styles.css がカスケードレイヤーに入っている',
-      /^@layer repogloss \{/m.test(css.replace(/\/\*[\s\S]*?\*\//g, '').trim()),
+      /^@layer repogloss-e7b41d \{/m.test(css.replace(/\/\*[\s\S]*?\*\//g, '').trim()),
       'ページ側が同じ性質を指定していても、自分の見た目が勝ってしまう');
     check('レイヤーの順序を、styles.css で先に宣言している',
-      /@layer repogloss, repogloss-scope;/.test(css),
+      /@layer repogloss-e7b41d, repogloss-e7b41d-scope;/.test(css),
       '絞り込みの規則がページ側の指定より強くなってしまう');
     check('絞り込みの規則が、後ろのレイヤーに入っている',
-      /@layer repogloss-scope\{/.test(content),
+      /@layer \$\{SCOPE_LAYER\}\{/.test(content),
       'レイヤー無しで書くと、ページ自身の author style まで打ち消す');
+    // 名前は2つのファイルに分かれて書かれる。ずれると絞り込みが黙って効かなくなる。
+    check('レイヤー名が styles.css と content.js で揃っている',
+      content.includes("const SCOPE_LAYER = 'repogloss-e7b41d-scope'"),
+      'styles.css が宣言した名前と違うレイヤーへ書くと、順序が付かない');
+    // ページと共有する名前は、偶然のぶつかりを生む（第16回 RG-16-06）。
+    check('レイヤー名にページが使いそうな綴りを使っていない',
+      !/@layer\s+repogloss\s*[,{]/.test(css),
+      'ページ側の @layer repogloss と合流すると、ページ自身の規則の順序が入れ替わる');
     // 戻す性質の一覧は、styles.css が与えるものを網羅していること
     const want = new Set();
     for (const m of css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g)) {

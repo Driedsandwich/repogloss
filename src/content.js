@@ -223,6 +223,68 @@
     return m ? { shape: v.slice(0, m.index).trim(), box: m[1] } : { shape: v, box: 'border-box' };
   }
 
+  // 変形の「線形部分」だけを取り出す。平行移動は捨てる——`transform-origin` は
+  // 平行移動しか生まないので、線形部分には効かない（だから origin を解かなくてよい）。
+  // 平行移動ぶんは、あとで外接矩形の実測値と突き合わせて解く。
+  //   戻り値 { m, flat } … m は 2D の線形行列（恒等なら null）、flat は 2D で表せるか
+  function ownLinear(v) {
+    if (!v || v === 'none') return { m: null, flat: true };
+    const m = /^matrix\(([^)]*)\)$/.exec(v);
+    if (!m) return { m: null, flat: false };        // matrix3d など。解かない
+    const n = m[1].split(',').map(Number);
+    if (n.length !== 6 || n.some(x => !isFinite(x))) return { m: null, flat: false };
+    if (n[0] === 1 && n[1] === 0 && n[2] === 0 && n[3] === 1) return { m: null, flat: true };
+    return { m: { a: n[0], b: n[1], c: n[2], d: n[3] }, flat: true };
+  }
+
+  const IDENTITY = { a: 1, b: 0, c: 0, d: 1 };
+  const isIdentity = L => L.a === 1 && L.b === 0 && L.c === 0 && L.d === 1;
+  const mul = (p, q) => ({ a: p.a * q.a + p.c * q.b, b: p.b * q.a + p.d * q.b,
+                           c: p.a * q.c + p.c * q.d, d: p.b * q.c + p.d * q.d });
+
+  // 要素の**変形前**の座標を viewport 座標へ写す写像。
+  // 線形部分 L は祖先から掛け合わせて分かる。平行移動は、L で写した箱の外接矩形が
+  // `getBoundingClientRect()` と一致することから逆算する（平行移動は外接矩形の
+  // 形を変えないので、この1点で決まる）。
+  function localToViewport(L, bw, bh, border) {
+    const xs = [], ys = [];
+    for (const [x, y] of [[0, 0], [bw, 0], [bw, bh], [0, bh]]) {
+      xs.push(L.a * x + L.c * y); ys.push(L.b * x + L.d * y);
+    }
+    const tx = border.left - Math.min(...xs), ty = border.top - Math.min(...ys);
+    const det = L.a * L.d - L.b * L.c;
+    if (!det) return null;                       // つぶれている＝面積が無い（別で落ちる）
+    return {
+      to: (x, y) => [L.a * x + L.c * y + tx, L.b * x + L.d * y + ty],
+      // viewport 座標の矩形を、変形前の座標の外接矩形へ戻す（広く見積もる側）
+      back: r => {
+        const px2 = [], py2 = [];
+        for (const [x, y] of [[r.left, r.top], [r.right, r.top], [r.right, r.bottom], [r.left, r.bottom]]) {
+          const u = x - tx, v = y - ty;
+          px2.push((L.d * u - L.c * v) / det); py2.push((L.a * v - L.b * u) / det);
+        }
+        return { left: Math.min(...px2), top: Math.min(...py2),
+                 right: Math.max(...px2), bottom: Math.max(...py2) };
+      }
+    };
+  }
+
+  // 変形前の座標での参照ボックス。
+  function refBoxLocal(cs, bw, bh, box) {
+    if (box === 'border-box' || box === 'view-box' || box === 'stroke-box') {
+      return { x1: 0, y1: 0, x2: bw, y2: bh };
+    }
+    if (box === 'margin-box') {
+      return { x1: -px(cs.marginLeft), y1: -px(cs.marginTop),
+               x2: bw + px(cs.marginRight), y2: bh + px(cs.marginBottom) };
+    }
+    const l = px(cs.borderLeftWidth), r = px(cs.borderRightWidth);
+    const t = px(cs.borderTopWidth), b = px(cs.borderBottomWidth);
+    if (box === 'padding-box') return { x1: l, y1: t, x2: bw - r, y2: bh - b };
+    return { x1: l + px(cs.paddingLeft), y1: t + px(cs.paddingTop),
+             x2: bw - r - px(cs.paddingRight), y2: bh - b - px(cs.paddingBottom) };
+  }
+
   // 参照ボックスを viewport 座標の矩形で返す。border box は実測値をそのまま使う。
   // 変形が掛かっているときは辺の削り込みをしない（回転すると軸に沿った外接矩形に
   // なるため、削ると小さくしすぎる＝落としすぎる方へ倒れる）。
@@ -463,15 +525,14 @@
   //   tests    … 形そのものとの交差判定（外接矩形だけでは、円や角丸の外を落とせない）
   // 一緒くたにしていたため、包含ブロックでない祖先の clip-path が丸ごと無視されていた
   // （実測: 0画素の語に印が付き、後ろの読める同じ語が説明されなかった）。
-  function ownClips(el, cs) {
+  //   L    … 祖先ぶんも含めた変形の線形部分（viewport ← 変形前の座標）
+  //   flat … その変形が 2D で表せるか（3D は解かない）
+  function ownClips(el, cs, L, flat) {
     if (cs.display === 'contents') return null;      // 箱を作らないので切り取りも効かない
     const border = el.getBoundingClientRect();
     // 変形があっても、**平行移動だけ**なら辺の削り込みはそのまま使える。
     // 回転や拡大縮小のときだけ、軸に沿った外接矩形になるので削らない（落としすぎ防止）。
-    const m = /^matrix\(([^)]*)\)$/.exec(cs.transform || '');
-    const n = m ? m[1].split(',').map(Number) : null;
-    const skewed = cs.transform !== 'none' &&
-      !(n && n.length === 6 && n[0] === 1 && n[1] === 0 && n[2] === 0 && n[3] === 1);
+    const skewed = !flat || !isIdentity(L);
     let overflow = null, shape = null;
     const tests = [];
     // ① overflow。切り取り線は padding box（overflow clip edge）。
@@ -522,11 +583,39 @@
     // ③ clip-path。外接矩形に加えて、形そのものとの交差も控える。
     if (cs.clipPath && cs.clipPath !== 'none') {
       const { shape: sh, box } = splitGeometryBox(cs.clipPath.trim());
-      const ref = refBoxRect(cs, border, skewed, box);
-      const sr = shapeBoundsRect(sh, ref);
-      if (sr) shape = intersectRect(shape, sr);
-      const t = shapeHitTest(sh, ref);
-      if (t) tests.push(t);
+      if (!skewed) {
+        const ref = refBoxRect(cs, border, false, box);
+        const sr = shapeBoundsRect(sh, ref);
+        if (sr) shape = intersectRect(shape, sr);
+        const t = shapeHitTest(sh, ref);
+        if (t) tests.push(t);
+      } else if (flat) {
+        // 回転・拡大縮小があるときは、形も一緒に回っている。viewport の軸に沿った
+        // まま判定していたため、中心も半径もずれ、**外にある語へ印が付き、
+        // 中にある語が落ちた**（第16回 RG-16-03。実測: 回転した楕円の外の語は
+        // 0画素なのに印が付き、後ろの読める同じ語が説明されなかった）。
+        // 形は変形前の座標で解き、**語の矩形のほうを変形前へ戻して**当てる。
+        const bw = px(cs.width) + px(cs.paddingLeft) + px(cs.paddingRight) +
+                   px(cs.borderLeftWidth) + px(cs.borderRightWidth);
+        const bh = px(cs.height) + px(cs.paddingTop) + px(cs.paddingBottom) +
+                   px(cs.borderTopWidth) + px(cs.borderBottomWidth);
+        const map = localToViewport(L, bw, bh, border);
+        if (map) {
+          const ref = refBoxLocal(cs, bw, bh, box);
+          const sr = shapeBoundsRect(sh, ref);
+          if (sr) {                       // 変形前の外接矩形を viewport へ写し直す
+            const xs = [], ys = [];
+            for (const [x, y] of [[sr.x1, sr.y1], [sr.x2, sr.y1], [sr.x2, sr.y2], [sr.x1, sr.y2]]) {
+              const [vx, vy] = map.to(x, y); xs.push(vx); ys.push(vy);
+            }
+            shape = intersectRect(shape, { x1: Math.min(...xs), y1: Math.min(...ys),
+                                           x2: Math.max(...xs), y2: Math.max(...ys) });
+          }
+          const t = shapeHitTest(sh, ref);
+          if (t) tests.push(rect => t(map.back(rect)));
+        }
+      }
+      // flat でない（3D・perspective）ときは形を解かない＝制限しない側へ倒す
     }
     return { overflow, shape, tests, reach };
   }
@@ -595,7 +684,8 @@
   let chainCache = null;
 
   function paintChain(el, mode) {
-    if (!el) return { clip: null, tests: [], hidden: false, transformed: false, fixed: false, reach: null };
+    if (!el) return { clip: null, tests: [], hidden: false, transformed: false, fixed: false,
+                      reach: null, linear: IDENTITY, flat: true };
     const cache = chainCache && chainCache[mode];
     if (cache) { const hit = cache.get(el); if (hit !== undefined) return hit; }
     const cs = getComputedStyle(el);
@@ -603,7 +693,12 @@
     const up = paintChain(el.parentElement, applies ? positionEscape(cs) : mode);
     let clip = up.clip;
     let tests = up.tests;
-    const own = ownClips(el, cs);
+    // 変形は祖先から掛け合わさる。自分の分まで含めた線形部分を先に出しておく
+    // （clip-path の形は、この要素の変形前の座標で定義されているため）。
+    const t = ownLinear(cs.transform);
+    const linear = t.m ? mul(up.linear, t.m) : up.linear;
+    const flat = up.flat && t.flat;
+    const own = ownClips(el, cs, linear, flat);
     if (own) {
       // <body> と <html> の overflow は viewport へ伝わる（要素自身は切り取らない）。
       // ここを切り取りに数えると、画面の下にあるだけの本文が全部「見えない」になる。
@@ -620,7 +715,8 @@
     const v = { clip, tests, hidden: up.hidden || paintHidesAll(cs),
                 transformed: up.transformed || cs.transform !== 'none',
                 fixed: up.fixed || cs.position === 'fixed',
-                reach: (applies && own && own.reach) ? own.reach : up.reach };
+                reach: (applies && own && own.reach) ? own.reach : up.reach,
+                linear, flat };
     if (cache) cache.set(el, v);
     return v;
   }

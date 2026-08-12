@@ -848,10 +848,22 @@
     if (cs.visibility !== 'visible') return false;
     const host = boxedAncestor(el);
     if (host) {
-      if (!host.checkVisibility(CONTENTS_HOST_OPTS)) return false;
+      if (!elementIsVisible(host, CONTENTS_HOST_OPTS, 'host')) return false;
       if (getComputedStyle(host).contentVisibility === 'hidden') return false;
     }
     return isPaintedRange(el, node, start, end);
+  }
+
+  let visCache = null;
+
+  // `checkVisibility()` の答えを、1回のまとめ直しのあいだ覚える。
+  // 隠れた入れ物の中に何語も入っているページで、同じ要素へ何十回も聞いていた。
+  function elementIsVisible(el, opts, key) {
+    if (!visCache) return el.checkVisibility(opts);
+    let m = visCache.get(el);
+    if (m === undefined) { m = {}; visCache.set(el, m); }
+    if (m[key] === undefined) m[key] = el.checkVisibility(opts);
+    return m[key];
   }
 
   // その語が読める場所に描かれているか。**語の範囲**で測る。
@@ -867,7 +879,7 @@
         ? isVisibleContentsText(el, cs, node, start, end)
         : (cs.visibility === 'visible' && isPaintedRange(el, node, start, end));
     } else if (HAS_CHECK_VISIBILITY) {
-      ok = el.checkVisibility(CHECK_VISIBILITY_OPTS);
+      ok = elementIsVisible(el, CHECK_VISIBILITY_OPTS, 'self');
       // その要素自身が content-visibility:hidden のとき、**中身**は隠れているのに
       // 要素自体は描画されているので checkVisibility は true を返す（実測）。
       if (ok && cs.contentVisibility === 'hidden') ok = false;
@@ -1841,12 +1853,18 @@
                  // 積み上げた切り取りは「どう逃げているか」で答えが変わるので、
                  // 覚えるときも逃げ方ごとに分ける（混ぜると別の答えを使い回す）。
                  chainCache = { none: new WeakMap(), absolute: new WeakMap(), fixed: new WeakMap() };
-                 usableCache = new WeakMap(); skipCache = new WeakMap(); }
+                 usableCache = new WeakMap(); skipCache = new WeakMap();
+                 // `checkVisibility()` はレイアウトを起こすので高い。同じ要素へ
+                 // 何度も聞かないよう、このまとめ直しのあいだだけ覚える。控えの
+                 // 見直しでは、1つの隠れた入れ物の中に何語も入っているのが普通で、
+                 // そこが効く（第16回 RG-16-09）。積み上げた切り取りと同じ前提
+                 // ——1回のまとめ直しの中では見え方は変わらない——に乗っている。
+                 visCache = new WeakMap(); }
     try {
       return fn();
     } finally {
       if (owner) { renderCache = null; chainCache = null;
-                   usableCache = null; skipCache = null; }
+                   usableCache = null; skipCache = null; visCache = null; }
     }
   }
 

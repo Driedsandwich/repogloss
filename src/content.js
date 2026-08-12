@@ -544,12 +544,29 @@
     const sw = parseFloat(cs.webkitTextStrokeWidth || '0');
     const sc = cs.webkitTextStrokeColor || '';
     if (sw > 0 && !TRANSPARENT.test(sc)) return false;
-    // ② 影。透明な塗りでも `text-shadow: 0 0 0 black` は文字の形をそのまま描く
-    if (cs.textShadow && cs.textShadow !== 'none') return false;
-    // ③ 背景を文字型に抜く指定。塗りを透明にするのは、これを使うときの定石
+    // ② 影。透明な塗りでも `text-shadow: 0 0 0 black` は文字の形をそのまま描く。
+    //    ⚠️ 「指定がある」だけで描かれると決めてはいけない（第17回 RG-17-04。実測:
+    //    `text-shadow: 0 0 0 transparent` の語は0画素なのに印が付いた）。**色を見る**。
+    if (anyOpaqueColor(cs.textShadow)) return false;
+    // ③ 背景を文字型に抜く指定。塗りを透明にするのは、これを使うときの定石。
+    //    ⚠️ これも「指定がある」だけでは描かれない（実測: `background:none` に
+    //    `background-clip:text` を付けた語は0画素なのに印が付いた）。**塗りを見る**。
     const bc = cs.backgroundClip || cs.webkitBackgroundClip;
-    if (bc === 'text') return false;
+    if (bc === 'text' &&
+        ((cs.backgroundImage && cs.backgroundImage !== 'none' &&
+          !isFullyTransparentGradient(cs.backgroundImage)) ||
+         !TRANSPARENT.test(cs.backgroundColor || ''))) return false;
     return true;
+  }
+
+  // 色の並びのうち、1つでも不透明なものがあるか。`none` は無し。
+  // 色を書いていない影（`text-shadow: 0 0 2px`）は `currentColor` なので、
+  // 塗りが透明でも描かれうる——読める側へ倒して「不透明あり」とする。
+  function anyOpaqueColor(v) {
+    if (!v || v === 'none') return false;
+    const colors = v.match(/rgba?\([^)]*\)/g);
+    if (!colors || colors.length === 0) return true;      // 色の指定が読めない
+    return colors.some(c => !TRANSPARENT.test(c));
   }
 
   // `filter` の並びは**前から順に**適用され、後段の `url()` は前段の出力とは別の
@@ -566,10 +583,34 @@
     return !fns.slice(zero + 1).some(f => /^url\(/.test(f));
   }
 
+  // `mask-image` は**層の並び**で、カンマ区切りの各層を合成した結果が最終の覆いになる。
+  // 先頭の層だけを見て「透明だから全部消えている」と断定していたため、後ろに不透明な
+  // 層がある語を落としていた（第17回 RG-17-04。実測: 透明な gradient と不透明な
+  // 画像を並べた語は 391画素描かれているのに印が付かなかった）。
+  // 断定してよいのは、**すべての層が完全に透明**なときだけ。
+  function maskHidesAll(v) {
+    const layers = splitTopLevel(v);
+    return layers.length > 0 && layers.every(l => isFullyTransparentGradient(l.trim()));
+  }
+
+  // カンマで切る。ただし `rgba(…)` や `url(…)` の中のカンマでは切らない。
+  function splitTopLevel(v) {
+    const out = [];
+    let depth = 0, cur = '';
+    for (const ch of v) {
+      if (ch === '(') depth++;
+      else if (ch === ')') depth--;
+      if (ch === ',' && depth === 0) { out.push(cur); cur = ''; continue; }
+      cur += ch;
+    }
+    if (cur.trim()) out.push(cur);
+    return out;
+  }
+
   function paintHidesAll(cs) {
     if (cs.filter && cs.filter !== 'none' && filterHidesAll(cs.filter)) return true;
     const mi = cs.maskImage || cs.webkitMaskImage;
-    if (mi && mi !== 'none' && isFullyTransparentGradient(mi)) return true;
+    if (mi && mi !== 'none' && maskHidesAll(mi)) return true;
     return false;
   }
 

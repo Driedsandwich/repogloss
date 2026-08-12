@@ -6,10 +6,16 @@
   // 設定は chrome.storage.local に置く。localStorage は「いま開いているサイト側」の
   // 保管庫なので、拡張の設定を入れると github.com のデータを汚すことになる。
   const STORE_KEY = 'iiyakuEnabled';
-  const OFF_CLASS = 'iiyaku-off';   // <html> に付けると印だけが CSS で隠れる
+  // OFF の目印。**ページの class には触れない**——以前は `<html>` へ `iiyaku-off`
+  // という class を付けており、ページが同じ名前の class を持っていると起動時に
+  // 消していた（第16回 RG-16-06）。属性の値には下の合言葉を入れるので、
+  // ページ側が同じ属性を書いても自分の印は隠れない。
+  const OFF_ATTR = 'data-iiyaku-off';
   // 同じ ID がページ側や他の拡張と衝突しないよう、読み込みごとに変える。
   const UID = 'iiyaku-' + Math.random().toString(36).slice(2, 10);
   const TIP_ID = UID + '-tip';
+  // カスケードレイヤーの名前。styles.css の宣言と揃える（verify.mjs が突き合わせる）。
+  const SCOPE_LAYER = 'repogloss-e7b41d-scope';
 
   let enabled = true;
   try {
@@ -2239,9 +2245,8 @@
   function applyEnabled(next) {
     enabled = next;
     const root = document.documentElement;
-    const cls = new Set((root.getAttribute('class') || '').split(/\s+/).filter(Boolean));
-    if (enabled) cls.delete(OFF_CLASS); else cls.add(OFF_CLASS);
-    setOwnAttr(root, 'class', [...cls].join(' '));
+    // ページの class は読みも書きもしない。自分の属性を1つ出し入れするだけにする。
+    setOwnAttr(root, OFF_ATTR, enabled ? null : UID);
     if (enabled) startRuntime(); else stopRuntime();
     updateToggle();
   }
@@ -2328,9 +2333,14 @@
     const inner = ['iiyaku-tooltip-item', 'iiyaku-tooltip-term']
       .map(c => `.iiyaku-tooltip[data-iiyaku-owner]:not(${mine}) .${c}`);
     const revert = OWN_STYLE_PROPS.map(p => `${p}:revert`).join(';');
-    return `@layer repogloss-scope{` +
+    // OFF のとき、**自分の印だけ**を隠す。目印はページと共有しない合言葉つきの属性
+    // （以前は `<html>` の class を使い、ページの同名 class を消していた）。
+    const off = `${document.documentElement.tagName.toLowerCase()}[${OFF_ATTR}="${CSS.escape(UID)}"] ` +
+                `.${OWN_CLASSES[0]}${mine}{display:none}`;
+    return `@layer ${SCOPE_LAYER}{` +
            `${sels.concat(inner).join(',')}{${revert}}` +
-           `${sels.map(s => `${s}::after`).join(',')}{content:none}}`;
+           `${sels.map(s => `${s}::after`).join(',')}{content:none}` +
+           off + `}`;
   }
 
   function scopeOwnStyle() {

@@ -514,7 +514,9 @@ test('拡張として読み込んだ状態で動く', async t => {
     await sleep(300);
     assert.equal(await tab.evaluate(`globalThis.__alive ?? null`), 'このページのまま');
     assert.equal(await tab.evaluate(`document.querySelector('#draft').value`), '消えないで');
-    assert.equal(await tab.evaluate(`document.documentElement.classList.contains('iiyaku-off')`), true);
+    assert.equal(await tab.evaluate(`document.documentElement.hasAttribute('data-iiyaku-off')`), true);
+    assert.equal(await tab.evaluate(`document.documentElement.className`), '',
+      'ページの class 属性には触れない');
     assert.equal(await tab.evaluate(`getComputedStyle(document.querySelector('.iiyaku-icon')).display`), 'none');
     assert.ok(await tab.evaluate(`document.querySelectorAll('.iiyaku-icon').length > 0`), 'OFF で印を DOM から消してはいけない');
   });
@@ -522,10 +524,10 @@ test('拡張として読み込んだ状態で動く', async t => {
   await t.test('別のタブへ設定が伝わる（本物の chrome.storage）', async () => {
     const other = await openPage(cdp, PAGE);
     await waitFor('2枚目が OFF で開く', async () =>
-      await other.evaluate(`document.documentElement.classList.contains('iiyaku-off')`));
+      await other.evaluate(`document.documentElement.hasAttribute('data-iiyaku-off')`));
     await other.evaluate(`document.querySelector('.iiyaku-toggle').click(); true`);
     await waitFor('1枚目へ伝わる', async () =>
-      await tab.evaluate(`document.documentElement.classList.contains('iiyaku-off') === false`));
+      await tab.evaluate(`document.documentElement.hasAttribute('data-iiyaku-off') === false`));
     assert.equal(await tab.evaluate(`document.querySelector('.iiyaku-toggle').textContent`), '解説 ON');
     await other.close();
   });

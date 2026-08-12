@@ -818,10 +818,23 @@ for (const [name, body] of [['README.md', readme], ['PRIVACY.md', read('PRIVACY.
 
 /* ---------- CSS と JS のクラス名 ---------- */
 const css = read('styles.css');
-for (const cls of ['iiyaku-icon', 'iiyaku-toggle', 'iiyaku-tooltip', 'iiyaku-off']) {
+for (const cls of ['iiyaku-icon', 'iiyaku-toggle', 'iiyaku-tooltip']) {
   check(`CSS に .${cls} の定義がある`, css.includes(`.${cls}`));
   check(`content.js が ${cls} を使っている`, content.includes(cls));
 }
+// OFF の目印は、ページの class ではなく自分の属性で持つ（第16回 RG-16-06）。
+// 説明の文章に出てくる名前まで数えないよう、**コメントを外してから**見る
+// （たまたま通っているだけの検査にしない）。
+const cssCode = css.replace(/\/\*[\s\S]*?\*\//g, '');
+check('OFF の目印がページの class ではなく属性である',
+  content.includes("const OFF_ATTR = 'data-iiyaku-off'") && !/iiyaku-off/.test(stripComments(content).replace(/OFF_ATTR = 'data-iiyaku-off'/, '')),
+  'ページ側が同じ名前の class を持つと、起動時にそれを消してしまう');
+check('OFF の目印を探す検査が、実際に捕まえる（陽性対照）',
+  /iiyaku-off/.test(stripComments("const OFF_CLASS = 'iiyaku-off';")));
+check('OFF の規則を styles.css に固定で置いていない', !/\.iiyaku-off/.test(cssCode),
+  '合言葉つきの属性で絞るので、規則は content.js が走り出しに足す');
+check('OFF の規則を探す検査が、実際に捕まえる（陽性対照）',
+  /\.iiyaku-off/.test('.iiyaku-off .iiyaku-icon[data-iiyaku-owner] { display: none }'));
 check('content.js が保存キー iiyakuEnabled を変えていない', content.includes("'iiyakuEnabled'"));
 // 選択子を書き換えたときに、この検査が黙って何も見なくなることがあった
 // （`.iiyaku-tooltip {` で切っていたので、合言葉を足した瞬間に空文字列を見ていた）。
@@ -939,14 +952,22 @@ check('content.js が保存キー iiyakuEnabled を変えていない', content.
   {
     const css = read('styles.css');
     check('styles.css がカスケードレイヤーに入っている',
-      /^@layer repogloss \{/m.test(css.replace(/\/\*[\s\S]*?\*\//g, '').trim()),
+      /^@layer repogloss-e7b41d \{/m.test(css.replace(/\/\*[\s\S]*?\*\//g, '').trim()),
       'ページ側が同じ性質を指定していても、自分の見た目が勝ってしまう');
     check('レイヤーの順序を、styles.css で先に宣言している',
-      /@layer repogloss, repogloss-scope;/.test(css),
+      /@layer repogloss-e7b41d, repogloss-e7b41d-scope;/.test(css),
       '絞り込みの規則がページ側の指定より強くなってしまう');
     check('絞り込みの規則が、後ろのレイヤーに入っている',
-      /@layer repogloss-scope\{/.test(content),
+      /@layer \$\{SCOPE_LAYER\}\{/.test(content),
       'レイヤー無しで書くと、ページ自身の author style まで打ち消す');
+    // 名前は2つのファイルに分かれて書かれる。ずれると絞り込みが黙って効かなくなる。
+    check('レイヤー名が styles.css と content.js で揃っている',
+      content.includes("const SCOPE_LAYER = 'repogloss-e7b41d-scope'"),
+      'styles.css が宣言した名前と違うレイヤーへ書くと、順序が付かない');
+    // ページと共有する名前は、偶然のぶつかりを生む（第16回 RG-16-06）。
+    check('レイヤー名にページが使いそうな綴りを使っていない',
+      !/@layer\s+repogloss\s*[,{]/.test(css),
+      'ページ側の @layer repogloss と合流すると、ページ自身の規則の順序が入れ替わる');
     // 戻す性質の一覧は、styles.css が与えるものを網羅していること
     const want = new Set();
     for (const m of css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g)) {

@@ -308,6 +308,12 @@
 
   // `round` の値を、四隅の { rx, ry } へ展開する。
   //   上左・上右・下右・下左 の順で1〜4値。`/` の後ろがあれば、前が水平・後ろが垂直。
+  //
+  // ⚠️ 百分率は**軸ごとに基準が違う**。`/` が無いときに水平の px 値をそのまま垂直へ
+  // 写していたため、正方形でない箱の `round 50%` で縦半径を取り違えていた
+  // （第16回 RG-16-02。実測: 200×50px の `inset(0 round 50%)` の中で 17画素
+  // 描かれている語に印が付かず、後ろの同じ語だけが説明された）。
+  // `/` が無い指定でも、垂直側は**同じ文字列を高さ基準で解き直す**。
   function cornerRadii(spec, box) {
     const w = box.x2 - box.x1, h = box.y2 - box.y1;
     const sides = spec.split('/');
@@ -322,27 +328,38 @@
       return v.some(x => x === null) ? null : v;
     };
     const hx = expand(sides[0], w);
-    const vy = sides.length === 2 ? expand(sides[1], h) : hx;
+    const vy = expand(sides.length === 2 ? sides[1] : sides[0], h);
     if (!hx || !vy) return null;
     // 上左・上右・下右・下左
-    return [{ rx: hx[0], ry: vy[0] }, { rx: hx[1], ry: vy[1] },
-            { rx: hx[2], ry: vy[2] }, { rx: hx[3], ry: vy[3] }];
+    const radii = [{ rx: hx[0], ry: vy[0] }, { rx: hx[1], ry: vy[1] },
+                   { rx: hx[2], ry: vy[2] }, { rx: hx[3], ry: vy[3] }];
+    // 隣り合う角が重なるときは、**すべての半径へ同じ係数**を掛けて縮める
+    // （CSS Backgrounds 3 の overlapping curves）。角ごとに辺の長さで頭打ちに
+    // していたため、`round 80px 80px 0 0` を 100px 幅の箱へ置くと形が歪んでいた。
+    let f = 1;
+    const limit = (sum, len) => { if (sum > 0 && len / sum < f) f = len / sum; };
+    limit(radii[0].rx + radii[1].rx, w);   // 上辺
+    limit(radii[3].rx + radii[2].rx, w);   // 下辺
+    limit(radii[0].ry + radii[3].ry, h);   // 左辺
+    limit(radii[1].ry + radii[2].ry, h);   // 右辺
+    if (f < 1) for (const c of radii) { c.rx *= f; c.ry *= f; }
+    return radii;
   }
 
   // 角丸の矩形と交わるか。角ごとの四分楕円の外側だけを落とす。
   function rectHitsRounded(r, box, radii) {
     if (r.right <= box.x1 || r.left >= box.x2 || r.bottom <= box.y1 || r.top >= box.y2) return false;
-    const w = box.x2 - box.x1, h = box.y2 - box.y1;
-    // 上左・上右・下右・下左。それぞれ角の正方形と、その四分楕円の中心
+    // 上左・上右・下右・下左。それぞれ角の正方形と、その四分楕円の中心。
+    // 半径は cornerRadii が used value まで縮めてあるので、ここでは頭打ちにしない
+    // （辺の長さで角ごとに切ると、比例縮小のかかった形と食い違う）。
     const corners = [
       { rx: radii[0].rx, ry: radii[0].ry, x1: box.x1, y1: box.y1, sx: 1, sy: 1 },
       { rx: radii[1].rx, ry: radii[1].ry, x1: box.x2, y1: box.y1, sx: -1, sy: 1 },
       { rx: radii[2].rx, ry: radii[2].ry, x1: box.x2, y1: box.y2, sx: -1, sy: -1 },
-      { rx: radii[3].rx, ry: radii[3].ry, x1: box.x1, y1: box.y2, sx: -1 * -1, sy: -1 }
+      { rx: radii[3].rx, ry: radii[3].ry, x1: box.x1, y1: box.y2, sx: 1, sy: -1 }
     ];
-    corners[3].x1 = box.x1; corners[3].sx = 1;
     for (const c of corners) {
-      const rx = Math.min(c.rx, w), ry = Math.min(c.ry, h);
+      const rx = c.rx, ry = c.ry;
       if (!(rx > 0 && ry > 0)) continue;
       const qx1 = c.sx > 0 ? c.x1 : c.x1 - rx, qx2 = c.sx > 0 ? c.x1 + rx : c.x1;
       const qy1 = c.sy > 0 ? c.y1 : c.y1 - ry, qy2 = c.sy > 0 ? c.y1 + ry : c.y1;

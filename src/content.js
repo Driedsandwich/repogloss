@@ -819,7 +819,7 @@
 
   function paintChain(el, mode) {
     if (!el) return { clip: null, tests: [], hidden: false, transformed: false, fixed: false,
-                      reach: null, linear: IDENTITY, flat: true };
+                      captured: false, reach: null, linear: IDENTITY, flat: true };
     const cache = chainCache && chainCache[mode];
     if (cache) { const hit = cache.get(el); if (hit !== undefined) return hit; }
     const cs = getComputedStyle(el);
@@ -846,9 +846,20 @@
     // 動かせる範囲は「いちばん内側の入れ物」で決まる。外側の入れ物の範囲と重ねては
     // いけない——高さ100pxの入れ物に5,000pxの中身がある場合、中身は文書の高さを
     // 増やさないので、文書側の範囲と重ねると読める中身まで落ちる。
+    // `position:fixed` でも、**変形などを持つ祖先が包含ブロックを作ると画面には
+    // 固定されない**——文書のスクロールで動く（第17回 RG-17-08。実測: `translateZ(0)`
+    // の中の固定要素は、文書を900px送ると y=1166 から y=266 へ動いた。それでも画面へ
+    // 固定されている扱いだったので、画面に入ってからも暇なときの確認まで説明が付かなかった）。
+    //
+    // 捕まっているかは、**上へ辿るときの逃げ方**で分かる。`mode === 'fixed'` で上って
+    // いる途中に包含ブロックを作る要素があれば、その下の固定要素は捕まっている。
+    // `up.captured` は「ここに置いた固定要素が捕まるか」の答えになっている
+    // （自分が固定なら、上へは 'fixed' で辿っているため）。
+    const captured = (mode === 'fixed' && applies) || up.captured;
     const v = { clip, tests, hidden: up.hidden || paintHidesAll(cs),
                 transformed: up.transformed || cs.transform !== 'none',
-                fixed: up.fixed || cs.position === 'fixed',
+                fixed: (cs.position === 'fixed' && !up.captured) || up.fixed,
+                captured,
                 reach: (applies && own && own.reach) ? own.reach : up.reach,
                 linear, flat };
     if (cache) cache.set(el, v);

@@ -2393,22 +2393,24 @@
       //    既にページにある候補へ引き継ぐには、世代を進めるしかない。
       if (released) full = true;
 
+      let found = 0;
       if (full) {
         // 全体を走るので、変更のあった場所を別に走る必要はない
         // （同じ枝を二度歩かない。大きな領域の属性が変わったときに効く）。
         if (released) reselect();      // generation++ ＋ 全体走査
-        else scan(document.body);
+        else found += scan(document.body);
       } else {
         // 入れ子になった場所は、いちばん外側だけを走ればよい
         for (const n of roots) {
           let covered = false;
           for (let p = n.parentNode; p && !covered; p = p.parentNode) if (roots.has(p)) covered = true;
-          if (!covered) scanInner(n);
+          if (!covered) found += scanInner(n);
         }
         // ④ 見え方が変わったのなら、まだ印の無い語も見直す。
         //    全体を走ったときは、そこで既に拾えている（同じ枝を二度歩かない）。
-        if (deep) discoverLatent();
+        if (deep) found += discoverLatent();
       }
+      if (hoverTriggered) { hoverTriggered = false; noteHoverFound(found); }
 
       // ⑤ 2周目。断定できずに見送った節点だけを、いま引き受け直す。
       //    ここまでで確実に見える候補は全部引き受け済みなので、残っているキーは
@@ -2557,7 +2559,19 @@
     return spent > CPU_BUDGET;
   }
 
+  // 何も見つからない見直しが続いたら、間隔を空ける（第18回 RG-18-08）。
+  // 何もない場所でカーソルを動かし続けているときに効き、メニューが開いて1つでも
+  // 見つかれば即座に元の間隔へ戻す。上限は 300ms に留める——第15回 RG-15-07 で
+  // 直した「短時間ひらくメニュー」を取りこぼさないため。
   const HOVER_GAP = 150;
+  const HOVER_GAP_MAX = 300;
+  let hoverGap = HOVER_GAP;
+  let emptyRuns = 0;
+  function noteHoverFound(n) {
+    if (n > 0) { emptyRuns = 0; hoverGap = HOVER_GAP; }
+    else { emptyRuns++; hoverGap = Math.min(HOVER_GAP_MAX, HOVER_GAP * (1 + emptyRuns)); }
+  }
+
   let hoverPending = false;
   let hoverAt = 0;
   let hoverTail = null;
@@ -2565,19 +2579,25 @@
     if (latent.size === 0 || hoverPending) return;
     if (overBudget()) return;      // 使いすぎた。2秒ごとの確認に任せる
     const now = performance.now();
-    if (now - hoverAt < HOVER_GAP) {
+    if (now - hoverAt < hoverGap) {
       // 最後の1回は、間引きの窓が明けたあとに必ず処理する
       if (hoverTail === null) {
         hoverTail = setTimeout(() => { hoverTail = null; onPointerOrFocus(); },
-                               HOVER_GAP - (now - hoverAt));
+                               hoverGap - (now - hoverAt));
       }
       return;
     }
     hoverAt = now;
-    const fire = () => { hoverPending = false; if (observing) schedule({ deep: true }); };
+    const fire = () => {
+      hoverPending = false;
+      if (!observing) return;
+      hoverTriggered = true;
+      schedule({ deep: true });
+    };
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(fire);
     else setTimeout(fire, 16);
   };
+  let hoverTriggered = false;
   const HOVER_SIGNALS = ['pointerover', 'pointerout', 'focusin', 'focusout'];
 
   // 属性にも DOM にも出ない変化（property だけの書き換え）は、どの合図にも乗らない。

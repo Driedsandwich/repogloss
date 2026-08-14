@@ -298,8 +298,16 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   check('見えるようになった語を探す経路がある', /function discoverLatent/.test(content));
   const code = stripComments(content);
   check('見え方が変わったまとめ直しで、その経路を通る',
-    /if \(deep\) discoverLatent\(\)/.test(code),
+    /if \(deep\) found \+= discoverLatent\(\)/.test(code),
     'deep なのに控えを見直していない');
+  // 見つかった件数は、カーソルの合図の間隔を決めるのに使う（第18回 RG-18-08）
+  check('見直しで何件見つかったかを、間隔の判断へ返している',
+    /function noteHoverFound/.test(code) && /hoverTriggered = true/.test(code) &&
+    /noteHoverFound\(found\)/.test(code),
+    '何も見つからなくても同じ間隔で走り続ける');
+  check('間隔を空ける上限が、短時間ひらくメニューを取りこぼさない範囲である',
+    /const HOVER_GAP_MAX = 300/.test(code),
+    '上限を伸ばしすぎると、第15回 RG-15-07 で直した取りこぼしが戻る');
   check('印が0件でも、控えがあれば暇なときの確認を止めない',
     /glossed\.size === 0 && latent\.size === 0/.test(code),
     '印が0件になった時点で、あとから見えた語を拾えなくなる');

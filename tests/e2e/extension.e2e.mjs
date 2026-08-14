@@ -3179,18 +3179,22 @@ test('ページの持ち物に触れない（第17回）', async t => {
       'ON へ戻すとき、ページの値を消している');
   });
 
-  await t.test('RG-17-06 合言葉の class まで消した複製も、Tab の停止点にしない', async () => {
+  // ⚠️ v1.8.16 では、この形の要素から操作性を外していた。しかし**それはページの
+  // 持ち物を壊す**ことが分かった（第18回 RG-18-06）。いま保証するのは「自分のものと
+  // 断定できない要素には触れない」ことで、見分けられない複製が押せる点として残るのは
+  // **既知の限界**（構造として断つには印を closed shadow root へ入れる作り直しが要る）。
+  await t.test('RG-17-06/RG-18-06 見分けられない複製には触れない（既知の限界を固定する）', async () => {
     await tab.evaluate(`(() => {
       const c = document.querySelector('#src .iiyaku-icon').cloneNode(true);
       for (const a of [...c.attributes])
         if (!['role', 'tabindex', 'aria-expanded'].includes(a.name)) c.removeAttribute(a.name);
       c.className = 'iiyaku-icon'; c.textContent = ''; c.id = 'ghost';
       document.getElementById('sink').appendChild(c); })(); true`);
-    await waitFor('複製が無力になる', async () => await tab.evaluate(
-      `(() => { const d = document.getElementById('ghost');
-        return !d || (d.tabIndex < 0 && d.getAttribute('role') !== 'button'); })()`));
-    const hit = await tabUntil(cdp, tab, `el.id === 'ghost'`, { steps: 40, startId: 'before' });
-    assert.equal(hit, null, '実際に Tab で複製に止まった');
+    await sleep(900);
+    assert.deepEqual(await tab.evaluate(`(() => { const d = document.getElementById('ghost');
+      return [d.className, d.getAttribute('role'), d.getAttribute('tabindex')]; })()`),
+      ['iiyaku-icon', 'button', '0'],
+      '自分のものと断定できない要素を書き換えている');
   });
 
   await t.test('RG-17-06【対照】別の持ち主を名乗るページの要素は、そのまま', async () => {

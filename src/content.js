@@ -900,12 +900,28 @@
   // 文字そのものの矩形。**面積のあるものだけ**を返す。
   // `transform: scale(0)` は箱の寸法（offsetWidth）を変えないので、面積を見ないと
   // 落とせない（実測: 0画素しか描かれていないのに印が付いた）。
+  //
+  // ⚠️ **空白は矩形に含めない**（第18回 RG-18-02）。`pull request` のように語が
+  // 2つあるキーでは、語間の空白まで1つの矩形へ入れていたため、語そのものは
+  // 切り取りの外なのに、空白ぶんの幅が形の中を横切って可視と答えていた
+  // （実測: `word-spacing:70px` の見本で、語の画素は0なのに印が付いた）。
+  // 空白で切って、**塗りのある並びごと**に矩形を取る。
+  const SPACE = /\s/;
   function rangeRects(node, start, end) {
-    const r = document.createRange();
-    if (start === null) r.selectNodeContents(node);
-    else { r.setStart(node, start); r.setEnd(node, end); }
     const out = [];
-    for (const x of r.getClientRects()) if (x.width > 0 && x.height > 0) out.push(x);
+    const add = r => { for (const x of r.getClientRects()) if (x.width > 0 && x.height > 0) out.push(x); };
+    if (start === null) {
+      const r = document.createRange(); r.selectNodeContents(node); add(r); return out;
+    }
+    const text = node.nodeValue || '';
+    let i = start;
+    while (i < end) {
+      while (i < end && SPACE.test(text[i])) i++;
+      let j = i;
+      while (j < end && !SPACE.test(text[j])) j++;
+      if (j > i) { const r = document.createRange(); r.setStart(node, i); r.setEnd(node, j); add(r); }
+      i = j;
+    }
     return out;
   }
 

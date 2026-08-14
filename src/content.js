@@ -639,7 +639,59 @@
   // （第16回 RG-16-04。実測: 透明な縁取りの語は0画素なのに印が付き、影で描かれた
   // 202画素・背景を文字型に抜いた270画素の語には印が付かなかった）。
   // 断定できるのは「どの経路でも描かれない」ときだけ。
-  function textIsInvisible(cs) {
+  // 影が、**その語の位置に**届くか。
+  // ⚠️ 「不透明な色の影がある」だけでは足りない（第18回 RG-18-04。実測:
+  // `text-shadow: 10000px 0 0 black` の語は0画素なのに印が付いた）。影は文字の形を
+  // ずらして描くので、ずらし量が語の大きさ（＋ぼかし）を超えると、その語の場所には
+  // 何も来ない。
+  function shadowPaintsAt(v, rect) {
+    if (!v || v === 'none') return false;
+    for (const layer of splitTopLevel(v)) {
+      const color = (layer.match(/rgba?\([^)]*\)/) || [])[0];
+      if (color && TRANSPARENT.test(color)) continue;          // 透明な影は描かない
+      const lens = (layer.replace(/rgba?\([^)]*\)/g, '').match(/-?[0-9.]+px/g) || []).map(parseFloat);
+      if (lens.length < 2) return true;                        // 読めない＝描かれる側へ倒す
+      const [dx, dy] = lens;
+      const blur = lens.length > 2 ? Math.abs(lens[2]) : 0;
+      if (Math.abs(dx) < rect.width + blur && Math.abs(dy) < rect.height + blur) return true;
+    }
+    return false;
+  }
+
+  // `background-clip: text` の塗りが、**その語の位置に**届くか。
+  // ⚠️ 「不透明な背景がある」だけでは足りない（第18回 RG-18-04。実測:
+  // `background-position: 10000px 0; background-repeat: no-repeat` の語は0画素なのに
+  // 印が付いた）。読み切れない指定は描かれる側へ倒す。
+  function bgClipTextPaintsAt(el, cs, rect) {
+    if (!TRANSPARENT.test(cs.backgroundColor || '')) return true;   // 背景色は全面を覆う
+    const img = cs.backgroundImage;
+    if (!img || img === 'none') return false;
+    const layers = splitTopLevel(img).map(x => x.trim());
+    const rep = splitTopLevel(cs.backgroundRepeat || 'repeat').map(x => x.trim());
+    const pos = splitTopLevel(cs.backgroundPosition || '0% 0%').map(x => x.trim());
+    const size = splitTopLevel(cs.backgroundSize || 'auto').map(x => x.trim());
+    const origin = cs.backgroundOrigin || 'padding-box';
+    const area = refBoxRect(cs, el.getBoundingClientRect(), false,
+                            origin === 'content-box' ? 'content-box'
+                          : origin === 'border-box' ? 'border-box' : 'padding-box');
+    for (let i = 0; i < layers.length; i++) {
+      if (isFullyTransparentGradient(layers[i])) continue;
+      const r = rep[i % rep.length] || 'repeat';
+      if (!/no-repeat/.test(r)) return true;                        // 繰り返せば全面に届く
+      const sz = size[i % size.length] || 'auto';
+      if (sz !== 'auto') return true;                               // 寸法は解かない＝届く側へ
+      const pv = (pos[i % pos.length] || '0px 0px').split(/\s+/);
+      const px0 = lenToPx(pv[0], (area.x2 - area.x1) - (area.x2 - area.x1));
+      const py0 = lenToPx(pv[1] !== undefined ? pv[1] : '50%', 0);
+      if (px0 === null || py0 === null) return true;                // 読めない＝届く側へ
+      const box = { x1: area.x1 + px0, y1: area.y1 + py0,
+                    x2: area.x1 + px0 + (area.x2 - area.x1), y2: area.y1 + py0 + (area.y2 - area.y1) };
+      if (rect.right > box.x1 && rect.left < box.x2 && rect.bottom > box.y1 && rect.top < box.y2) return true;
+    }
+    return false;
+  }
+
+  function textIsInvisible(cs, el, rect) {
     const fill = cs.webkitTextFillColor && cs.webkitTextFillColor !== 'currentcolor'
       ? cs.webkitTextFillColor : cs.color;
     if (!TRANSPARENT.test(fill || '')) return false;
@@ -647,18 +699,11 @@
     const sw = parseFloat(cs.webkitTextStrokeWidth || '0');
     const sc = cs.webkitTextStrokeColor || '';
     if (sw > 0 && !TRANSPARENT.test(sc)) return false;
-    // ② 影。透明な塗りでも `text-shadow: 0 0 0 black` は文字の形をそのまま描く。
-    //    ⚠️ 「指定がある」だけで描かれると決めてはいけない（第17回 RG-17-04。実測:
-    //    `text-shadow: 0 0 0 transparent` の語は0画素なのに印が付いた）。**色を見る**。
-    if (anyOpaqueColor(cs.textShadow)) return false;
-    // ③ 背景を文字型に抜く指定。塗りを透明にするのは、これを使うときの定石。
-    //    ⚠️ これも「指定がある」だけでは描かれない（実測: `background:none` に
-    //    `background-clip:text` を付けた語は0画素なのに印が付いた）。**塗りを見る**。
+    // ② 影。色と**ずらし量**を見る
+    if (shadowPaintsAt(cs.textShadow, rect)) return false;
+    // ③ 背景を文字型に抜く指定。塗りが語の位置に届くかを見る
     const bc = cs.backgroundClip || cs.webkitBackgroundClip;
-    if (bc === 'text' &&
-        ((cs.backgroundImage && cs.backgroundImage !== 'none' &&
-          !isFullyTransparentGradient(cs.backgroundImage)) ||
-         !TRANSPARENT.test(cs.backgroundColor || ''))) return false;
+    if (bc === 'text' && bgClipTextPaintsAt(el, cs, rect)) return false;
     return true;
   }
 
@@ -1037,10 +1082,12 @@
   function isPaintedRange(el, node, start, end) {
     const chain = paintChain(el, 'none');
     if (chain.hidden) return false;
-    if (textIsInvisible(getComputedStyle(el))) return false;
     if (rectIsEmpty(chain.clip)) return false;
     const rects = rangeRects(node, start, end);
     if (rects.length === 0) return false;
+    // 文字の塗りは**語の位置**で見る（影のずらし・背景の位置がここに効く）
+    const cs = getComputedStyle(el);
+    if (rects.every(r => textIsInvisible(cs, el, r))) return false;
     // **同じ断片が、全部の条件を通ること**を求める。条件ごとに「どれか1つの断片が
     // 通るか」を見ていたため、断片Aが形Aだけ・断片Bが形Bだけを通る場合に、
     // どの断片も全部は通っていないのに合格していた（第15回 RG-15-03）。

@@ -1127,7 +1127,10 @@
     // スクロールできる入れ物の中なら、その入れ物を動かせる範囲で見る。ただし
     // **入れ物そのものが文書のどこにも出せない**なら、中身も出せない。
     const inReach = r => reachable(r, chain);
-    return rects.some(r => inClip(r) && inReach(r) && chain.tests.every(t => t(r)));
+    const ok = rects.some(r => inClip(r) && inReach(r) && chain.tests.every(t => t(r)));
+    // 解けない描画効果があるときは「見える」と断定しない。後ろに確実に見える同じ語が
+    // あればそちらへ付ける（第18回 RG-18-04 / RG-18-05）。
+    return ok ? (chain.paintUnknown ? 'unknown' : true) : false;
   }
 
   // 文書そのものの枠（画面）と、そこで動かせる量。
@@ -1231,14 +1234,14 @@
       // その要素自身が content-visibility:hidden のとき、**中身**は隠れているのに
       // 要素自体は描画されているので checkVisibility は true を返す（実測）。
       if (ok && cs.contentVisibility === 'hidden') ok = false;
-      if (ok && !isPaintedRange(el, node, start, end)) ok = false;
+      if (ok) ok = isPaintedRange(el, node, start, end);   // true / false / 'unknown'
     } else {
       // checkVisibility が無い環境。manifest の minimum_chrome_version より古い
       // Chrome か、拡張を手で読み込んだ場合にしか起きない。祖先の opacity や
       // content-visibility は見抜けないので、ここは「落ちないための保険」にすぎない。
       ok = !(cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0');
       if (ok && cs.contentVisibility === 'hidden') ok = false;
-      if (ok && !isPaintedRange(el, node, start, end)) ok = false;
+      if (ok) ok = isPaintedRange(el, node, start, end);
     }
     return ok;
   }
@@ -1297,15 +1300,22 @@
   // キーで1つに絞るのは**見え方で選んだあと**。先に絞ると、「1つ目は隠れていて
   // 2つ目は読める」場合に読めるほうが候補から消える（実測: 2行目の読める語に
   // 説明が付かなかった）。
+  let acceptUnknown = false;      // 2周目だけ true（断定できない候補を引き受ける）
+  let unknownNodes = null;        // 1周目で見送った節点
+
   function visibleHits(node, el) {
     const all = matcher.findHits(node.nodeValue, key => usableGloss(key) !== null, { all: true });
     const out = [];
     const seen = new Set();
+    // 「見えるとも見えないとも断定できない」候補で、その語を使い切らない
+    // （第18回 RG-18-04 / RG-18-05）。1周目では見送って節点を控え、まとめ直しの
+    // 最後に**まだどこも引き受けていない語だけ**を、その候補で引き受け直す。
+    // こうすると、ページのどこかに確実に見える同じ語があれば必ずそちらが勝つ。
     for (const h of all) {
       if (seen.has(h.key)) continue;
-      if (!isVisibleOccurrence(el, node, h.end - h.match.length, h.end)) continue;
-      seen.add(h.key);
-      out.push(h);
+      const v = isVisibleOccurrence(el, node, h.end - h.match.length, h.end);
+      if (v === true || (v === 'unknown' && acceptUnknown)) { seen.add(h.key); out.push(h); }
+      else if (v === 'unknown' && unknownNodes) unknownNodes.add(node);
     }
     return out;
   }
@@ -2374,6 +2384,7 @@
     ensureOwnStyle();
 
     withRenderCache(() => {
+      unknownNodes = new Set();
       // ① 記録と DOM の食い違いを片づける。deep なら見え方・到達性・入口の意味まで。
       let released = reconcileGlosses(deep);
 
@@ -2405,6 +2416,17 @@
         // ④ 見え方が変わったのなら、まだ印の無い語も見直す。
         //    全体を走ったときは、そこで既に拾えている（同じ枝を二度歩かない）。
         if (deep) discoverLatent();
+      }
+
+      // ⑤ 2周目。断定できずに見送った節点だけを、いま引き受け直す。
+      //    ここまでで確実に見える候補は全部引き受け済みなので、残っているキーは
+      //    「他に確かな置き場所が無い」ものだけになる。
+      const pending = unknownNodes;
+      unknownNodes = null;                       // 2周目では集めない
+      if (pending && pending.size) {
+        acceptUnknown = true;
+        try { for (const n of pending) if (n.isConnected && isTarget(n)) annotate(n); }
+        finally { acceptUnknown = false; }
       }
     });
   }

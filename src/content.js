@@ -317,15 +317,34 @@
     if (!det) return null;                       // つぶれている＝面積が無い（別で落ちる）
     return {
       to: (x, y) => [L.a * x + L.c * y + tx, L.b * x + L.d * y + ty],
-      // viewport 座標の矩形を、変形前の座標の外接矩形へ戻す（広く見積もる側）
-      back: r => {
-        const px2 = [], py2 = [];
-        for (const [x, y] of [[r.left, r.top], [r.right, r.top], [r.right, r.bottom], [r.left, r.bottom]]) {
-          const u = x - tx, v = y - ty;
-          px2.push((L.d * u - L.c * v) / det); py2.push((L.a * v - L.b * u) / det);
+      // viewport 座標の矩形を、変形前の座標へ戻す。
+      //
+      // ⚠️ 4隅をそのまま戻してはいけない（第18回 RG-18-03）。`getClientRects()` が返すのは
+      // **回った箱の外接矩形**なので、それを戻すと元より大きな平行四辺形になり、形の外の
+      // 語まで拾う（実測: 35°回した楕円の外の0画素の語に印が付いた。元の箱は約12×4なのに
+      // 戻すと約17×16になっていた）。
+      //
+      // 元の箱は復元できる。変形前の箱を w×h とすると、外接矩形の寸法は
+      //   W = |a|w + |c|h,  H = |b|w + |d|h
+      // なので、この2式を解けばよい（中心は、外接矩形の中心を戻した点と一致する）。
+      // ちょうど45°など |a||d| = |b||c| のときだけ解が定まらないので、そのときは
+      // 平行四辺形で広く見積もる。
+      backPoly: r => {
+        const u0 = (r.left + r.right) / 2 - tx, v0 = (r.top + r.bottom) / 2 - ty;
+        const cx = (L.d * u0 - L.c * v0) / det, cy = (L.a * v0 - L.b * u0) / det;
+        const W = r.right - r.left, H = r.bottom - r.top;
+        const D = Math.abs(L.a) * Math.abs(L.d) - Math.abs(L.b) * Math.abs(L.c);
+        if (Math.abs(D) > 1e-6) {
+          const w = (W * Math.abs(L.d) - H * Math.abs(L.c)) / D;
+          const h = (H * Math.abs(L.a) - W * Math.abs(L.b)) / D;
+          if (isFinite(w) && isFinite(h) && w >= 0 && h >= 0) {
+            return [[cx - w / 2, cy - h / 2], [cx + w / 2, cy - h / 2],
+                    [cx + w / 2, cy + h / 2], [cx - w / 2, cy + h / 2]];
+          }
         }
-        return { left: Math.min(...px2), top: Math.min(...py2),
-                 right: Math.max(...px2), bottom: Math.max(...py2) };
+        return [[r.left, r.top], [r.right, r.top], [r.right, r.bottom], [r.left, r.bottom]]
+          .map(([x, y]) => { const u = x - tx, v = y - ty;
+            return [(L.d * u - L.c * v) / det, (L.a * v - L.b * u) / det]; });
       }
     };
   }
@@ -421,12 +440,54 @@
   // 軸に沿った矩形と楕円が交わるか。矩形のうち中心にいちばん近い点が楕円の内側なら交わる。
   // 外接矩形で代用してはいけない——実測: `circle(50px at 60px 60px)` の角に置いた語は
   // 0画素しか描かれていないのに、外接矩形の中なので可視と答えていた。
-  function rectHitsEllipse(r, cx, cy, rx, ry) {
-    if (!(rx > 0 && ry > 0)) return false;
-    const nx = Math.max(r.left, Math.min(cx, r.right));
-    const ny = Math.max(r.top, Math.min(cy, r.bottom));
-    const dx = (nx - cx) / rx, dy = (ny - cy) / ry;
-    return dx * dx + dy * dy <= 1;
+  // ⚠️ 判定は**多角形**で行う（第18回 RG-18-03）。回転した場所では、語の矩形を
+  // 変形前へ戻すと平行四辺形になる。その外接矩形で当てていたため、実際には形の外に
+  // ある語まで「交わる」と答えていた（実測: 回転した楕円の外の0画素の語に印が付いた）。
+  const rectPoly = r => [[r.left, r.top], [r.right, r.top], [r.right, r.bottom], [r.left, r.bottom]];
+  const polyBounds = p => ({
+    left: Math.min(...p.map(q => q[0])), right: Math.max(...p.map(q => q[0])),
+    top: Math.min(...p.map(q => q[1])), bottom: Math.max(...p.map(q => q[1])) });
+
+  // 凸多角形を、軸に沿った箱で切る（Sutherland–Hodgman）
+  function clipPolyToBox(poly, box) {
+    let out = poly;
+    const edges = [
+      [p => p[0] >= box.x1, (a, b) => [box.x1, a[1] + (b[1] - a[1]) * (box.x1 - a[0]) / (b[0] - a[0])]],
+      [p => p[0] <= box.x2, (a, b) => [box.x2, a[1] + (b[1] - a[1]) * (box.x2 - a[0]) / (b[0] - a[0])]],
+      [p => p[1] >= box.y1, (a, b) => [a[0] + (b[0] - a[0]) * (box.y1 - a[1]) / (b[1] - a[1]), box.y1]],
+      [p => p[1] <= box.y2, (a, b) => [a[0] + (b[0] - a[0]) * (box.y2 - a[1]) / (b[1] - a[1]), box.y2]]
+    ];
+    for (const [inside, cut] of edges) {
+      const src = out; out = [];
+      for (let i = 0; i < src.length; i++) {
+        const a = src[i], b = src[(i + 1) % src.length];
+        const ia = inside(a), ib = inside(b);
+        if (ia) out.push(a);
+        if (ia !== ib) out.push(cut(a, b));
+      }
+      if (out.length === 0) return [];
+    }
+    return out;
+  }
+
+  // 凸多角形と楕円が交わるか。楕円を単位円へ写して、原点との距離で決める。
+  function polyHitsEllipse(poly, cx, cy, rx, ry) {
+    if (!(rx > 0 && ry > 0) || poly.length < 3) return false;
+    const p = poly.map(q => [(q[0] - cx) / rx, (q[1] - cy) / ry]);
+    for (const v of p) if (v[0] * v[0] + v[1] * v[1] <= 1) return true;
+    let pos = false, neg = false;
+    for (let i = 0; i < p.length; i++) {
+      const a = p[i], b = p[(i + 1) % p.length];
+      const cr = (b[0] - a[0]) * (0 - a[1]) - (b[1] - a[1]) * (0 - a[0]);
+      if (cr > 0) pos = true; else if (cr < 0) neg = true;
+      const dx = b[0] - a[0], dy = b[1] - a[1];
+      const L = dx * dx + dy * dy;
+      let t = L === 0 ? 0 : ((0 - a[0]) * dx + (0 - a[1]) * dy) / L;
+      t = Math.max(0, Math.min(1, t));
+      const qx = a[0] + t * dx, qy = a[1] + t * dy;
+      if (qx * qx + qy * qy <= 1) return true;      // 辺が円と交わる
+    }
+    return !(pos && neg);                            // 全部同じ向き＝原点が中
   }
 
   // `round` の値を、四隅の { rx, ry } へ展開する。
@@ -470,18 +531,14 @@
   }
 
   // 角丸の矩形と交わるか。角ごとの四分楕円の外側だけを落とす。
-  function rectHitsRounded(r0, box, radii) {
-    if (r0.right <= box.x1 || r0.left >= box.x2 || r0.bottom <= box.y1 || r0.top >= box.y2) return false;
-    // ⚠️ **先に box で切る**（第17回 RG-17-02）。切らずに「角の箱へまるごと収まるか」を
-    // 見ていたため、箱の外へはみ出した矩形は角の判定に入らず、無条件で可視になっていた
-    // （実測: `inset(0 round 60px)` の左上の外に置いた0画素の語に印が付いた）。
-    // 切ったあとの矩形が角の箱の中だけにあるなら、その四分楕円との交差で決まる。
-    const r = { left: Math.max(r0.left, box.x1), top: Math.max(r0.top, box.y1),
-                right: Math.min(r0.right, box.x2), bottom: Math.min(r0.bottom, box.y2) };
-    if (r.right <= r.left || r.bottom <= r.top) return false;
-    // 上左・上右・下右・下左。それぞれ角の正方形と、その四分楕円の中心。
-    // 半径は cornerRadii が used value まで縮めてあるので、ここでは頭打ちにしない
-    // （辺の長さで角ごとに切ると、比例縮小のかかった形と食い違う）。
+  function polyHitsRounded(poly, box, radii) {
+    // **先に box で切る**（第17回 RG-17-02）。切らずに「角の箱へまるごと収まるか」を
+    // 見ていたため、箱の外へはみ出した形は角の判定に入らず、無条件で可視になっていた。
+    const q = clipPolyToBox(poly, box);
+    if (q.length < 3) return false;
+    const b = polyBounds(q);
+    // 上左・上右・下右・下左。それぞれ角の箱と、その四分楕円の中心。
+    // 半径は cornerRadii が used value まで縮めてあるので、ここでは頭打ちにしない。
     const corners = [
       { rx: radii[0].rx, ry: radii[0].ry, x1: box.x1, y1: box.y1, sx: 1, sy: 1 },
       { rx: radii[1].rx, ry: radii[1].ry, x1: box.x2, y1: box.y1, sx: -1, sy: 1 },
@@ -493,14 +550,15 @@
       if (!(rx > 0 && ry > 0)) continue;
       const qx1 = c.sx > 0 ? c.x1 : c.x1 - rx, qx2 = c.sx > 0 ? c.x1 + rx : c.x1;
       const qy1 = c.sy > 0 ? c.y1 : c.y1 - ry, qy2 = c.sy > 0 ? c.y1 + ry : c.y1;
-      // その角の箱の**中だけ**に収まっている矩形は、四分楕円との交差で決める
-      if (r.left >= qx1 && r.right <= qx2 && r.top >= qy1 && r.bottom <= qy2) {
-        return rectHitsEllipse(r, c.sx > 0 ? c.x1 + rx : c.x1 - rx,
+      // その角の箱の**中だけ**にあるなら、四分楕円との交差で決まる
+      if (b.left >= qx1 && b.right <= qx2 && b.top >= qy1 && b.bottom <= qy2) {
+        return polyHitsEllipse(q, c.sx > 0 ? c.x1 + rx : c.x1 - rx,
                                   c.sy > 0 ? c.y1 + ry : c.y1 - ry, rx, ry);
       }
     }
     return true;
   }
+
 
   // 形を、それを囲む矩形にする。囲む矩形は本物の形より**広い**ので、
   // 「交わらない」と言えるときだけ落とす、という向きを崩さない。
@@ -793,7 +851,7 @@
         const sr = shapeBoundsRect(sh, ref);
         if (sr) shape = intersectRect(shape, sr);
         const t = shapeHitTest(sh, ref);
-        if (t) tests.push(t);
+        if (t) tests.push(rect => t(rectPoly(rect)));
       } else if (flat) {
         // 回転・拡大縮小があるときは、形も一緒に回っている。viewport の軸に沿った
         // まま判定していたため、中心も半径もずれ、**外にある語へ印が付き、
@@ -820,7 +878,7 @@
                                            x2: Math.max(...xs), y2: Math.max(...ys) });
           }
           const t = shapeHitTest(sh, ref);
-          if (t) tests.push(rect => t(map.back(rect)));
+          if (t) tests.push(rect => t(map.backPoly(rect)));
         }
       }
       // flat でない（3D・perspective）ときは形を解かない＝制限しない側へ倒す
@@ -837,7 +895,7 @@
       if (!c) return null;
       const r = radiusOf(radii, c, ref, null);
       if (r === null) return null;
-      return rect => rectHitsEllipse(rect, c.cx, c.cy, r, r);
+      return poly => polyHitsEllipse(poly, c.cx, c.cy, r, r);
     }
     m = /^ellipse\((.*)\)$/.exec(shape);
     if (m) {
@@ -848,7 +906,7 @@
       if (rr.length !== 2) return null;
       const rx = radiusOf(rr[0], c, ref, 'x'), ry = radiusOf(rr[1], c, ref, 'y');
       if (rx === null || ry === null) return null;
-      return rect => rectHitsEllipse(rect, c.cx, c.cy, rx, ry);
+      return poly => polyHitsEllipse(poly, c.cx, c.cy, rx, ry);
     }
     // inset(... round …)。**角ごとに半径が違う**（1〜4値を上左・上右・下右・下左へ
     // 展開し、`/` の前後で水平・垂直を分ける）。先頭の1値を四隅へ広げていたため、
@@ -861,7 +919,7 @@
       if (!box) return null;
       const radii = cornerRadii(parts[1], box);
       if (!radii) return null;
-      return rect => rectHitsRounded(rect, box, radii);
+      return poly => polyHitsRounded(poly, box, radii);
     }
     return null;
   }

@@ -451,9 +451,16 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     '語ごとに答えが変わるので、要素を鍵にした覚え書きは誤答を配る');
   // 形そのものとの交差（外接矩形だけでは、円や角丸の外を落とせない）
   check('円・楕円・角丸の外側を、形そのもので落としている',
-    /function rectHitsEllipse/.test(code) && /function rectHitsRounded/.test(code) &&
+    /function polyHitsEllipse/.test(code) && /function polyHitsRounded/.test(code) &&
     /function shapeHitTest/.test(code),
     '外接矩形だけでは、円の角に置かれた語を可視と答える');
+  // 回った場所では、語の矩形を戻すと平行四辺形になる。外接矩形で当ててはいけない
+  check('形との交差を、矩形ではなく多角形で当てている',
+    /function clipPolyToBox/.test(code) && /backPoly/.test(code) && !/rectHitsRounded/.test(code),
+    '回転した場所で、形の外にある語まで拾う');
+  check('変形前の箱を、外接矩形の寸法から復元している',
+    /const D = Math\.abs\(L\.a\) \* Math\.abs\(L\.d\) - Math\.abs\(L\.b\) \* Math\.abs\(L\.c\)/.test(code),
+    '4隅を戻しただけでは元より大きくなる');
   // 逃げてよいのは overflow だけ。clip と clip-path は子孫の描画そのものを制限する
   check('包含ブロックの例外を、overflow だけに掛けている',
     /if \(applies && own\.overflow && !isRoot\) clip = intersectRect\(clip, own\.overflow\)/.test(code) &&

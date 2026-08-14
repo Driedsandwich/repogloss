@@ -238,20 +238,64 @@
   // 拡大するので、これを写像へ入れないと `getBoundingClientRect()` と食い違う
   // （実測: `zoom:2` の 120px の箱は、計算後のスタイルでは 120px、矩形では 240px）。
   // 一様な拡大なので、変形の線形部分とは掛ける順序を気にしなくてよい。
-  function ownLinear(cs) {
-    const v = cs.transform;
-    const z = parseFloat(cs.zoom);
-    const zoom = isFinite(z) && z > 0 ? z : 1;
-    const scale = zoom === 1 ? null : { a: zoom, b: 0, c: 0, d: zoom };
-    if (!v || v === 'none') return { m: scale, flat: true };
+  function angleToRad(v) {
+    const m = /^(-?[0-9.]+)(deg|rad|grad|turn)$/.exec((v || '').trim());
+    if (!m) return null;
+    const n = parseFloat(m[1]);
+    return m[2] === 'deg' ? n * Math.PI / 180
+         : m[2] === 'rad' ? n
+         : m[2] === 'grad' ? n * Math.PI / 200
+         : n * 2 * Math.PI;
+  }
+
+  // `rotate` プロパティ。z 軸まわりだけが 2D で表せる。
+  function rotateLinear(v) {
+    if (!v || v === 'none') return { m: null, flat: true };
+    const p = v.trim().split(/\s+/);
+    let ang = null;
+    if (p.length === 1) ang = angleToRad(p[0]);
+    else if (p.length === 2 && p[0] === 'z') ang = angleToRad(p[1]);
+    else if (p.length === 4 && +p[0] === 0 && +p[1] === 0 && +p[2] !== 0) ang = angleToRad(p[3]);
+    if (ang === null) return { m: null, flat: false };
+    const c = Math.cos(ang), s = Math.sin(ang);
+    return { m: { a: c, b: s, c: -s, d: c }, flat: true };
+  }
+
+  // `scale` プロパティ。3つ目（z）が 1 以外なら 2D では表せない。
+  function scaleLinear(v) {
+    if (!v || v === 'none') return { m: null, flat: true };
+    const p = v.trim().split(/\s+/).map(x => x.endsWith('%') ? parseFloat(x) / 100 : parseFloat(x));
+    if (p.some(x => !isFinite(x))) return { m: null, flat: false };
+    if (p.length >= 3 && p[2] !== 1) return { m: null, flat: false };
+    return { m: { a: p[0], b: 0, c: 0, d: p.length >= 2 ? p[1] : p[0] }, flat: true };
+  }
+
+  function transformLinear(v) {
+    if (!v || v === 'none') return { m: null, flat: true };
     const m = /^matrix\(([^)]*)\)$/.exec(v);
     if (!m) return { m: null, flat: false };        // matrix3d など。解かない
     const n = m[1].split(',').map(Number);
     if (n.length !== 6 || n.some(x => !isFinite(x))) return { m: null, flat: false };
-    const t = (n[0] === 1 && n[1] === 0 && n[2] === 0 && n[3] === 1)
-      ? null : { a: n[0], b: n[1], c: n[2], d: n[3] };
-    if (!t) return { m: scale, flat: true };
-    return { m: scale ? mul(scale, t) : t, flat: true };
+    if (n[0] === 1 && n[1] === 0 && n[2] === 0 && n[3] === 1) return { m: null, flat: true };
+    return { m: { a: n[0], b: n[1], c: n[2], d: n[3] }, flat: true };
+  }
+
+  // その要素の変形の線形部分。
+  // ⚠️ `transform` だけを見ていたため、**個別の変形プロパティ**（`rotate` / `scale`）で
+  // 回された切り抜きを、回っていないものとして判定していた（第18回 RG-18-03。実測:
+  // `rotate:35deg` の楕円の外にある0画素の語に印が付いた）。
+  // CSS Transforms 2 の順序は translate → rotate → scale → offset → transform。
+  // 平行移動は線形部分に効かないので見ない。`offset-path` に沿う回転は解かない。
+  function ownLinear(cs) {
+    const z = parseFloat(cs.zoom);
+    const zoom = isFinite(z) && z > 0 ? z : 1;
+    let m = zoom === 1 ? null : { a: zoom, b: 0, c: 0, d: zoom };
+    let flat = !(cs.offsetPath && cs.offsetPath !== 'none');
+    for (const part of [rotateLinear(cs.rotate), scaleLinear(cs.scale), transformLinear(cs.transform)]) {
+      if (!part.flat) flat = false;
+      if (part.m) m = m ? mul(m, part.m) : part.m;
+    }
+    return { m, flat };
   }
 
   const IDENTITY = { a: 1, b: 0, c: 0, d: 1 };

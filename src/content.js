@@ -639,6 +639,13 @@
     return backwards ? { min: -span, max: 0, now } : { min: 0, max: span, now };
   }
 
+  // その入れ物で、中身を動かせる量の範囲。scrollLeft を δ 増やすと中身は δ ぶん**左**へ
+  // 動くので、中身の動く量は [now - max, now - min]。
+  function shiftRange(el, cs, axis) {
+    const r = scrollRange(el, cs, axis);
+    return [r.now - r.max, r.now - r.min];
+  }
+
   //   L    … 祖先ぶんも含めた変形の線形部分（viewport ← 変形前の座標）
   //   flat … その変形が 2D で表せるか（3D は解かない）
   function ownClips(el, cs, L, flat) {
@@ -691,18 +698,19 @@
     // 入れ物では `scrollLeft` は 0〜200 で、負にはできない。`left:-150px` の語は
     // どうやっても画面へ出せないのに印が付き、Tab で止まれる点が残っていた。
     // いまは**軸ごとの実際の可動域**（scrollRange）から、動かせる先を出す。
-    let reach = null;
+    // ⚠️ 届く範囲を**1つの矩形へ潰してはいけない**（第18回 RG-18-01）。入れ子の
+    // 入れ物では、内側で動かせても外側の切り取り線を越えられないことがある。
+    // 実測: 動かせない外側の枠（scrollWidth == clientWidth）の中で、内側の枠が
+    // 左へ100pxずれて置かれている形。語は外側の枠の左外にあり、どう動かしても
+    // 枠の中へ入らない（`elementFromPoint` も BODY を返す＝描かれていない）のに
+    // 印が付いていた。いまは**枠ごとに「箱と動かせる量」を持ち**、内側から外側へ
+    // 区間を伝播させて、全部の枠へ同時に入る位置があるかを見る（→ reachable）。
+    let scroller = null;
     if (scrolls(cs.overflowX) || scrolls(cs.overflowY)) {
-      const b = padBox();
-      const rx = scrolls(cs.overflowX) ? scrollRange(el, cs, 'x') : null;
-      const ry = scrolls(cs.overflowY) ? scrollRange(el, cs, 'y') : null;
-      // scrollLeft を δ 増やすと中身は δ ぶん**左**へ動く。届く範囲は
-      //   x1 = 切り取り線の左 + (下限 - いまの値)、x2 = 右 + (上限 - いまの値)
-      reach = {
-        x1: rx ? b.x1 + rx.min - rx.now : -Infinity,
-        x2: rx ? b.x2 + rx.max - rx.now : Infinity,
-        y1: ry ? b.y1 + ry.min - ry.now : -Infinity,
-        y2: ry ? b.y2 + ry.max - ry.now : Infinity
+      scroller = {
+        box: padBox(),
+        dx: scrolls(cs.overflowX) ? shiftRange(el, cs, 'x') : [0, 0],
+        dy: scrolls(cs.overflowY) ? shiftRange(el, cs, 'y') : [0, 0]
       };
     }
     // ② legacy clip。**絶対配置の要素にしか効かない**（position を見ずに判定すると、
@@ -751,7 +759,7 @@
       }
       // flat でない（3D・perspective）ときは形を解かない＝制限しない側へ倒す
     }
-    return { overflow, shape, tests, reach };
+    return { overflow, shape, tests, scroller };
   }
 
   // 形そのものとの交差判定。矩形で足りる形は null を返す（外接矩形だけで決まる）。
@@ -819,7 +827,8 @@
 
   function paintChain(el, mode) {
     if (!el) return { clip: null, tests: [], hidden: false, transformed: false, fixed: false,
-                      captured: false, reach: null, linear: IDENTITY, flat: true };
+                      captured: false, scrolls: [],
+                      linear: IDENTITY, flat: true };
     const cache = chainCache && chainCache[mode];
     if (cache) { const hit = cache.get(el); if (hit !== undefined) return hit; }
     const cs = getComputedStyle(el);
@@ -843,9 +852,8 @@
       if (own.tests.length) tests = tests.concat(own.tests);
     }
     // 描画効果は包含ブロックを作るので、逃げられない。配置に関わらず見る。
-    // 動かせる範囲は「いちばん内側の入れ物」で決まる。外側の入れ物の範囲と重ねては
-    // いけない——高さ100pxの入れ物に5,000pxの中身がある場合、中身は文書の高さを
-    // 増やさないので、文書側の範囲と重ねると読める中身まで落ちる。
+    // スクロールできる入れ物は、**内側から外側の順に並べて**持つ。1つへ潰すと
+    // 入れ子の外側を見落とす（第18回 RG-18-01）。
     // `position:fixed` でも、**変形などを持つ祖先が包含ブロックを作ると画面には
     // 固定されない**——文書のスクロールで動く（第17回 RG-17-08。実測: `translateZ(0)`
     // の中の固定要素は、文書を900px送ると y=1166 から y=266 へ動いた。それでも画面へ
@@ -860,7 +868,8 @@
                 transformed: up.transformed || cs.transform !== 'none',
                 fixed: (cs.position === 'fixed' && !up.captured) || up.fixed,
                 captured,
-                reach: (applies && own && own.reach) ? own.reach : up.reach,
+                scrolls: (applies && own && own.scroller)
+                  ? [own.scroller].concat(up.scrolls) : up.scrolls,
                 linear, flat };
     if (cache) cache.set(el, v);
     return v;
@@ -901,29 +910,51 @@
     // 画面（または動かせる範囲）の外にある語は、読めないしスクロールでも出せない。
     // スクロールできる入れ物の中なら、その入れ物を動かせる範囲で見る。ただし
     // **入れ物そのものが文書のどこにも出せない**なら、中身も出せない。
-    const doc = reachableRect(chain.fixed);
-    const overlaps = (a, b) => a.x2 > b.x1 && a.x1 < b.x2 && a.y2 > b.y1 && a.y1 < b.y2;
-    const reach = !chain.reach ? doc : (overlaps(chain.reach, doc) ? chain.reach : null);
-    const inReach = r => !!reach && r.right > reach.x1 && r.left < reach.x2 &&
-                                    r.bottom > reach.y1 && r.top < reach.y2;
+    const inReach = r => reachable(r, chain);
     return rects.some(r => inClip(r) && inReach(r) && chain.tests.every(t => t(r)));
   }
 
-  // その語が、画面か「スクロールで出せる範囲」に入っているか。
-  //
-  // 見ていなかったため、`position:fixed; left:-10000px` の語に印が付き、**画面に
-  // 出せないのに Tab で止まれる**点ができていた（第15回 RG-15-04。実測: `scrollX` は
-  // 0 のまま動かせない）。固定配置はいまの画面と、それ以外は文書全体と交差を見る。
-  function reachableRect(fixed) {
+  // 文書そのものの枠（画面）と、そこで動かせる量。
+  // ⚠️ 以前は「文書全体の矩形」を左上へ広げる式で出していた。横書き左→右しか
+  // 想定しておらず、`<html dir="rtl">` の文書では**負の向きへスクロールすれば
+  // 読める語**を「出せない」と落としていた（第18回 RG-18-01。実測: 語は
+  // `scrollX = -1100` で画面に入るのに、印が付かないままだった）。
+  // いまは他の入れ物とまったく同じ形（箱＋動かせる量）で扱う。
+  function rootScroller(fixed) {
     const de = document.documentElement;
-    const vw = de.clientWidth, vh = de.clientHeight;
-    if (fixed) return { x1: 0, y1: 0, x2: vw, y2: vh };
-    // viewport 座標での文書全体。左と上はスクロール量ぶん外へ広がる。
-    const sx = window.scrollX || de.scrollLeft || 0;
-    const sy = window.scrollY || de.scrollTop || 0;
-    const w = Math.max(de.scrollWidth, document.body ? document.body.scrollWidth : 0, vw);
-    const h = Math.max(de.scrollHeight, document.body ? document.body.scrollHeight : 0, vh);
-    return { x1: -sx, y1: -sy, x2: w - sx, y2: h - sy };
+    const box = { x1: 0, y1: 0, x2: de.clientWidth, y2: de.clientHeight };
+    if (fixed) return { box, dx: [0, 0], dy: [0, 0] };   // 画面に固定＝動かせない
+    const se = document.scrollingElement || de;
+    const cs = getComputedStyle(se);
+    return { box, dx: shiftRange(se, cs, 'x'), dy: shiftRange(se, cs, 'y') };
+  }
+
+  // その矩形を、**全部の枠へ同時に入れられる**スクロール位置があるか。
+  //
+  // 内側の枠を動かすと中身だけが動き、外側の枠を動かすと内側の枠ごと動く。
+  // そこで「内側から k 番目までの枠を動かした合計」を S_k と置くと、
+  //   ・S_k は S_{k-1} に k 番目の可動量を足した範囲に入る
+  //   ・語が k 番目の枠に入る条件は S_k ∈ (箱の始点 - 語の終点, 箱の終点 - 語の始点)
+  // となり、内側から外側へ**区間を狭めていくだけ**で答えが出る（軸ごとに独立）。
+  function reachable(r, chain) {
+    const doms = chain.scrolls.concat([rootScroller(chain.fixed)]);
+    return feasible(r, doms, 'x') && feasible(r, doms, 'y');
+  }
+
+  function feasible(r, doms, axis) {
+    const t1 = axis === 'x' ? r.left : r.top;
+    const t2 = axis === 'x' ? r.right : r.bottom;
+    let lo = 0, hi = 0;
+    for (const d of doms) {
+      const sh = axis === 'x' ? d.dx : d.dy;
+      lo += sh[0]; hi += sh[1];
+      const b1 = axis === 'x' ? d.box.x1 : d.box.y1;
+      const b2 = axis === 'x' ? d.box.x2 : d.box.y2;
+      const ilo = b1 - t2, ihi = b2 - t1;      // この枠へ入るための動かし量
+      if (!(lo < ihi && hi > ilo)) return false;
+      lo = Math.max(lo, ilo); hi = Math.min(hi, ihi);
+    }
+    return true;
   }
 
   // display:contents は箱を作らない。可視性を判断できる最も近い先祖まで上がる。

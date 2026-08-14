@@ -1137,3 +1137,84 @@ export const NAMESPACE17_PAGE = `<!doctype html><html lang="en" data-iiyaku-off=
   <div id="sink"></div>
   <button id="after">after</button>
 </body></html>`;
+
+/* ===================== 第18回監査（v1.8.17）の反例 ===================== */
+/* 画素で確かめられる形。①語間の空白 ②回転の逆写像 ③個別の rotate
+   ④遠くにだけ描く影 ⑤遠くにだけ届く背景の抜き ⑥filter の最後の opacity(0)
+   ⑦打ち消し合う mask */
+export const PAINT18_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>paint18</title><style>html,body{background:#fff;color:#000;margin:0}
+ .slot{position:relative;overflow:hidden}</style></head><body>
+  <button id="before">before</button>
+  <div class="slot" id="h-ws" style="height:260px"><div style="position:relative;width:120px;height:120px;clip-path:inset(0 round 60px);margin:100px"><span style="position:absolute;left:8px;top:0;font:5px/5px Arial;word-spacing:70px;white-space:nowrap">pull request</span></div></div>
+  <p id="l-ws">A pull request later.</p>
+  <div class="slot" id="h-wsin" style="height:260px"><div style="position:relative;width:120px;height:120px;clip-path:inset(0 round 60px);margin:100px"><span style="position:absolute;left:45px;top:57px;font:5px/5px Arial;white-space:nowrap">force push</span></div></div>
+  <p id="l-wsin">A force push later.</p>
+  <div class="slot" id="h-rot" style="height:320px"><div style="position:relative;width:120px;height:120px;transform:rotate(35deg);transform-origin:60px 60px;clip-path:ellipse(50px 20px at 60px 60px);margin:150px"><span style="position:absolute;left:21px;top:37px;font:4px/4px Arial">branch</span></div></div>
+  <p id="l-rot">A branch later.</p>
+  <div class="slot" id="h-indiv" style="height:260px"><div style="position:relative;width:120px;height:120px;rotate:35deg;transform-origin:60px 60px;clip-path:ellipse(50px 20px at 60px 60px);margin:100px"><span style="position:absolute;left:35px;top:20px;font:4px/4px Arial">commit</span></div></div>
+  <p id="l-indiv">A commit later.</p>
+  <div class="slot" id="h-indivin" style="height:260px"><div style="position:relative;width:120px;height:120px;rotate:35deg;transform-origin:60px 60px;clip-path:ellipse(50px 20px at 60px 60px);margin:100px"><span style="position:absolute;left:50px;top:58px;font:4px/4px Arial">merge</span></div></div>
+  <p id="l-indivin">A merge later.</p>
+  <div class="slot" id="h-shdfar" style="height:120px"><div style="width:300px;height:50px;overflow:hidden"><p style="color:transparent;text-shadow:10000px 0 0 black;font-size:20px">A rebase shadow.</p></div></div>
+  <p id="l-shdfar">A rebase later.</p>
+  <div class="slot" id="h-shdnear" style="height:120px"><div style="width:300px;height:50px;overflow:hidden"><p style="color:transparent;text-shadow:0 0 0 black;font-size:20px">A fetch shadow.</p></div></div>
+  <p id="l-shdnear">A fetch later.</p>
+  <div class="slot" id="h-bgfar" style="height:120px"><div style="width:300px;height:50px;overflow:hidden"><p style="color:transparent;background-image:linear-gradient(black,black);background-position:10000px 0;background-repeat:no-repeat;-webkit-background-clip:text;background-clip:text;font-size:20px">A conflict background.</p></div></div>
+  <p id="l-bgfar">A conflict later.</p>
+  <div class="slot" id="h-bgnear" style="height:120px"><div style="width:300px;height:50px;overflow:hidden"><p style="color:transparent;background-image:linear-gradient(black,black);-webkit-background-clip:text;background-clip:text;font-size:20px">A diff background.</p></div></div>
+  <p id="l-bgnear">A diff later.</p>
+  <div class="slot" id="h-flt2" style="height:120px"><svg width="0" height="0" style="position:absolute"><filter id="f18"><feFlood flood-color="black"/></filter></svg><p style='filter:opacity(0) url("#f18") opacity(0);font-size:20px'>A label filtered.</p></div>
+  <p id="l-flt2">A label later.</p>
+  <div class="slot" id="h-flt1" style="height:120px"><svg width="0" height="0" style="position:absolute"><filter id="f18b"><feFlood flood-color="black"/></filter></svg><p style='filter:opacity(0) url("#f18b");font-size:20px'>A remote filtered.</p></div>
+  <p id="l-flt1">A remote later.</p>
+  <div class="slot" id="h-mskx" style="height:120px"><p style="font-size:20px;-webkit-mask-image:linear-gradient(black,black),linear-gradient(black,black);mask-image:linear-gradient(black,black),linear-gradient(black,black);-webkit-mask-composite:xor;mask-composite:exclude">A wiki masked.</p></div>
+  <p id="l-mskx">A wiki later.</p>
+  <div class="slot" id="h-mska" style="height:120px"><p style="font-size:20px;-webkit-mask-image:linear-gradient(black,black),linear-gradient(black,black);mask-image:linear-gradient(black,black),linear-gradient(black,black);mask-composite:add">A workflow masked.</p></div>
+  <p id="l-mska">A workflow later.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* 第18回 RG-18-01。入れ子の枠は、内側だけで決めてはいけない。 */
+export const NESTED18_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>nest18</title><style>html,body{background:#fff;color:#000;margin:0;font:16px/1.5 monospace}</style></head><body>
+  <button id="before">before</button>
+  <!-- 外側は動かせない（scrollWidth == clientWidth）。語は外側の枠の左外 -->
+  <div id="b-out" style="margin-left:200px;width:120px;height:80px;overflow:auto;position:relative">
+    <div style="position:absolute;left:-100px;top:10px;width:100px;height:50px;overflow:auto">
+      <p>A branch hidden.</p></div></div>
+  <p id="l-out">A branch visible.</p>
+  <!-- ［対照］外側を動かせば枠の中へ入る -->
+  <div id="b-in" style="margin-left:200px;width:120px;height:80px;overflow:auto;position:relative">
+    <div style="width:400px;height:1px"></div>
+    <div style="position:absolute;left:150px;top:10px;width:100px;height:50px;overflow:auto">
+      <p>A commit reachable.</p></div></div>
+  <p id="l-in">A commit visible.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* 第18回 RG-18-01。縦書き＋rtl では、縦の原点も終わり側にある。 */
+export const VERTICAL18_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>vert18</title><style>html,body{background:#fff;color:#000;margin:0;font:16px/1.5 monospace}
+ .b{writing-mode:vertical-rl;direction:rtl;position:relative;width:120px;height:120px;overflow:auto;border:1px solid}</style></head><body>
+  <div class="b" id="b-down"><div style="width:300px;height:300px"></div>
+    <p style="position:absolute;top:400px;right:0">A branch hidden.</p></div>
+  <p id="l-down">A branch visible.</p>
+  <div class="b" id="b-up"><div style="width:300px;height:300px"></div>
+    <p style="position:absolute;top:-150px;right:0">A commit reach.</p></div>
+  <p id="l-up">A commit visible.</p>
+</body></html>`;
+
+/* 第18回 RG-18-01。RTL の文書は、負の向きへスクロールすれば読める。 */
+export const RTLROOT18_PAGE = `<!doctype html><html lang="en" dir="rtl"><head><meta charset="utf-8">
+<title>rtl18</title><style>html,body{background:#fff;color:#000;margin:0;font:16px/1.5 monospace}</style></head>
+<body style="width:2000px">
+  <p id="first" style="position:absolute;right:1800px">A branch visible after scrolling.</p>
+  <p id="later">A branch here.</p></body></html>`;
+
+/* 第18回 RG-18-06。ページ所有の空 SUP には触れない。 */
+export const PAGEOWN18_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>own18</title></head><body>
+  <p id="src">A branch here.</p>
+  <sup id="page" class="iiyaku-icon" role="button" tabindex="0" aria-label="page control"></sup>
+</body></html>`;

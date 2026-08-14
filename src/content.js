@@ -238,20 +238,64 @@
   // 拡大するので、これを写像へ入れないと `getBoundingClientRect()` と食い違う
   // （実測: `zoom:2` の 120px の箱は、計算後のスタイルでは 120px、矩形では 240px）。
   // 一様な拡大なので、変形の線形部分とは掛ける順序を気にしなくてよい。
-  function ownLinear(cs) {
-    const v = cs.transform;
-    const z = parseFloat(cs.zoom);
-    const zoom = isFinite(z) && z > 0 ? z : 1;
-    const scale = zoom === 1 ? null : { a: zoom, b: 0, c: 0, d: zoom };
-    if (!v || v === 'none') return { m: scale, flat: true };
+  function angleToRad(v) {
+    const m = /^(-?[0-9.]+)(deg|rad|grad|turn)$/.exec((v || '').trim());
+    if (!m) return null;
+    const n = parseFloat(m[1]);
+    return m[2] === 'deg' ? n * Math.PI / 180
+         : m[2] === 'rad' ? n
+         : m[2] === 'grad' ? n * Math.PI / 200
+         : n * 2 * Math.PI;
+  }
+
+  // `rotate` プロパティ。z 軸まわりだけが 2D で表せる。
+  function rotateLinear(v) {
+    if (!v || v === 'none') return { m: null, flat: true };
+    const p = v.trim().split(/\s+/);
+    let ang = null;
+    if (p.length === 1) ang = angleToRad(p[0]);
+    else if (p.length === 2 && p[0] === 'z') ang = angleToRad(p[1]);
+    else if (p.length === 4 && +p[0] === 0 && +p[1] === 0 && +p[2] !== 0) ang = angleToRad(p[3]);
+    if (ang === null) return { m: null, flat: false };
+    const c = Math.cos(ang), s = Math.sin(ang);
+    return { m: { a: c, b: s, c: -s, d: c }, flat: true };
+  }
+
+  // `scale` プロパティ。3つ目（z）が 1 以外なら 2D では表せない。
+  function scaleLinear(v) {
+    if (!v || v === 'none') return { m: null, flat: true };
+    const p = v.trim().split(/\s+/).map(x => x.endsWith('%') ? parseFloat(x) / 100 : parseFloat(x));
+    if (p.some(x => !isFinite(x))) return { m: null, flat: false };
+    if (p.length >= 3 && p[2] !== 1) return { m: null, flat: false };
+    return { m: { a: p[0], b: 0, c: 0, d: p.length >= 2 ? p[1] : p[0] }, flat: true };
+  }
+
+  function transformLinear(v) {
+    if (!v || v === 'none') return { m: null, flat: true };
     const m = /^matrix\(([^)]*)\)$/.exec(v);
     if (!m) return { m: null, flat: false };        // matrix3d など。解かない
     const n = m[1].split(',').map(Number);
     if (n.length !== 6 || n.some(x => !isFinite(x))) return { m: null, flat: false };
-    const t = (n[0] === 1 && n[1] === 0 && n[2] === 0 && n[3] === 1)
-      ? null : { a: n[0], b: n[1], c: n[2], d: n[3] };
-    if (!t) return { m: scale, flat: true };
-    return { m: scale ? mul(scale, t) : t, flat: true };
+    if (n[0] === 1 && n[1] === 0 && n[2] === 0 && n[3] === 1) return { m: null, flat: true };
+    return { m: { a: n[0], b: n[1], c: n[2], d: n[3] }, flat: true };
+  }
+
+  // その要素の変形の線形部分。
+  // ⚠️ `transform` だけを見ていたため、**個別の変形プロパティ**（`rotate` / `scale`）で
+  // 回された切り抜きを、回っていないものとして判定していた（第18回 RG-18-03。実測:
+  // `rotate:35deg` の楕円の外にある0画素の語に印が付いた）。
+  // CSS Transforms 2 の順序は translate → rotate → scale → offset → transform。
+  // 平行移動は線形部分に効かないので見ない。`offset-path` に沿う回転は解かない。
+  function ownLinear(cs) {
+    const z = parseFloat(cs.zoom);
+    const zoom = isFinite(z) && z > 0 ? z : 1;
+    let m = zoom === 1 ? null : { a: zoom, b: 0, c: 0, d: zoom };
+    let flat = !(cs.offsetPath && cs.offsetPath !== 'none');
+    for (const part of [rotateLinear(cs.rotate), scaleLinear(cs.scale), transformLinear(cs.transform)]) {
+      if (!part.flat) flat = false;
+      if (part.m) m = m ? mul(m, part.m) : part.m;
+    }
+    return { m, flat };
   }
 
   const IDENTITY = { a: 1, b: 0, c: 0, d: 1 };
@@ -273,15 +317,34 @@
     if (!det) return null;                       // つぶれている＝面積が無い（別で落ちる）
     return {
       to: (x, y) => [L.a * x + L.c * y + tx, L.b * x + L.d * y + ty],
-      // viewport 座標の矩形を、変形前の座標の外接矩形へ戻す（広く見積もる側）
-      back: r => {
-        const px2 = [], py2 = [];
-        for (const [x, y] of [[r.left, r.top], [r.right, r.top], [r.right, r.bottom], [r.left, r.bottom]]) {
-          const u = x - tx, v = y - ty;
-          px2.push((L.d * u - L.c * v) / det); py2.push((L.a * v - L.b * u) / det);
+      // viewport 座標の矩形を、変形前の座標へ戻す。
+      //
+      // ⚠️ 4隅をそのまま戻してはいけない（第18回 RG-18-03）。`getClientRects()` が返すのは
+      // **回った箱の外接矩形**なので、それを戻すと元より大きな平行四辺形になり、形の外の
+      // 語まで拾う（実測: 35°回した楕円の外の0画素の語に印が付いた。元の箱は約12×4なのに
+      // 戻すと約17×16になっていた）。
+      //
+      // 元の箱は復元できる。変形前の箱を w×h とすると、外接矩形の寸法は
+      //   W = |a|w + |c|h,  H = |b|w + |d|h
+      // なので、この2式を解けばよい（中心は、外接矩形の中心を戻した点と一致する）。
+      // ちょうど45°など |a||d| = |b||c| のときだけ解が定まらないので、そのときは
+      // 平行四辺形で広く見積もる。
+      backPoly: r => {
+        const u0 = (r.left + r.right) / 2 - tx, v0 = (r.top + r.bottom) / 2 - ty;
+        const cx = (L.d * u0 - L.c * v0) / det, cy = (L.a * v0 - L.b * u0) / det;
+        const W = r.right - r.left, H = r.bottom - r.top;
+        const D = Math.abs(L.a) * Math.abs(L.d) - Math.abs(L.b) * Math.abs(L.c);
+        if (Math.abs(D) > 1e-6) {
+          const w = (W * Math.abs(L.d) - H * Math.abs(L.c)) / D;
+          const h = (H * Math.abs(L.a) - W * Math.abs(L.b)) / D;
+          if (isFinite(w) && isFinite(h) && w >= 0 && h >= 0) {
+            return [[cx - w / 2, cy - h / 2], [cx + w / 2, cy - h / 2],
+                    [cx + w / 2, cy + h / 2], [cx - w / 2, cy + h / 2]];
+          }
         }
-        return { left: Math.min(...px2), top: Math.min(...py2),
-                 right: Math.max(...px2), bottom: Math.max(...py2) };
+        return [[r.left, r.top], [r.right, r.top], [r.right, r.bottom], [r.left, r.bottom]]
+          .map(([x, y]) => { const u = x - tx, v = y - ty;
+            return [(L.d * u - L.c * v) / det, (L.a * v - L.b * u) / det]; });
       }
     };
   }
@@ -377,12 +440,54 @@
   // 軸に沿った矩形と楕円が交わるか。矩形のうち中心にいちばん近い点が楕円の内側なら交わる。
   // 外接矩形で代用してはいけない——実測: `circle(50px at 60px 60px)` の角に置いた語は
   // 0画素しか描かれていないのに、外接矩形の中なので可視と答えていた。
-  function rectHitsEllipse(r, cx, cy, rx, ry) {
-    if (!(rx > 0 && ry > 0)) return false;
-    const nx = Math.max(r.left, Math.min(cx, r.right));
-    const ny = Math.max(r.top, Math.min(cy, r.bottom));
-    const dx = (nx - cx) / rx, dy = (ny - cy) / ry;
-    return dx * dx + dy * dy <= 1;
+  // ⚠️ 判定は**多角形**で行う（第18回 RG-18-03）。回転した場所では、語の矩形を
+  // 変形前へ戻すと平行四辺形になる。その外接矩形で当てていたため、実際には形の外に
+  // ある語まで「交わる」と答えていた（実測: 回転した楕円の外の0画素の語に印が付いた）。
+  const rectPoly = r => [[r.left, r.top], [r.right, r.top], [r.right, r.bottom], [r.left, r.bottom]];
+  const polyBounds = p => ({
+    left: Math.min(...p.map(q => q[0])), right: Math.max(...p.map(q => q[0])),
+    top: Math.min(...p.map(q => q[1])), bottom: Math.max(...p.map(q => q[1])) });
+
+  // 凸多角形を、軸に沿った箱で切る（Sutherland–Hodgman）
+  function clipPolyToBox(poly, box) {
+    let out = poly;
+    const edges = [
+      [p => p[0] >= box.x1, (a, b) => [box.x1, a[1] + (b[1] - a[1]) * (box.x1 - a[0]) / (b[0] - a[0])]],
+      [p => p[0] <= box.x2, (a, b) => [box.x2, a[1] + (b[1] - a[1]) * (box.x2 - a[0]) / (b[0] - a[0])]],
+      [p => p[1] >= box.y1, (a, b) => [a[0] + (b[0] - a[0]) * (box.y1 - a[1]) / (b[1] - a[1]), box.y1]],
+      [p => p[1] <= box.y2, (a, b) => [a[0] + (b[0] - a[0]) * (box.y2 - a[1]) / (b[1] - a[1]), box.y2]]
+    ];
+    for (const [inside, cut] of edges) {
+      const src = out; out = [];
+      for (let i = 0; i < src.length; i++) {
+        const a = src[i], b = src[(i + 1) % src.length];
+        const ia = inside(a), ib = inside(b);
+        if (ia) out.push(a);
+        if (ia !== ib) out.push(cut(a, b));
+      }
+      if (out.length === 0) return [];
+    }
+    return out;
+  }
+
+  // 凸多角形と楕円が交わるか。楕円を単位円へ写して、原点との距離で決める。
+  function polyHitsEllipse(poly, cx, cy, rx, ry) {
+    if (!(rx > 0 && ry > 0) || poly.length < 3) return false;
+    const p = poly.map(q => [(q[0] - cx) / rx, (q[1] - cy) / ry]);
+    for (const v of p) if (v[0] * v[0] + v[1] * v[1] <= 1) return true;
+    let pos = false, neg = false;
+    for (let i = 0; i < p.length; i++) {
+      const a = p[i], b = p[(i + 1) % p.length];
+      const cr = (b[0] - a[0]) * (0 - a[1]) - (b[1] - a[1]) * (0 - a[0]);
+      if (cr > 0) pos = true; else if (cr < 0) neg = true;
+      const dx = b[0] - a[0], dy = b[1] - a[1];
+      const L = dx * dx + dy * dy;
+      let t = L === 0 ? 0 : ((0 - a[0]) * dx + (0 - a[1]) * dy) / L;
+      t = Math.max(0, Math.min(1, t));
+      const qx = a[0] + t * dx, qy = a[1] + t * dy;
+      if (qx * qx + qy * qy <= 1) return true;      // 辺が円と交わる
+    }
+    return !(pos && neg);                            // 全部同じ向き＝原点が中
   }
 
   // `round` の値を、四隅の { rx, ry } へ展開する。
@@ -426,18 +531,14 @@
   }
 
   // 角丸の矩形と交わるか。角ごとの四分楕円の外側だけを落とす。
-  function rectHitsRounded(r0, box, radii) {
-    if (r0.right <= box.x1 || r0.left >= box.x2 || r0.bottom <= box.y1 || r0.top >= box.y2) return false;
-    // ⚠️ **先に box で切る**（第17回 RG-17-02）。切らずに「角の箱へまるごと収まるか」を
-    // 見ていたため、箱の外へはみ出した矩形は角の判定に入らず、無条件で可視になっていた
-    // （実測: `inset(0 round 60px)` の左上の外に置いた0画素の語に印が付いた）。
-    // 切ったあとの矩形が角の箱の中だけにあるなら、その四分楕円との交差で決まる。
-    const r = { left: Math.max(r0.left, box.x1), top: Math.max(r0.top, box.y1),
-                right: Math.min(r0.right, box.x2), bottom: Math.min(r0.bottom, box.y2) };
-    if (r.right <= r.left || r.bottom <= r.top) return false;
-    // 上左・上右・下右・下左。それぞれ角の正方形と、その四分楕円の中心。
-    // 半径は cornerRadii が used value まで縮めてあるので、ここでは頭打ちにしない
-    // （辺の長さで角ごとに切ると、比例縮小のかかった形と食い違う）。
+  function polyHitsRounded(poly, box, radii) {
+    // **先に box で切る**（第17回 RG-17-02）。切らずに「角の箱へまるごと収まるか」を
+    // 見ていたため、箱の外へはみ出した形は角の判定に入らず、無条件で可視になっていた。
+    const q = clipPolyToBox(poly, box);
+    if (q.length < 3) return false;
+    const b = polyBounds(q);
+    // 上左・上右・下右・下左。それぞれ角の箱と、その四分楕円の中心。
+    // 半径は cornerRadii が used value まで縮めてあるので、ここでは頭打ちにしない。
     const corners = [
       { rx: radii[0].rx, ry: radii[0].ry, x1: box.x1, y1: box.y1, sx: 1, sy: 1 },
       { rx: radii[1].rx, ry: radii[1].ry, x1: box.x2, y1: box.y1, sx: -1, sy: 1 },
@@ -449,14 +550,15 @@
       if (!(rx > 0 && ry > 0)) continue;
       const qx1 = c.sx > 0 ? c.x1 : c.x1 - rx, qx2 = c.sx > 0 ? c.x1 + rx : c.x1;
       const qy1 = c.sy > 0 ? c.y1 : c.y1 - ry, qy2 = c.sy > 0 ? c.y1 + ry : c.y1;
-      // その角の箱の**中だけ**に収まっている矩形は、四分楕円との交差で決める
-      if (r.left >= qx1 && r.right <= qx2 && r.top >= qy1 && r.bottom <= qy2) {
-        return rectHitsEllipse(r, c.sx > 0 ? c.x1 + rx : c.x1 - rx,
+      // その角の箱の**中だけ**にあるなら、四分楕円との交差で決まる
+      if (b.left >= qx1 && b.right <= qx2 && b.top >= qy1 && b.bottom <= qy2) {
+        return polyHitsEllipse(q, c.sx > 0 ? c.x1 + rx : c.x1 - rx,
                                   c.sy > 0 ? c.y1 + ry : c.y1 - ry, rx, ry);
       }
     }
     return true;
   }
+
 
   // 形を、それを囲む矩形にする。囲む矩形は本物の形より**広い**ので、
   // 「交わらない」と言えるときだけ落とす、という向きを崩さない。
@@ -537,7 +639,59 @@
   // （第16回 RG-16-04。実測: 透明な縁取りの語は0画素なのに印が付き、影で描かれた
   // 202画素・背景を文字型に抜いた270画素の語には印が付かなかった）。
   // 断定できるのは「どの経路でも描かれない」ときだけ。
-  function textIsInvisible(cs) {
+  // 影が、**その語の位置に**届くか。
+  // ⚠️ 「不透明な色の影がある」だけでは足りない（第18回 RG-18-04。実測:
+  // `text-shadow: 10000px 0 0 black` の語は0画素なのに印が付いた）。影は文字の形を
+  // ずらして描くので、ずらし量が語の大きさ（＋ぼかし）を超えると、その語の場所には
+  // 何も来ない。
+  function shadowPaintsAt(v, rect) {
+    if (!v || v === 'none') return false;
+    for (const layer of splitTopLevel(v)) {
+      const color = (layer.match(/rgba?\([^)]*\)/) || [])[0];
+      if (color && TRANSPARENT.test(color)) continue;          // 透明な影は描かない
+      const lens = (layer.replace(/rgba?\([^)]*\)/g, '').match(/-?[0-9.]+px/g) || []).map(parseFloat);
+      if (lens.length < 2) return true;                        // 読めない＝描かれる側へ倒す
+      const [dx, dy] = lens;
+      const blur = lens.length > 2 ? Math.abs(lens[2]) : 0;
+      if (Math.abs(dx) < rect.width + blur && Math.abs(dy) < rect.height + blur) return true;
+    }
+    return false;
+  }
+
+  // `background-clip: text` の塗りが、**その語の位置に**届くか。
+  // ⚠️ 「不透明な背景がある」だけでは足りない（第18回 RG-18-04。実測:
+  // `background-position: 10000px 0; background-repeat: no-repeat` の語は0画素なのに
+  // 印が付いた）。読み切れない指定は描かれる側へ倒す。
+  function bgClipTextPaintsAt(el, cs, rect) {
+    if (!TRANSPARENT.test(cs.backgroundColor || '')) return true;   // 背景色は全面を覆う
+    const img = cs.backgroundImage;
+    if (!img || img === 'none') return false;
+    const layers = splitTopLevel(img).map(x => x.trim());
+    const rep = splitTopLevel(cs.backgroundRepeat || 'repeat').map(x => x.trim());
+    const pos = splitTopLevel(cs.backgroundPosition || '0% 0%').map(x => x.trim());
+    const size = splitTopLevel(cs.backgroundSize || 'auto').map(x => x.trim());
+    const origin = cs.backgroundOrigin || 'padding-box';
+    const area = refBoxRect(cs, el.getBoundingClientRect(), false,
+                            origin === 'content-box' ? 'content-box'
+                          : origin === 'border-box' ? 'border-box' : 'padding-box');
+    for (let i = 0; i < layers.length; i++) {
+      if (isFullyTransparentGradient(layers[i])) continue;
+      const r = rep[i % rep.length] || 'repeat';
+      if (!/no-repeat/.test(r)) return true;                        // 繰り返せば全面に届く
+      const sz = size[i % size.length] || 'auto';
+      if (sz !== 'auto') return true;                               // 寸法は解かない＝届く側へ
+      const pv = (pos[i % pos.length] || '0px 0px').split(/\s+/);
+      const px0 = lenToPx(pv[0], (area.x2 - area.x1) - (area.x2 - area.x1));
+      const py0 = lenToPx(pv[1] !== undefined ? pv[1] : '50%', 0);
+      if (px0 === null || py0 === null) return true;                // 読めない＝届く側へ
+      const box = { x1: area.x1 + px0, y1: area.y1 + py0,
+                    x2: area.x1 + px0 + (area.x2 - area.x1), y2: area.y1 + py0 + (area.y2 - area.y1) };
+      if (rect.right > box.x1 && rect.left < box.x2 && rect.bottom > box.y1 && rect.top < box.y2) return true;
+    }
+    return false;
+  }
+
+  function textIsInvisible(cs, el, rect) {
     const fill = cs.webkitTextFillColor && cs.webkitTextFillColor !== 'currentcolor'
       ? cs.webkitTextFillColor : cs.color;
     if (!TRANSPARENT.test(fill || '')) return false;
@@ -545,18 +699,11 @@
     const sw = parseFloat(cs.webkitTextStrokeWidth || '0');
     const sc = cs.webkitTextStrokeColor || '';
     if (sw > 0 && !TRANSPARENT.test(sc)) return false;
-    // ② 影。透明な塗りでも `text-shadow: 0 0 0 black` は文字の形をそのまま描く。
-    //    ⚠️ 「指定がある」だけで描かれると決めてはいけない（第17回 RG-17-04。実測:
-    //    `text-shadow: 0 0 0 transparent` の語は0画素なのに印が付いた）。**色を見る**。
-    if (anyOpaqueColor(cs.textShadow)) return false;
-    // ③ 背景を文字型に抜く指定。塗りを透明にするのは、これを使うときの定石。
-    //    ⚠️ これも「指定がある」だけでは描かれない（実測: `background:none` に
-    //    `background-clip:text` を付けた語は0画素なのに印が付いた）。**塗りを見る**。
+    // ② 影。色と**ずらし量**を見る
+    if (shadowPaintsAt(cs.textShadow, rect)) return false;
+    // ③ 背景を文字型に抜く指定。塗りが語の位置に届くかを見る
     const bc = cs.backgroundClip || cs.webkitBackgroundClip;
-    if (bc === 'text' &&
-        ((cs.backgroundImage && cs.backgroundImage !== 'none' &&
-          !isFullyTransparentGradient(cs.backgroundImage)) ||
-         !TRANSPARENT.test(cs.backgroundColor || ''))) return false;
+    if (bc === 'text' && bgClipTextPaintsAt(el, cs, rect)) return false;
     return true;
   }
 
@@ -576,12 +723,24 @@
   // 落としていた（第16回 RG-16-05）。
   // 断定してよいのは、opacity(0) の**後ろに `url()` が1つも無い**ときだけ
   // （ぼかし・明度などは透明な入力を透明のまま返す）。
-  function filterHidesAll(v) {
+  // `filter` の並びを**最後まで**たどる。
+  // ⚠️ 「最初の opacity(0) より後ろに url があれば可視」で止めていたため、
+  // `opacity(0) url(#f) opacity(0)` のように**最後にもう一度 0 になる**並びを
+  // 可視と答えていた（第18回 RG-18-05）。
+  //   opacity(0) … そこで確実に 0 になる
+  //   url(...)   … 別の入力から描き直せるので、それまでの断定を捨てる
+  //   その他     … 透明な入力は透明のまま返す（断定は変わらない）
+  // 最後まで見て「確実に0」のときだけ消えていると言う。`url()` で描き直された先は
+  // 見えているかもしれないので、そこは可視の側へ倒す（断定しない）。
+  function filterState(v) {
     const fns = v.match(/[a-zA-Z-]+\([^()]*(\([^()]*\)[^()]*)*\)/g);
-    if (!fns) return false;
-    const zero = fns.findIndex(f => FILTER_OPACITY_ZERO.test(f));
-    if (zero < 0) return false;
-    return !fns.slice(zero + 1).some(f => /^url\(/.test(f));
+    if (!fns) return 'shown';
+    let zero = false;
+    for (const f of fns) {
+      if (FILTER_OPACITY_ZERO.test(f)) zero = true;
+      else if (/^url\(/.test(f)) zero = false;
+    }
+    return zero ? 'hidden' : 'shown';
   }
 
   // `mask-image` は**層の並び**で、カンマ区切りの各層を合成した結果が最終の覆いになる。
@@ -589,9 +748,19 @@
   // 層がある語を落としていた（第17回 RG-17-04。実測: 透明な gradient と不透明な
   // 画像を並べた語は 391画素描かれているのに印が付かなかった）。
   // 断定してよいのは、**すべての層が完全に透明**なときだけ。
-  function maskHidesAll(v) {
-    const layers = splitTopLevel(v);
-    return layers.length > 0 && layers.every(l => isFullyTransparentGradient(l.trim()));
+  // 覆い（mask）は層の並びで、`mask-composite` の演算で合成される。
+  // ⚠️ 層ごとに透明かを見るだけでは足りない（第18回 RG-18-05。実測: 同じ不透明な層を
+  // 2つ `exclude` すると打ち消し合って0画素になるのに、印が付いた）。
+  // Porter-Duff の合成は解かない。**足し合わせ以外は「断定できない」**とする。
+  function maskState(cs) {
+    const v = cs.maskImage || cs.webkitMaskImage;
+    if (!v || v === 'none') return 'shown';
+    const layers = splitTopLevel(v).map(x => x.trim());
+    if (layers.length === 0) return 'shown';
+    const comp = splitTopLevel(cs.maskComposite || cs.webkitMaskComposite || 'add').map(x => x.trim());
+    const allAdd = comp.every(c => c === '' || c === 'add' || c === 'source-over');
+    if (!allAdd) return 'unknown';
+    return layers.every(l => isFullyTransparentGradient(l)) ? 'hidden' : 'shown';
   }
 
   // カンマで切る。ただし `rgba(…)` や `url(…)` の中のカンマでは切らない。
@@ -608,11 +777,15 @@
     return out;
   }
 
-  function paintHidesAll(cs) {
-    if (cs.filter && cs.filter !== 'none' && filterHidesAll(cs.filter)) return true;
-    const mi = cs.maskImage || cs.webkitMaskImage;
-    if (mi && mi !== 'none' && maskHidesAll(mi)) return true;
-    return false;
+  //   'hidden'  … 描画効果だけで確実に消えている
+  //   'unknown' … 解けない指定がある（この候補では語を使い切らない）
+  //   'shown'   … 描画効果では消えていない
+  function paintState(cs) {
+    const f = (cs.filter && cs.filter !== 'none') ? filterState(cs.filter) : 'shown';
+    if (f === 'hidden') return 'hidden';
+    const m = maskState(cs);
+    if (m === 'hidden') return 'hidden';
+    return (f === 'unknown' || m === 'unknown') ? 'unknown' : 'shown';
   }
 
   // その要素が課す切り取りを、**逃げられるものと逃げられないものに分けて**返す。
@@ -621,10 +794,35 @@
   //   tests    … 形そのものとの交差判定（外接矩形だけでは、円や角丸の外を落とせない）
   // 一緒くたにしていたため、包含ブロックでない祖先の clip-path が丸ごと無視されていた
   // （実測: 0画素の語に印が付き、後ろの読める同じ語が説明されなかった）。
+  // その軸で、原点が「終わり側」にあるか（＝スクロール値が負の側へ動くか）。
+  //
+  // **書字方向10通りを実測して規則にした**（v1.8.17。以前は縦書きの縦方向を
+  // いつも正の側と決めつけており、`vertical-rl` ＋ `rtl` の入れ物では上方向へ
+  // 動かせる語を「出せない」と落としていた。第18回 RG-18-01）。
+  //
+  //   writing-mode   dir   scrollLeft   scrollTop
+  //   horizontal-tb  ltr   [0, s]       [0, s]
+  //   horizontal-tb  rtl   [-s, 0]      [0, s]
+  //   vertical-rl    ltr   [-s, 0]      [0, s]
+  //   vertical-rl    rtl   [-s, 0]      [-s, 0]
+  //   vertical-lr    ltr   [0, s]       [0, s]
+  //   vertical-lr    rtl   [0, s]       [-s, 0]
+  //   sideways-rl    ltr   [-s, 0]      [0, s]
+  //   sideways-rl    rtl   [-s, 0]      [-s, 0]
+  //   sideways-lr    ltr   [0, s]       [-s, 0]
+  //   sideways-lr    rtl   [0, s]       [0, s]
+  //
+  // 横は「横書きなら direction、縦書きなら rl かどうか」。
+  // 縦は「横書きなら常に正。`sideways-lr` だけ ltr で負、他の縦書きは rtl で負」。
+  function scrollAxisNegative(cs, axis) {
+    const wm = cs.writingMode || 'horizontal-tb';
+    const rtl = cs.direction === 'rtl';
+    if (axis === 'x') return wm === 'horizontal-tb' ? rtl : /^(vertical-rl|sideways-rl)$/.test(wm);
+    if (wm === 'horizontal-tb') return false;
+    return wm === 'sideways-lr' ? !rtl : rtl;
+  }
+
   // その軸で、いまどこまでスクロールできるか。**原点は片側にある**。
-  //   横書き左→右 … scrollLeft は 0 〜 (scrollWidth - clientWidth)
-  //   右→左（`direction:rtl`）と縦書き `vertical-rl` … 負の側 〜 0
-  // 実測で確かめた値に合わせている（rtl: [-200, 0] / vertical-rl: x=[-215,0] y=[0,275]）。
   // いまの値が 0 でないときは、その符号だけで原点の側が決まるので、書字方向を見ない。
   function scrollRange(el, cs, axis) {
     const span = axis === 'x' ? Math.max(0, el.scrollWidth - el.clientWidth)
@@ -633,10 +831,14 @@
     if (span === 0) return { min: now, max: now, now };
     if (now < 0) return { min: -span, max: 0, now };
     if (now > 0) return { min: 0, max: span, now };
-    const backwards = axis === 'x'
-      ? (cs.direction === 'rtl' || /^(vertical-rl|sideways-rl)$/.test(cs.writingMode))
-      : false;
-    return backwards ? { min: -span, max: 0, now } : { min: 0, max: span, now };
+    return scrollAxisNegative(cs, axis) ? { min: -span, max: 0, now } : { min: 0, max: span, now };
+  }
+
+  // その入れ物で、中身を動かせる量の範囲。scrollLeft を δ 増やすと中身は δ ぶん**左**へ
+  // 動くので、中身の動く量は [now - max, now - min]。
+  function shiftRange(el, cs, axis) {
+    const r = scrollRange(el, cs, axis);
+    return [r.now - r.max, r.now - r.min];
   }
 
   //   L    … 祖先ぶんも含めた変形の線形部分（viewport ← 変形前の座標）
@@ -691,18 +893,19 @@
     // 入れ物では `scrollLeft` は 0〜200 で、負にはできない。`left:-150px` の語は
     // どうやっても画面へ出せないのに印が付き、Tab で止まれる点が残っていた。
     // いまは**軸ごとの実際の可動域**（scrollRange）から、動かせる先を出す。
-    let reach = null;
+    // ⚠️ 届く範囲を**1つの矩形へ潰してはいけない**（第18回 RG-18-01）。入れ子の
+    // 入れ物では、内側で動かせても外側の切り取り線を越えられないことがある。
+    // 実測: 動かせない外側の枠（scrollWidth == clientWidth）の中で、内側の枠が
+    // 左へ100pxずれて置かれている形。語は外側の枠の左外にあり、どう動かしても
+    // 枠の中へ入らない（`elementFromPoint` も BODY を返す＝描かれていない）のに
+    // 印が付いていた。いまは**枠ごとに「箱と動かせる量」を持ち**、内側から外側へ
+    // 区間を伝播させて、全部の枠へ同時に入る位置があるかを見る（→ reachable）。
+    let scroller = null;
     if (scrolls(cs.overflowX) || scrolls(cs.overflowY)) {
-      const b = padBox();
-      const rx = scrolls(cs.overflowX) ? scrollRange(el, cs, 'x') : null;
-      const ry = scrolls(cs.overflowY) ? scrollRange(el, cs, 'y') : null;
-      // scrollLeft を δ 増やすと中身は δ ぶん**左**へ動く。届く範囲は
-      //   x1 = 切り取り線の左 + (下限 - いまの値)、x2 = 右 + (上限 - いまの値)
-      reach = {
-        x1: rx ? b.x1 + rx.min - rx.now : -Infinity,
-        x2: rx ? b.x2 + rx.max - rx.now : Infinity,
-        y1: ry ? b.y1 + ry.min - ry.now : -Infinity,
-        y2: ry ? b.y2 + ry.max - ry.now : Infinity
+      scroller = {
+        box: padBox(),
+        dx: scrolls(cs.overflowX) ? shiftRange(el, cs, 'x') : [0, 0],
+        dy: scrolls(cs.overflowY) ? shiftRange(el, cs, 'y') : [0, 0]
       };
     }
     // ② legacy clip。**絶対配置の要素にしか効かない**（position を見ずに判定すると、
@@ -719,7 +922,7 @@
         const sr = shapeBoundsRect(sh, ref);
         if (sr) shape = intersectRect(shape, sr);
         const t = shapeHitTest(sh, ref);
-        if (t) tests.push(t);
+        if (t) tests.push(rect => t(rectPoly(rect)));
       } else if (flat) {
         // 回転・拡大縮小があるときは、形も一緒に回っている。viewport の軸に沿った
         // まま判定していたため、中心も半径もずれ、**外にある語へ印が付き、
@@ -746,12 +949,12 @@
                                            x2: Math.max(...xs), y2: Math.max(...ys) });
           }
           const t = shapeHitTest(sh, ref);
-          if (t) tests.push(rect => t(map.back(rect)));
+          if (t) tests.push(rect => t(map.backPoly(rect)));
         }
       }
       // flat でない（3D・perspective）ときは形を解かない＝制限しない側へ倒す
     }
-    return { overflow, shape, tests, reach };
+    return { overflow, shape, tests, scroller };
   }
 
   // 形そのものとの交差判定。矩形で足りる形は null を返す（外接矩形だけで決まる）。
@@ -763,7 +966,7 @@
       if (!c) return null;
       const r = radiusOf(radii, c, ref, null);
       if (r === null) return null;
-      return rect => rectHitsEllipse(rect, c.cx, c.cy, r, r);
+      return poly => polyHitsEllipse(poly, c.cx, c.cy, r, r);
     }
     m = /^ellipse\((.*)\)$/.exec(shape);
     if (m) {
@@ -774,7 +977,7 @@
       if (rr.length !== 2) return null;
       const rx = radiusOf(rr[0], c, ref, 'x'), ry = radiusOf(rr[1], c, ref, 'y');
       if (rx === null || ry === null) return null;
-      return rect => rectHitsEllipse(rect, c.cx, c.cy, rx, ry);
+      return poly => polyHitsEllipse(poly, c.cx, c.cy, rx, ry);
     }
     // inset(... round …)。**角ごとに半径が違う**（1〜4値を上左・上右・下右・下左へ
     // 展開し、`/` の前後で水平・垂直を分ける）。先頭の1値を四隅へ広げていたため、
@@ -787,7 +990,7 @@
       if (!box) return null;
       const radii = cornerRadii(parts[1], box);
       if (!radii) return null;
-      return rect => rectHitsRounded(rect, box, radii);
+      return poly => polyHitsRounded(poly, box, radii);
     }
     return null;
   }
@@ -819,7 +1022,8 @@
 
   function paintChain(el, mode) {
     if (!el) return { clip: null, tests: [], hidden: false, transformed: false, fixed: false,
-                      captured: false, reach: null, linear: IDENTITY, flat: true };
+                      captured: false, paintUnknown: false, scrolls: [],
+                      linear: IDENTITY, flat: true };
     const cache = chainCache && chainCache[mode];
     if (cache) { const hit = cache.get(el); if (hit !== undefined) return hit; }
     const cs = getComputedStyle(el);
@@ -843,9 +1047,8 @@
       if (own.tests.length) tests = tests.concat(own.tests);
     }
     // 描画効果は包含ブロックを作るので、逃げられない。配置に関わらず見る。
-    // 動かせる範囲は「いちばん内側の入れ物」で決まる。外側の入れ物の範囲と重ねては
-    // いけない——高さ100pxの入れ物に5,000pxの中身がある場合、中身は文書の高さを
-    // 増やさないので、文書側の範囲と重ねると読める中身まで落ちる。
+    // スクロールできる入れ物は、**内側から外側の順に並べて**持つ。1つへ潰すと
+    // 入れ子の外側を見落とす（第18回 RG-18-01）。
     // `position:fixed` でも、**変形などを持つ祖先が包含ブロックを作ると画面には
     // 固定されない**——文書のスクロールで動く（第17回 RG-17-08。実測: `translateZ(0)`
     // の中の固定要素は、文書を900px送ると y=1166 から y=266 へ動いた。それでも画面へ
@@ -856,11 +1059,15 @@
     // `up.captured` は「ここに置いた固定要素が捕まるか」の答えになっている
     // （自分が固定なら、上へは 'fixed' で辿っているため）。
     const captured = (mode === 'fixed' && applies) || up.captured;
-    const v = { clip, tests, hidden: up.hidden || paintHidesAll(cs),
+    const own状態 = paintState(cs);
+    const v = { clip, tests,
+                hidden: up.hidden || own状態 === 'hidden',
+                paintUnknown: up.paintUnknown || own状態 === 'unknown',
                 transformed: up.transformed || cs.transform !== 'none',
                 fixed: (cs.position === 'fixed' && !up.captured) || up.fixed,
                 captured,
-                reach: (applies && own && own.reach) ? own.reach : up.reach,
+                scrolls: (applies && own && own.scroller)
+                  ? [own.scroller].concat(up.scrolls) : up.scrolls,
                 linear, flat };
     if (cache) cache.set(el, v);
     return v;
@@ -869,12 +1076,28 @@
   // 文字そのものの矩形。**面積のあるものだけ**を返す。
   // `transform: scale(0)` は箱の寸法（offsetWidth）を変えないので、面積を見ないと
   // 落とせない（実測: 0画素しか描かれていないのに印が付いた）。
+  //
+  // ⚠️ **空白は矩形に含めない**（第18回 RG-18-02）。`pull request` のように語が
+  // 2つあるキーでは、語間の空白まで1つの矩形へ入れていたため、語そのものは
+  // 切り取りの外なのに、空白ぶんの幅が形の中を横切って可視と答えていた
+  // （実測: `word-spacing:70px` の見本で、語の画素は0なのに印が付いた）。
+  // 空白で切って、**塗りのある並びごと**に矩形を取る。
+  const SPACE = /\s/;
   function rangeRects(node, start, end) {
-    const r = document.createRange();
-    if (start === null) r.selectNodeContents(node);
-    else { r.setStart(node, start); r.setEnd(node, end); }
     const out = [];
-    for (const x of r.getClientRects()) if (x.width > 0 && x.height > 0) out.push(x);
+    const add = r => { for (const x of r.getClientRects()) if (x.width > 0 && x.height > 0) out.push(x); };
+    if (start === null) {
+      const r = document.createRange(); r.selectNodeContents(node); add(r); return out;
+    }
+    const text = node.nodeValue || '';
+    let i = start;
+    while (i < end) {
+      while (i < end && SPACE.test(text[i])) i++;
+      let j = i;
+      while (j < end && !SPACE.test(text[j])) j++;
+      if (j > i) { const r = document.createRange(); r.setStart(node, i); r.setEnd(node, j); add(r); }
+      i = j;
+    }
     return out;
   }
 
@@ -888,10 +1111,12 @@
   function isPaintedRange(el, node, start, end) {
     const chain = paintChain(el, 'none');
     if (chain.hidden) return false;
-    if (textIsInvisible(getComputedStyle(el))) return false;
     if (rectIsEmpty(chain.clip)) return false;
     const rects = rangeRects(node, start, end);
     if (rects.length === 0) return false;
+    // 文字の塗りは**語の位置**で見る（影のずらし・背景の位置がここに効く）
+    const cs = getComputedStyle(el);
+    if (rects.every(r => textIsInvisible(cs, el, r))) return false;
     // **同じ断片が、全部の条件を通ること**を求める。条件ごとに「どれか1つの断片が
     // 通るか」を見ていたため、断片Aが形Aだけ・断片Bが形Bだけを通る場合に、
     // どの断片も全部は通っていないのに合格していた（第15回 RG-15-03）。
@@ -901,29 +1126,54 @@
     // 画面（または動かせる範囲）の外にある語は、読めないしスクロールでも出せない。
     // スクロールできる入れ物の中なら、その入れ物を動かせる範囲で見る。ただし
     // **入れ物そのものが文書のどこにも出せない**なら、中身も出せない。
-    const doc = reachableRect(chain.fixed);
-    const overlaps = (a, b) => a.x2 > b.x1 && a.x1 < b.x2 && a.y2 > b.y1 && a.y1 < b.y2;
-    const reach = !chain.reach ? doc : (overlaps(chain.reach, doc) ? chain.reach : null);
-    const inReach = r => !!reach && r.right > reach.x1 && r.left < reach.x2 &&
-                                    r.bottom > reach.y1 && r.top < reach.y2;
-    return rects.some(r => inClip(r) && inReach(r) && chain.tests.every(t => t(r)));
+    const inReach = r => reachable(r, chain);
+    const ok = rects.some(r => inClip(r) && inReach(r) && chain.tests.every(t => t(r)));
+    // 解けない描画効果があるときは「見える」と断定しない。後ろに確実に見える同じ語が
+    // あればそちらへ付ける（第18回 RG-18-04 / RG-18-05）。
+    return ok ? (chain.paintUnknown ? 'unknown' : true) : false;
   }
 
-  // その語が、画面か「スクロールで出せる範囲」に入っているか。
-  //
-  // 見ていなかったため、`position:fixed; left:-10000px` の語に印が付き、**画面に
-  // 出せないのに Tab で止まれる**点ができていた（第15回 RG-15-04。実測: `scrollX` は
-  // 0 のまま動かせない）。固定配置はいまの画面と、それ以外は文書全体と交差を見る。
-  function reachableRect(fixed) {
+  // 文書そのものの枠（画面）と、そこで動かせる量。
+  // ⚠️ 以前は「文書全体の矩形」を左上へ広げる式で出していた。横書き左→右しか
+  // 想定しておらず、`<html dir="rtl">` の文書では**負の向きへスクロールすれば
+  // 読める語**を「出せない」と落としていた（第18回 RG-18-01。実測: 語は
+  // `scrollX = -1100` で画面に入るのに、印が付かないままだった）。
+  // いまは他の入れ物とまったく同じ形（箱＋動かせる量）で扱う。
+  function rootScroller(fixed) {
     const de = document.documentElement;
-    const vw = de.clientWidth, vh = de.clientHeight;
-    if (fixed) return { x1: 0, y1: 0, x2: vw, y2: vh };
-    // viewport 座標での文書全体。左と上はスクロール量ぶん外へ広がる。
-    const sx = window.scrollX || de.scrollLeft || 0;
-    const sy = window.scrollY || de.scrollTop || 0;
-    const w = Math.max(de.scrollWidth, document.body ? document.body.scrollWidth : 0, vw);
-    const h = Math.max(de.scrollHeight, document.body ? document.body.scrollHeight : 0, vh);
-    return { x1: -sx, y1: -sy, x2: w - sx, y2: h - sy };
+    const box = { x1: 0, y1: 0, x2: de.clientWidth, y2: de.clientHeight };
+    if (fixed) return { box, dx: [0, 0], dy: [0, 0] };   // 画面に固定＝動かせない
+    const se = document.scrollingElement || de;
+    const cs = getComputedStyle(se);
+    return { box, dx: shiftRange(se, cs, 'x'), dy: shiftRange(se, cs, 'y') };
+  }
+
+  // その矩形を、**全部の枠へ同時に入れられる**スクロール位置があるか。
+  //
+  // 内側の枠を動かすと中身だけが動き、外側の枠を動かすと内側の枠ごと動く。
+  // そこで「内側から k 番目までの枠を動かした合計」を S_k と置くと、
+  //   ・S_k は S_{k-1} に k 番目の可動量を足した範囲に入る
+  //   ・語が k 番目の枠に入る条件は S_k ∈ (箱の始点 - 語の終点, 箱の終点 - 語の始点)
+  // となり、内側から外側へ**区間を狭めていくだけ**で答えが出る（軸ごとに独立）。
+  function reachable(r, chain) {
+    const doms = chain.scrolls.concat([rootScroller(chain.fixed)]);
+    return feasible(r, doms, 'x') && feasible(r, doms, 'y');
+  }
+
+  function feasible(r, doms, axis) {
+    const t1 = axis === 'x' ? r.left : r.top;
+    const t2 = axis === 'x' ? r.right : r.bottom;
+    let lo = 0, hi = 0;
+    for (const d of doms) {
+      const sh = axis === 'x' ? d.dx : d.dy;
+      lo += sh[0]; hi += sh[1];
+      const b1 = axis === 'x' ? d.box.x1 : d.box.y1;
+      const b2 = axis === 'x' ? d.box.x2 : d.box.y2;
+      const ilo = b1 - t2, ihi = b2 - t1;      // この枠へ入るための動かし量
+      if (!(lo < ihi && hi > ilo)) return false;
+      lo = Math.max(lo, ilo); hi = Math.min(hi, ihi);
+    }
+    return true;
   }
 
   // display:contents は箱を作らない。可視性を判断できる最も近い先祖まで上がる。
@@ -984,14 +1234,14 @@
       // その要素自身が content-visibility:hidden のとき、**中身**は隠れているのに
       // 要素自体は描画されているので checkVisibility は true を返す（実測）。
       if (ok && cs.contentVisibility === 'hidden') ok = false;
-      if (ok && !isPaintedRange(el, node, start, end)) ok = false;
+      if (ok) ok = isPaintedRange(el, node, start, end);   // true / false / 'unknown'
     } else {
       // checkVisibility が無い環境。manifest の minimum_chrome_version より古い
       // Chrome か、拡張を手で読み込んだ場合にしか起きない。祖先の opacity や
       // content-visibility は見抜けないので、ここは「落ちないための保険」にすぎない。
       ok = !(cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0');
       if (ok && cs.contentVisibility === 'hidden') ok = false;
-      if (ok && !isPaintedRange(el, node, start, end)) ok = false;
+      if (ok) ok = isPaintedRange(el, node, start, end);
     }
     return ok;
   }
@@ -1050,15 +1300,22 @@
   // キーで1つに絞るのは**見え方で選んだあと**。先に絞ると、「1つ目は隠れていて
   // 2つ目は読める」場合に読めるほうが候補から消える（実測: 2行目の読める語に
   // 説明が付かなかった）。
+  let acceptUnknown = false;      // 2周目だけ true（断定できない候補を引き受ける）
+  let unknownNodes = null;        // 1周目で見送った節点
+
   function visibleHits(node, el) {
     const all = matcher.findHits(node.nodeValue, key => usableGloss(key) !== null, { all: true });
     const out = [];
     const seen = new Set();
+    // 「見えるとも見えないとも断定できない」候補で、その語を使い切らない
+    // （第18回 RG-18-04 / RG-18-05）。1周目では見送って節点を控え、まとめ直しの
+    // 最後に**まだどこも引き受けていない語だけ**を、その候補で引き受け直す。
+    // こうすると、ページのどこかに確実に見える同じ語があれば必ずそちらが勝つ。
     for (const h of all) {
       if (seen.has(h.key)) continue;
-      if (!isVisibleOccurrence(el, node, h.end - h.match.length, h.end)) continue;
-      seen.add(h.key);
-      out.push(h);
+      const v = isVisibleOccurrence(el, node, h.end - h.match.length, h.end);
+      if (v === true || (v === 'unknown' && acceptUnknown)) { seen.add(h.key); out.push(h); }
+      else if (v === 'unknown' && unknownNodes) unknownNodes.add(node);
     }
     return out;
   }
@@ -1377,26 +1634,18 @@
       if (hasPageContent(el)) continue;   // ページが中身を入れた節点は壊さない
       stripOwnIdentity(el);
     }
-    // ③ 合言葉の class まで消された複製。ここまで消されると、残るのは自分が作る印と
-    //    **同じ形**（空の <sup> ＋ 自分の class ＋ 押せる状態）だけになる（第17回
-    //    RG-17-06。実測: 実際に Tab を押すと 0×0 の要素へフォーカスが移った）。
+    // ③ 合言葉の class まで消された複製は、**見分けない**。
     //
-    //    ページの持ち物と見分ける手がかりは1つだけ残る——**別の持ち主を名乗っているか**。
-    //    第14回 RG-14-04 で壊してしまったページの要素は `data-iiyaku-owner="page"` を
-    //    持っていた。名乗りがある要素には触れない。名乗りが無く、空で、押せて、
-    //    自分の class を持つ <sup> だけを無力化する。
+    // v1.8.16 では「名乗りが無く・空で・押せて・自分の class を持つ <sup>」から操作性を
+    // 外していた。しかしそれは**ページの持ち物を壊す**（第18回 RG-18-06。実測: ページが
+    // 置いた `<sup class="iiyaku-icon" role="button" tabindex="0" aria-label="page control">`
+    // から role・tabindex・aria-label が消えた）。形が同じだけの要素を、こちらの複製だと
+    // 決めつけてはいけない。
     //
-    //    ⚠️ これは断定ではなく割り切りである。ページがこの形の要素を自分で作れば
-    //    巻き込む。ただし外すのは操作性だけで、対象は幅0で中身の無い要素に限られる。
-    //    そして**この形の見えない停止点は、ページが自分だけで作ることもできる**。
-    for (const el of pick('sup.' + OWN_CLASSES[0])) {
-      if (ownedIcons.has(el) || isOurChrome(el)) continue;
-      if (el.classList.contains(UID)) continue;          // ② で扱った
-      if (el.hasAttribute('data-iiyaku-owner')) continue; // 別の持ち主を名乗っている
-      if (hasPageContent(el)) continue;
-      if (!el.hasAttribute('tabindex') && el.getAttribute('role') !== 'button') continue;
-      stripOperability(el);
-    }
+    // 見分けられない複製は、幅0で中身の無い、押せるだけの要素として残る。**その形の
+    // 停止点は、ページが自分だけでも作れる**（こちらの class を使う必要がない）。
+    // 構造として断つには、印を closed shadow root の中へ入れて複製できなくする必要が
+    // あり、それは別の作り直しになる（→ AUDIT.md §7）。
     // 入口の目印も複製される。引き当てには使っていないので実害は無いが、
     // ページに自分の合言葉だけが残るのは紛らわしいので外す。
     // 外すのは「自分の合言葉つきの値」を持つ、自分の入口ではない要素だけ。
@@ -2127,6 +2376,7 @@
     ensureOwnStyle();
 
     withRenderCache(() => {
+      unknownNodes = new Set();
       // ① 記録と DOM の食い違いを片づける。deep なら見え方・到達性・入口の意味まで。
       let released = reconcileGlosses(deep);
 
@@ -2143,21 +2393,34 @@
       //    既にページにある候補へ引き継ぐには、世代を進めるしかない。
       if (released) full = true;
 
+      let found = 0;
       if (full) {
         // 全体を走るので、変更のあった場所を別に走る必要はない
         // （同じ枝を二度歩かない。大きな領域の属性が変わったときに効く）。
         if (released) reselect();      // generation++ ＋ 全体走査
-        else scan(document.body);
+        else found += scan(document.body);
       } else {
         // 入れ子になった場所は、いちばん外側だけを走ればよい
         for (const n of roots) {
           let covered = false;
           for (let p = n.parentNode; p && !covered; p = p.parentNode) if (roots.has(p)) covered = true;
-          if (!covered) scanInner(n);
+          if (!covered) found += scanInner(n);
         }
         // ④ 見え方が変わったのなら、まだ印の無い語も見直す。
         //    全体を走ったときは、そこで既に拾えている（同じ枝を二度歩かない）。
-        if (deep) discoverLatent();
+        if (deep) found += discoverLatent();
+      }
+      if (hoverTriggered) { hoverTriggered = false; noteHoverFound(found); }
+
+      // ⑤ 2周目。断定できずに見送った節点だけを、いま引き受け直す。
+      //    ここまでで確実に見える候補は全部引き受け済みなので、残っているキーは
+      //    「他に確かな置き場所が無い」ものだけになる。
+      const pending = unknownNodes;
+      unknownNodes = null;                       // 2周目では集めない
+      if (pending && pending.size) {
+        acceptUnknown = true;
+        try { for (const n of pending) if (n.isConnected && isTarget(n)) annotate(n); }
+        finally { acceptUnknown = false; }
       }
     });
   }
@@ -2296,7 +2559,19 @@
     return spent > CPU_BUDGET;
   }
 
+  // 何も見つからない見直しが続いたら、間隔を空ける（第18回 RG-18-08）。
+  // 何もない場所でカーソルを動かし続けているときに効き、メニューが開いて1つでも
+  // 見つかれば即座に元の間隔へ戻す。上限は 300ms に留める——第15回 RG-15-07 で
+  // 直した「短時間ひらくメニュー」を取りこぼさないため。
   const HOVER_GAP = 150;
+  const HOVER_GAP_MAX = 300;
+  let hoverGap = HOVER_GAP;
+  let emptyRuns = 0;
+  function noteHoverFound(n) {
+    if (n > 0) { emptyRuns = 0; hoverGap = HOVER_GAP; }
+    else { emptyRuns++; hoverGap = Math.min(HOVER_GAP_MAX, HOVER_GAP * (1 + emptyRuns)); }
+  }
+
   let hoverPending = false;
   let hoverAt = 0;
   let hoverTail = null;
@@ -2304,19 +2579,25 @@
     if (latent.size === 0 || hoverPending) return;
     if (overBudget()) return;      // 使いすぎた。2秒ごとの確認に任せる
     const now = performance.now();
-    if (now - hoverAt < HOVER_GAP) {
+    if (now - hoverAt < hoverGap) {
       // 最後の1回は、間引きの窓が明けたあとに必ず処理する
       if (hoverTail === null) {
         hoverTail = setTimeout(() => { hoverTail = null; onPointerOrFocus(); },
-                               HOVER_GAP - (now - hoverAt));
+                               hoverGap - (now - hoverAt));
       }
       return;
     }
     hoverAt = now;
-    const fire = () => { hoverPending = false; if (observing) schedule({ deep: true }); };
+    const fire = () => {
+      hoverPending = false;
+      if (!observing) return;
+      hoverTriggered = true;
+      schedule({ deep: true });
+    };
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(fire);
     else setTimeout(fire, 16);
   };
+  let hoverTriggered = false;
   const HOVER_SIGNALS = ['pointerover', 'pointerout', 'focusin', 'focusout'];
 
   // 属性にも DOM にも出ない変化（property だけの書き換え）は、どの合図にも乗らない。

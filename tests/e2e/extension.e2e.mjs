@@ -21,6 +21,7 @@ import { launchChrome, startTestServer, stageExtension, stageExtensionWith,
          PAINT15_PAGE, HOVER15_PAGE,
          PAINT16_PAGE, REACH16_PAGE, NAMESPACE16_PAGE,
          PAINT17_PAGE, REACH17_PAGE, CAPTURED17_PAGE, NAMESPACE17_PAGE,
+         PAINT18_PAGE, NESTED18_PAGE, VERTICAL18_PAGE, RTLROOT18_PAGE, PAGEOWN18_PAGE,
          openPage, sleep, waitFor,
          pressKey, collectTabOrder, tabUntil } from './helpers/chrome.mjs';
 
@@ -3179,18 +3180,22 @@ test('ページの持ち物に触れない（第17回）', async t => {
       'ON へ戻すとき、ページの値を消している');
   });
 
-  await t.test('RG-17-06 合言葉の class まで消した複製も、Tab の停止点にしない', async () => {
+  // ⚠️ v1.8.16 では、この形の要素から操作性を外していた。しかし**それはページの
+  // 持ち物を壊す**ことが分かった（第18回 RG-18-06）。いま保証するのは「自分のものと
+  // 断定できない要素には触れない」ことで、見分けられない複製が押せる点として残るのは
+  // **既知の限界**（構造として断つには印を closed shadow root へ入れる作り直しが要る）。
+  await t.test('RG-17-06/RG-18-06 見分けられない複製には触れない（既知の限界を固定する）', async () => {
     await tab.evaluate(`(() => {
       const c = document.querySelector('#src .iiyaku-icon').cloneNode(true);
       for (const a of [...c.attributes])
         if (!['role', 'tabindex', 'aria-expanded'].includes(a.name)) c.removeAttribute(a.name);
       c.className = 'iiyaku-icon'; c.textContent = ''; c.id = 'ghost';
       document.getElementById('sink').appendChild(c); })(); true`);
-    await waitFor('複製が無力になる', async () => await tab.evaluate(
-      `(() => { const d = document.getElementById('ghost');
-        return !d || (d.tabIndex < 0 && d.getAttribute('role') !== 'button'); })()`));
-    const hit = await tabUntil(cdp, tab, `el.id === 'ghost'`, { steps: 40, startId: 'before' });
-    assert.equal(hit, null, '実際に Tab で複製に止まった');
+    await sleep(900);
+    assert.deepEqual(await tab.evaluate(`(() => { const d = document.getElementById('ghost');
+      return [d.className, d.getAttribute('role'), d.getAttribute('tabindex')]; })()`),
+      ['iiyaku-icon', 'button', '0'],
+      '自分のものと断定できない要素を書き換えている');
   });
 
   await t.test('RG-17-06【対照】別の持ち主を名乗るページの要素は、そのまま', async () => {
@@ -3198,6 +3203,132 @@ test('ページの持ち物に触れない（第17回）', async t => {
       return [e.className, e.getAttribute('role'), e.getAttribute('tabindex'),
               e.getAttribute('data-iiyaku-owner')]; })()`),
       ['iiyaku-icon', 'button', '0', 'page']);
+  });
+
+  await tab.close();
+});
+
+/* ===================== 第18回監査（v1.8.17）の受入条件 ===================== */
+test('形と塗りの判定（第18回）', async t => {
+  const srv = await startTestServer(PAINT18_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  const nIn = sel => tab.evaluate(`document.querySelectorAll(${JSON.stringify(sel)} + ' .iiyaku-icon').length`);
+  await waitFor('拡張が印を付ける', async () =>
+    await tab.evaluate(`document.querySelectorAll('.iiyaku-icon').length`) > 0);
+  await sleep(900);
+
+  for (const [id, why, want] of [
+    ['ws', 'RG-18-02 語間の空白だけが形の中を横切る', [0, 1]],
+    ['wsin', 'RG-18-02【対照】同じ形の中央にある2語', [1, 0]],
+    ['rot', 'RG-18-03 回した形の外の語（戻した矩形を広げない）', [0, 1]],
+    ['indiv', 'RG-18-03 個別の `rotate` で回した形の外の語', [0, 1]],
+    ['indivin', 'RG-18-03【対照】個別の `rotate` で回した形の中の語', [1, 0]],
+    ['shdfar', 'RG-18-04 10000px 先にだけ描く影', [0, 1]],
+    ['shdnear', 'RG-18-04【対照】語の位置に描く影', [1, 0]],
+    ['bgfar', 'RG-18-04 10000px 先にだけ届く背景の抜き', [0, 1]],
+    ['bgnear', 'RG-18-04【対照】語を覆う背景の抜き', [1, 0]],
+    ['flt2', 'RG-18-05 `filter` の最後がもう一度 `opacity(0)`', [0, 1]],
+    ['flt1', 'RG-18-05【対照】`filter` の最後が `url()`', [1, 0]],
+    ['mskx', 'RG-18-05 同じ層を2つ `exclude`（打ち消し合う）', [0, 1]],
+    ['mska', 'RG-18-05【対照】同じ層を2つ `add`', [1, 0]]
+  ]) {
+    await t.test(why, async () => {
+      assert.deepEqual([await nIn(`#h-${id}`), await nIn(`#l-${id}`)], want, why);
+    });
+  }
+
+  await tab.close();
+});
+
+test('入れ子の枠は、内側だけで決めない（第18回）', async t => {
+  const srv = await startTestServer(NESTED18_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  const nIn = sel => tab.evaluate(`document.querySelectorAll(${JSON.stringify(sel)} + ' .iiyaku-icon').length`);
+  await waitFor('拡張が印を付ける', async () =>
+    await tab.evaluate(`document.querySelectorAll('.iiyaku-icon').length`) > 0);
+  await sleep(900);
+
+  await t.test('RG-18-01 外側の枠を越えられない語', async () => {
+    assert.deepEqual([await nIn('#b-out'), await nIn('#l-out')], [0, 1]);
+  });
+  await t.test('RG-18-01【対照】外側を動かせば枠の中へ入る語', async () => {
+    assert.deepEqual([await nIn('#b-in'), await nIn('#l-in')], [1, 0]);
+  });
+  await t.test('RG-18-01 出せない場所の印で、Tab が止まらない', async () => {
+    const hit = await tabUntil(cdp, tab,
+      `el.classList.contains('iiyaku-icon') && el.getBoundingClientRect().right < 0`,
+      { steps: 40, startId: 'before' });
+    assert.equal(hit, null, `画面へ出せない印で止まった: ${hit}`);
+  });
+
+  await tab.close();
+});
+
+test('縦書きでも、スクロールの原点は片側にある（第18回）', async t => {
+  const srv = await startTestServer(VERTICAL18_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  const nIn = sel => tab.evaluate(`document.querySelectorAll(${JSON.stringify(sel)} + ' .iiyaku-icon').length`);
+  await waitFor('拡張が印を付ける', async () =>
+    await tab.evaluate(`document.querySelectorAll('.iiyaku-icon').length`) > 0);
+  await sleep(900);
+
+  await t.test('RG-18-01 縦書き＋rtl で、下側は動かせない', async () => {
+    assert.deepEqual([await nIn('#b-down'), await nIn('#l-down')], [0, 1]);
+  });
+  await t.test('RG-18-01【対照】縦書き＋rtl で、上側は動かせる', async () => {
+    assert.deepEqual([await nIn('#b-up'), await nIn('#l-up')], [1, 0]);
+  });
+
+  await tab.close();
+});
+
+test('RTL の文書でも、動かせる向きで判断する（第18回）', async t => {
+  const srv = await startTestServer(RTLROOT18_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  await waitFor('拡張が印を付ける', async () =>
+    await tab.evaluate(`document.querySelectorAll('.iiyaku-icon').length`) > 0);
+  await sleep(900);
+
+  await t.test('RG-18-01 負の向きへスクロールすれば読める語に、説明が付く', async () => {
+    assert.equal(await tab.evaluate(
+      `document.getElementById('first').querySelectorAll('.iiyaku-icon').length`), 1,
+      'RTL の文書を、左へ動かせないものとして扱っている');
+  });
+
+  await tab.close();
+});
+
+test('ページ所有の要素には触れない（第18回）', async t => {
+  const srv = await startTestServer(PAGEOWN18_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  await waitFor('拡張が印を付ける', async () =>
+    await tab.evaluate(`document.querySelectorAll('#src .iiyaku-icon').length`) > 0);
+  await sleep(1200);
+
+  await t.test('RG-18-06 名乗りの無い空の SUP から、操作性を奪わない', async () => {
+    assert.equal(await tab.evaluate(`document.getElementById('page').outerHTML`),
+      '<sup id="page" class="iiyaku-icon" role="button" tabindex="0" aria-label="page control"></sup>',
+      'ページの持ち物を書き換えている');
   });
 
   await tab.close();

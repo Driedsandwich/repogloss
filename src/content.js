@@ -621,10 +621,35 @@
   //   tests    … 形そのものとの交差判定（外接矩形だけでは、円や角丸の外を落とせない）
   // 一緒くたにしていたため、包含ブロックでない祖先の clip-path が丸ごと無視されていた
   // （実測: 0画素の語に印が付き、後ろの読める同じ語が説明されなかった）。
+  // その軸で、原点が「終わり側」にあるか（＝スクロール値が負の側へ動くか）。
+  //
+  // **書字方向10通りを実測して規則にした**（v1.8.17。以前は縦書きの縦方向を
+  // いつも正の側と決めつけており、`vertical-rl` ＋ `rtl` の入れ物では上方向へ
+  // 動かせる語を「出せない」と落としていた。第18回 RG-18-01）。
+  //
+  //   writing-mode   dir   scrollLeft   scrollTop
+  //   horizontal-tb  ltr   [0, s]       [0, s]
+  //   horizontal-tb  rtl   [-s, 0]      [0, s]
+  //   vertical-rl    ltr   [-s, 0]      [0, s]
+  //   vertical-rl    rtl   [-s, 0]      [-s, 0]
+  //   vertical-lr    ltr   [0, s]       [0, s]
+  //   vertical-lr    rtl   [0, s]       [-s, 0]
+  //   sideways-rl    ltr   [-s, 0]      [0, s]
+  //   sideways-rl    rtl   [-s, 0]      [-s, 0]
+  //   sideways-lr    ltr   [0, s]       [-s, 0]
+  //   sideways-lr    rtl   [0, s]       [0, s]
+  //
+  // 横は「横書きなら direction、縦書きなら rl かどうか」。
+  // 縦は「横書きなら常に正。`sideways-lr` だけ ltr で負、他の縦書きは rtl で負」。
+  function scrollAxisNegative(cs, axis) {
+    const wm = cs.writingMode || 'horizontal-tb';
+    const rtl = cs.direction === 'rtl';
+    if (axis === 'x') return wm === 'horizontal-tb' ? rtl : /^(vertical-rl|sideways-rl)$/.test(wm);
+    if (wm === 'horizontal-tb') return false;
+    return wm === 'sideways-lr' ? !rtl : rtl;
+  }
+
   // その軸で、いまどこまでスクロールできるか。**原点は片側にある**。
-  //   横書き左→右 … scrollLeft は 0 〜 (scrollWidth - clientWidth)
-  //   右→左（`direction:rtl`）と縦書き `vertical-rl` … 負の側 〜 0
-  // 実測で確かめた値に合わせている（rtl: [-200, 0] / vertical-rl: x=[-215,0] y=[0,275]）。
   // いまの値が 0 でないときは、その符号だけで原点の側が決まるので、書字方向を見ない。
   function scrollRange(el, cs, axis) {
     const span = axis === 'x' ? Math.max(0, el.scrollWidth - el.clientWidth)
@@ -633,10 +658,7 @@
     if (span === 0) return { min: now, max: now, now };
     if (now < 0) return { min: -span, max: 0, now };
     if (now > 0) return { min: 0, max: span, now };
-    const backwards = axis === 'x'
-      ? (cs.direction === 'rtl' || /^(vertical-rl|sideways-rl)$/.test(cs.writingMode))
-      : false;
-    return backwards ? { min: -span, max: 0, now } : { min: 0, max: span, now };
+    return scrollAxisNegative(cs, axis) ? { min: -span, max: 0, now } : { min: 0, max: span, now };
   }
 
   // その入れ物で、中身を動かせる量の範囲。scrollLeft を δ 増やすと中身は δ ぶん**左**へ

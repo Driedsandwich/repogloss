@@ -470,8 +470,19 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     /x\.width > 0 && x\.height > 0/.test(code),
     'transform:scale(0) は箱の寸法を変えないので、面積を見ないと落とせない');
   check('描画効果（完全に透明な filter / mask）も不可視として見ている',
-    /function paintHidesAll/.test(code) && /FILTER_OPACITY_ZERO/.test(code) &&
+    /function paintState/.test(code) && /FILTER_OPACITY_ZERO/.test(code) &&
     /isFullyTransparentGradient/.test(code));
+  // filter は最後まで見る。最初の opacity(0) で打ち切ると、後ろの opacity(0) を見落とす
+  check('filter の並びを最後までたどっている',
+    /for \(const f of fns\) \{\s*\n\s*if \(FILTER_OPACITY_ZERO\.test\(f\)\) zero = true;/.test(code),
+    '`opacity(0) url(#f) opacity(0)` を可視と答える');
+  // 合成の演算は解かない。足し合わせ以外は「断定できない」として後回しにする
+  check('mask の合成が足し合わせ以外なら、断定しない',
+    /function maskState/.test(code) && /allAdd/.test(code) && /'unknown'/.test(code),
+    '打ち消し合って消えている語を可視と答える');
+  check('断定できない候補で、その語を使い切らない',
+    /let acceptUnknown = false/.test(code) && /unknownNodes/.test(code),
+    '前方の断定できない候補が、後ろの確実に見える語を抑止する');
   check('絶対配置が切り取りから逃げることを見ている',
     /function establishesContainingBlock/.test(code) && /function positionEscape/.test(code),
     '包含ブロックでない祖先の切り取りで、読める語を落とす');

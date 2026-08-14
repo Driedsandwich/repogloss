@@ -723,12 +723,24 @@
   // 落としていた（第16回 RG-16-05）。
   // 断定してよいのは、opacity(0) の**後ろに `url()` が1つも無い**ときだけ
   // （ぼかし・明度などは透明な入力を透明のまま返す）。
-  function filterHidesAll(v) {
+  // `filter` の並びを**最後まで**たどる。
+  // ⚠️ 「最初の opacity(0) より後ろに url があれば可視」で止めていたため、
+  // `opacity(0) url(#f) opacity(0)` のように**最後にもう一度 0 になる**並びを
+  // 可視と答えていた（第18回 RG-18-05）。
+  //   opacity(0) … そこで確実に 0 になる
+  //   url(...)   … 別の入力から描き直せるので、それまでの断定を捨てる
+  //   その他     … 透明な入力は透明のまま返す（断定は変わらない）
+  // 最後まで見て「確実に0」のときだけ消えていると言う。`url()` で描き直された先は
+  // 見えているかもしれないので、そこは可視の側へ倒す（断定しない）。
+  function filterState(v) {
     const fns = v.match(/[a-zA-Z-]+\([^()]*(\([^()]*\)[^()]*)*\)/g);
-    if (!fns) return false;
-    const zero = fns.findIndex(f => FILTER_OPACITY_ZERO.test(f));
-    if (zero < 0) return false;
-    return !fns.slice(zero + 1).some(f => /^url\(/.test(f));
+    if (!fns) return 'shown';
+    let zero = false;
+    for (const f of fns) {
+      if (FILTER_OPACITY_ZERO.test(f)) zero = true;
+      else if (/^url\(/.test(f)) zero = false;
+    }
+    return zero ? 'hidden' : 'shown';
   }
 
   // `mask-image` は**層の並び**で、カンマ区切りの各層を合成した結果が最終の覆いになる。
@@ -736,9 +748,19 @@
   // 層がある語を落としていた（第17回 RG-17-04。実測: 透明な gradient と不透明な
   // 画像を並べた語は 391画素描かれているのに印が付かなかった）。
   // 断定してよいのは、**すべての層が完全に透明**なときだけ。
-  function maskHidesAll(v) {
-    const layers = splitTopLevel(v);
-    return layers.length > 0 && layers.every(l => isFullyTransparentGradient(l.trim()));
+  // 覆い（mask）は層の並びで、`mask-composite` の演算で合成される。
+  // ⚠️ 層ごとに透明かを見るだけでは足りない（第18回 RG-18-05。実測: 同じ不透明な層を
+  // 2つ `exclude` すると打ち消し合って0画素になるのに、印が付いた）。
+  // Porter-Duff の合成は解かない。**足し合わせ以外は「断定できない」**とする。
+  function maskState(cs) {
+    const v = cs.maskImage || cs.webkitMaskImage;
+    if (!v || v === 'none') return 'shown';
+    const layers = splitTopLevel(v).map(x => x.trim());
+    if (layers.length === 0) return 'shown';
+    const comp = splitTopLevel(cs.maskComposite || cs.webkitMaskComposite || 'add').map(x => x.trim());
+    const allAdd = comp.every(c => c === '' || c === 'add' || c === 'source-over');
+    if (!allAdd) return 'unknown';
+    return layers.every(l => isFullyTransparentGradient(l)) ? 'hidden' : 'shown';
   }
 
   // カンマで切る。ただし `rgba(…)` や `url(…)` の中のカンマでは切らない。
@@ -755,11 +777,15 @@
     return out;
   }
 
-  function paintHidesAll(cs) {
-    if (cs.filter && cs.filter !== 'none' && filterHidesAll(cs.filter)) return true;
-    const mi = cs.maskImage || cs.webkitMaskImage;
-    if (mi && mi !== 'none' && maskHidesAll(mi)) return true;
-    return false;
+  //   'hidden'  … 描画効果だけで確実に消えている
+  //   'unknown' … 解けない指定がある（この候補では語を使い切らない）
+  //   'shown'   … 描画効果では消えていない
+  function paintState(cs) {
+    const f = (cs.filter && cs.filter !== 'none') ? filterState(cs.filter) : 'shown';
+    if (f === 'hidden') return 'hidden';
+    const m = maskState(cs);
+    if (m === 'hidden') return 'hidden';
+    return (f === 'unknown' || m === 'unknown') ? 'unknown' : 'shown';
   }
 
   // その要素が課す切り取りを、**逃げられるものと逃げられないものに分けて**返す。
@@ -996,7 +1022,7 @@
 
   function paintChain(el, mode) {
     if (!el) return { clip: null, tests: [], hidden: false, transformed: false, fixed: false,
-                      captured: false, scrolls: [],
+                      captured: false, paintUnknown: false, scrolls: [],
                       linear: IDENTITY, flat: true };
     const cache = chainCache && chainCache[mode];
     if (cache) { const hit = cache.get(el); if (hit !== undefined) return hit; }
@@ -1033,7 +1059,10 @@
     // `up.captured` は「ここに置いた固定要素が捕まるか」の答えになっている
     // （自分が固定なら、上へは 'fixed' で辿っているため）。
     const captured = (mode === 'fixed' && applies) || up.captured;
-    const v = { clip, tests, hidden: up.hidden || paintHidesAll(cs),
+    const own状態 = paintState(cs);
+    const v = { clip, tests,
+                hidden: up.hidden || own状態 === 'hidden',
+                paintUnknown: up.paintUnknown || own状態 === 'unknown',
                 transformed: up.transformed || cs.transform !== 'none',
                 fixed: (cs.position === 'fixed' && !up.captured) || up.fixed,
                 captured,

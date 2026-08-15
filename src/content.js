@@ -1412,17 +1412,32 @@
     if (HAS_CHECK_VISIBILITY && !icon.checkVisibility(CHECK_VISIBILITY_OPTS)) return false;
     // ⑥ 覆われていないか。**画面の中にある点だけ**で見る（画面外は覆いの話ではなく
     // 到達性の話で、そこは④で見ている）。画面内の点が1つも無ければ判定しない。
+    //
+    // ⚠️ **「祖先が最前面」を露出の証拠にしてはいけない**（第21回 RG-21-03）。
+    // v1.8.19 は `hit.contains(icon)` を露出に数えていた。祖先の `::before` /
+    // `::after` が印を覆うと `elementFromPoint` はその**祖先**を返すので、
+    // 印が0画素でも合格していた（実測: 5点すべてが祖先を返し、`tabIndex:0` のまま
+    // Tab の順路に入った）。
+    // いまは**最前面が印そのものか印の子孫のときだけ**露出と数える。
+    // 「スクロールすれば読める語」の対照（v1.8.19 で5件落とした分）を守るのは
+    // `hit.contains(icon)` ではなく **`visibleNow` の門**のほうで、
+    // 覆いの判定は**いま動かさずに見えている印**にだけ当てる。
+    // （`elementsFromPoint` の重なり順も見たが、先頭要素は `elementFromPoint` と
+    //   同じもので、この判定に足すものが無かった。実測の重なりは
+    //   `[first(::after), 印, first, BODY, HTML]` で、先頭を見れば足りる。）
+    //
+    // ⚠️ **`pointer-events: none` の覆いは、当たり判定では見えない**（既知の限界）。
+    // 印自身が `pointer-events: none` にされた場合も、当たり判定では何も言えない。
+    // どちらも「覆いを判定しない」側へ倒す（→ AUDIT.md §7）。
+    if (cs.pointerEvents === 'none') return true;
     let inView = 0, exposed = 0;
     for (const [fx, fy] of ICON_PROBES) {
       const x = b.left + b.width * fx, y = b.top + b.height * fy;
       if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) continue;
       inView++;
+      // 最前面が印そのものか、印の子孫のときだけ「その点で見えている」と数える。
       const hit = document.elementFromPoint(x, y);
-      // ⚠️ **祖先が最前面に出るのは「覆い」ではない**。印がスクロールで送られた先に
-      // あるとき、その点で返るのは入れ物（＝印の祖先）になる。これを覆いと数えると、
-      // 「スクロールすれば読める語」を軒並み落とす（実測: そういう対照が5件落ちた）。
-      // 覆いと呼べるのは、印とも印の祖先とも関係のない要素が前に出ているときだけ。
-      if (hit && (hit === icon || icon.contains(hit) || hit.contains(icon))) exposed++;
+      if (hit && (hit === icon || icon.contains(hit))) exposed++;
     }
     if (inView > 0 && exposed === 0 && visibleNow(b, chain)) return false;   // 全面が覆われている
     return true;

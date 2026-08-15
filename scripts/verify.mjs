@@ -536,11 +536,22 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     /if \(cs\.visibility !== 'visible' \|\| cs\.display === 'none'\) return false;/.test(code) &&
     /if \(parseFloat\(cs\.opacity\) === 0\) return false;/.test(code),
     'ページ側の `opacity:0!important` で消された印が残る');
+  // ⚠️ v1.8.19 はここで `hit.contains(icon)`（＝祖先が最前面）も露出に数えていた。
+  // 祖先の `::after` が印を覆うと `elementFromPoint` はその祖先を返すので、
+  // 0画素の印が合格していた（第21回 RG-21-03）。**その書き方が戻っていないこと**を
+  // 検査する。スクロールで出せる印を守るのは `visibleNow` の門のほう。
   check('印が覆われていないかを、当たり判定で見ている',
     /const ICON_PROBES/.test(code) && /document\.elementFromPoint\(x, y\)/.test(code) &&
     /if \(inView > 0 && exposed === 0 && visibleNow\(b, chain\)\) return false;/.test(code) &&
-    /hit\.contains\(icon\)/.test(code) && /function visibleNow/.test(code),
+    /if \(hit && \(hit === icon \|\| icon\.contains\(hit\)\)\) exposed\+\+;/.test(code) &&
+    /function visibleNow/.test(code),
     '不透明な要素に全面を覆われた印が残る／逆に、スクロールで出せる印を覆いと誤判定する');
+  check('祖先が最前面に出ることを、露出の証拠にしていない（第21回 RG-21-03）',
+    !/hit\.contains\(icon\)/.test(code),
+    '祖先の ::after で覆われた0画素の印が、Tab の順路に残る');
+  check('当たり判定で決められない場合は、覆いを主張していない（第21回 RG-21-03）',
+    /if \(cs\.pointerEvents === 'none'\) return true;/.test(code),
+    'pointer-events:none の印を、覆われたものとして落としてしまう');
   // RG-20-04 mask は一様でなければ断定しない
   check('一様でない mask を、断定できないこととして扱っている',
     /if \(colors\.some\(c => c !== colors\[0\]\)\) return 'unknown';/.test(code),

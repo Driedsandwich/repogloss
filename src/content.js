@@ -1410,6 +1410,22 @@
     if (parseFloat(cs.opacity) === 0) return false;
     if (cs.contentVisibility === 'hidden') return false;
     if (HAS_CHECK_VISIBILITY && !icon.checkVisibility(CHECK_VISIBILITY_OPTS)) return false;
+    // ⑤-2 **押せる実体**そのものが塗られているか（第22回 RG-22-02）。
+    // host だけを見ていては足りない——ページの custom property は shadow の中まで
+    // 継承するので、host はふつうに見えているのに、中の button が 0 画素になりうる。
+    // 先に塗り直しを試み（ensureShadowPaint）、それでも塗れないなら印を作らない。
+    const target = focusTargetOf(icon);
+    if (target !== icon) {
+      ensureShadowPaint(icon);
+      const ts = getComputedStyle(target);
+      if (ts.visibility !== 'visible' || ts.display === 'none') return false;
+      if (parseFloat(ts.opacity) === 0) return false;
+      const tb = target.getBoundingClientRect();
+      if (!(tb.width > 0 && tb.height > 0)) return false;
+      // 字・枠・地のどれか1つでも塗れていればよい（丸い枠だけでも印として見える）
+      if (TRANSPARENT.test(ts.color) && TRANSPARENT.test(ts.borderTopColor) &&
+          TRANSPARENT.test(ts.backgroundColor)) return false;
+    }
     // ⑥ 覆われていないか。**画面の中にある点だけ**で見る（画面外は覆いの話ではなく
     // 到達性の話で、そこは④で見ている）。画面内の点が1つも無ければ判定しない。
     //
@@ -2121,6 +2137,50 @@
   // その印の「押せる実体」。shadow を使わない場合は host 自身。
   const focusTargetOf = icon => iconButton.get(icon) || icon;
 
+  // shadow の中の button が、ページ由来の変数のせいで 0 画素にならないようにする
+  // （第22回 RG-22-02）。
+  //
+  // ⚠️ **custom property は shadow の境界を越えて継承する。** 見た目を GitHub の
+  // テーマに合わせるため、button の色は `--fgColor-accent` などを読んでいる。
+  // ページが前方の段落へ `--fgColor-accent: transparent` を置くと、その値が
+  // shadow の中まで届き、字も枠も透明になる。実測（実際に読み込んだ拡張・
+  // スクリーンショットの画素を数えた）: 印の矩形 14×14 のうち白でない画素が
+  // **129 → 0**。それでも実際に Tab で止まり、後方の読める同じ語は説明されなかった。
+  //
+  // ⚠️ `@property { inherits: false }` は使えない。登録は**文書ぜんぶに効く**ので、
+  // ページ自身が使っている `--fgColor-accent` の振る舞いまで変えてしまう。
+  //
+  // 直し方は「測ってから、shadow の中だけで塗り直す」。closed shadow root の中の
+  // インライン指定はページから触れないので、上書きされない。塗れているあいだは
+  // 何もしないので、ふだんの見た目（テーマ追従）はそのまま。
+  const SHADOW_FG = '--rg-fg';
+  const SHADOW_BG = '--rg-bg';
+  const shadowPaintSeen = new WeakMap();       // host → 直近に見たページ側の値
+  const THEME_VARS = ['--fgColor-accent', '--color-accent-fg',
+                      '--bgColor-default', '--color-canvas-default'];
+
+  function ensureShadowPaint(host) {
+    const btn = iconButton.get(host);
+    if (!btn) return;
+    const hs = getComputedStyle(host);
+    // ページ側の値が変わっていなければ測り直さない（測るたびに style を外して
+    // 付け直すので、無条件に毎回やると描き直しを誘う）。
+    let seen = hs.color;
+    for (const v of THEME_VARS) seen += '' + hs.getPropertyValue(v).trim();
+    if (shadowPaintSeen.get(host) === seen) return;
+    shadowPaintSeen.set(host, seen);
+    // いったん上書きを外し、**ページのテーマ色で塗れるか**を測る
+    btn.style.removeProperty(SHADOW_FG);
+    btn.style.removeProperty(SHADOW_BG);
+    if (!TRANSPARENT.test(getComputedStyle(btn).color)) return;   // 塗れている
+    // 塗れない。ページの本文の色を借りる——その色は、語そのものが読める場所では
+    // 必ず地と対比している。本文の色も透明なら、環境の既定色（forced-colors でも
+    // 生きている system color）へ落とす。
+    const ink = TRANSPARENT.test(hs.color) ? 'CanvasText' : hs.color;
+    btn.style.setProperty(SHADOW_FG, ink);
+    btn.style.setProperty(SHADOW_BG, 'Canvas');
+  }
+
   function makeIcon(key, term, ja) {
     const icon = document.createElement('span');
     icon.className = 'iiyaku-icon ' + UID;
@@ -2166,6 +2226,7 @@
       btn.setAttribute('aria-label', `「${icon.dataset.iiyakuTerm}」の解説`);
       btn.setAttribute('aria-expanded', 'false');
       if (desc) desc.textContent = icon.dataset.iiyaku;
+      ensureShadowPaint(icon);      // ページの変数で 0 画素にならないようにする
     } else {
       // shadow を付けられなかった場合の従来どおりの形（Chrome 105 未満など）。
       // 押して開閉するので、role は img ではなく button にする。

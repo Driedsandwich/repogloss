@@ -254,8 +254,15 @@ button {
   border: 1px solid currentColor;
   border-radius: 50%;
   background: transparent;
-  color: var(--fgColor-accent, var(--color-accent-fg, #2563eb));
-  font: 700 0.78em/1 Georgia, "Times New Roman", "Liberation Serif", "Hiragino Mincho ProN", serif;
+  /* ⚠️ `--rg-fg` を先に見る（第22回 RG-22-02）。custom property は shadow の境界を
+     越えて継承するので、ページが `--fgColor-accent: transparent` を置くと、ここまで
+     届いて字も枠も 0 画素になる（実測: 印の矩形で白でない画素が 129 → 0。それでも
+     Tab では止まっていた）。`content.js` が実際の塗りを測り、塗れないときだけ
+     `--rg-fg` をこの button のインラインへ書く（closed shadow root の中なので
+     ページからは触れない）。塗れているあいだは書かないので、テーマ追従は変わらない。 */
+  color: var(--rg-fg, var(--fgColor-accent, var(--color-accent-fg, #2563eb)));
+  /* 字の大きさは host から継いだものをそのまま使う（`.78em` を掛け直さない）。 */
+  font: 700 1em/1 Georgia, "Times New Roman", "Liberation Serif", "Hiragino Mincho ProN", serif;
   font-style: normal;
   text-decoration: none;
   cursor: help;
@@ -268,7 +275,7 @@ button:hover,
 button:focus-visible {
   opacity: 1;
   background-color: currentColor;
-  color: var(--bgColor-default, var(--color-canvas-default, #ffffff));
+  color: var(--rg-bg, var(--bgColor-default, var(--color-canvas-default, #ffffff)));
 }
 
 /* キーボードで止まったことが分かるようにする。マウス操作では出さない。 */

@@ -681,6 +681,20 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     /iconButton\.delete\(host\);/.test(code) && /iconDesc\.delete\(host\);/.test(code),
     '同じ host が「まだ自分の印」として扱われ続ける');
 
+  // RG-22-02 押せる実体そのものの塗り
+  check('押せる実体の塗りを、ページの変数だけに委ねていない（第22回 RG-22-02）',
+    /function ensureShadowPaint/.test(code) &&
+    /const SHADOW_FG = '--rg-fg';/.test(code) &&
+    /--rg-fg/.test(css22) && /--rg-bg/.test(css22),
+    'ページが `--fgColor-accent: transparent` を置くと、印が 0 画素になる');
+  check('押せる実体の塗りを、実測してから決めている（第22回 RG-22-02）',
+    /btn\.style\.removeProperty\(SHADOW_FG\);/.test(code) &&
+    /if \(!TRANSPARENT\.test\(getComputedStyle\(btn\)\.color\)\) return;/.test(code),
+    '塗れているのに上書きすると、テーマ追従が失われる');
+  check('印の実測が、押せる実体のほうも見ている（第22回 RG-22-02）',
+    /const target = focusTargetOf\(icon\);/.test(code) &&
+    /TRANSPARENT\.test\(ts\.color\) && TRANSPARENT\.test\(ts\.borderTopColor\) &&/.test(code),
+    'host だけ見ても、shadow の中が 0 画素かは分からない');
 
   /* ---------- 第19回で足した不変条件 ---------- */
   // RG-19-01 複数語の用語は、**全部の並び**が読めるときだけ可視

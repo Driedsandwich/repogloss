@@ -3575,29 +3575,41 @@ test('控えの見直しは、状態が変わらなければ繰り返さない�
       '隔離された世界の中で checkVisibility を包めていない');
   });
 
-  // 何も変わらないまま、カーソルが要素の境目を10回またぐ
-  await tab.evaluate(`localStorage.setItem('rg-cv-reset','1'); true`);
-  await sleep(200);
-  const before = Number(await get('cv'));
-  await tab.evaluate(`(() => {
-    const a = document.getElementById('before'), b = document.body;
-    for (let i = 0; i < 10; i++) {
-      (i % 2 ? b : a).dispatchEvent(new PointerEvent('pointerout', { bubbles: true, composed: true }));
-      (i % 2 ? a : b).dispatchEvent(new PointerEvent('pointerover', { bubbles: true, composed: true }));
+  // ⚠️ **周期の見直しぶんは、対照を取って差し引く**（v1.8.21）。
+  // v1.8.21 で「合図の出ない変化」を拾うための周期の見直しを足したので、
+  // カーソルを1回も動かさなくても一定の回数が出る（実測: 2,000候補で ≒2N）。
+  // 絶対値のしきい値ではもう区別できないので、**同じ長さの窓を2つ**取り、
+  // 「カーソルを動かしたことで増えた分」だけを見る。
+  // これが測りたかったもの（第19回 RG-19-08）である。
+  const window = async move => {
+    await tab.evaluate(`localStorage.setItem('rg-cv-reset','1'); true`);
+    await sleep(200);
+    const before = Number(await get('cv'));
+    if (move) {
+      await tab.evaluate(`(() => {
+        const a = document.getElementById('before'), b = document.body;
+        for (let i = 0; i < 10; i++) {
+          (i % 2 ? b : a).dispatchEvent(new PointerEvent('pointerout', { bubbles: true, composed: true }));
+          (i % 2 ? a : b).dispatchEvent(new PointerEvent('pointerover', { bubbles: true, composed: true }));
+        }
+        return true;
+      })()`);
     }
-    return true;
-  })()`);
-  await sleep(1500);
-  const moves = Number(await get('cv')) - before;
+    await sleep(1500);
+    return Number(await get('cv')) - before;
+  };
+  const quiet = await window(false);        // 動かさない（＝周期の見直しだけ）
+  const moves = await window(true);         // 同じ長さで、10回またぐ
 
   await t.test('RG-19-08 無関係なカーソル移動が、控えの見直しを増やさない', () => {
-    // 実測（2,000候補・10移動・同じ計測器）:
+    // 実測（2,000候補・10移動・同じ計測器・同じ長さの窓）:
     //   v1.8.17 = 6,009 回（≒3N。カーソルの合図ごとに全件を回していた）
     //   v1.8.18 = 2,003 回（≒N。残るのは2秒ごとの確認1回ぶんだけ）
-    // しきい値は 1.5N に置く（2,003 < 3,000 < 6,009 で、両者をはっきり分ける）。
-    assert.ok(moves < 3000,
-      `カーソルの合図ごとに控え全件を回しているように見える: ${moves} 回`
-      + '（2,000候補・10移動。v1.8.17 は 6,009 回・v1.8.18 は 2,003 回）');
+    //   v1.8.21 = 周期の見直しが入るので、動かさなくても ≒2N 出る
+    // しきい値は「増えた分が 1N 未満」に置く（v1.8.17 なら +2N 以上になる）。
+    assert.ok(moves - quiet < 2000,
+      `カーソルの合図ごとに控え全件を回しているように見える: 動かして ${moves} 回 / `
+      + `動かさず ${quiet} 回（差 ${moves - quiet}）。2,000候補・10移動`);
   });
 
   await tab.close();

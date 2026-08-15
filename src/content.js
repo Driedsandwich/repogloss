@@ -3323,6 +3323,16 @@
           if (++seen > PRINT_SCAN_MAX) { stack.length = 0; break; }
           if (r.selectorText) h = hashStr(h, r.selectorText);
           else if (r.conditionText) h = hashStr(h, r.conditionText);
+          else if (r.keyText) h = hashStr(h, r.keyText);       // @keyframes の中の位置
+          // 宣言の**本数**まで混ぜる（足された／外された宣言に気づくため）。
+          // ⚠️ **中身（`cssText`）は混ぜない。** 第22回 RG-22-04 で一度そうしたが、
+          // 実測（10,000規則）で 1回 23〜31ms かかった（本数までなら 0.6〜1.4ms、
+          // 選択子だけの現行が 2〜8ms）。費用の中身も測ってあり、文字を舐める分では
+          // なく **`cssText` を作る分**（20〜27ms）が主なので、安い書き方が無い。
+          // この指紋はカーソルの合図ごと（120ms の窓）に取るので、そこへ 25ms を
+          // 足すと、カーソルを動かしているあいだ 20% を使うことになる。
+          // 値だけの書き換えは、下の「短い周期の見直し」（→ scheduleFastCheck）が拾う。
+          if (r.style) h = (h * 33 ^ r.style.length) >>> 0;
           if (r.cssRules) stack.push(r.cssRules);
         }
       }
@@ -3583,6 +3593,54 @@
     }, IDLE_GAP);
   }
 
+  // 合図の出ない変化を、**もっと短い周期**で見に行く（第22回 RG-22-04）。
+  //
+  // CSSOM の書き換え（`sheet.cssRules[0].style.display = 'inline'`）は、DOM にも
+  // 属性にも event にも出ない。実測: 選択子も規則の数も変えずに `none` → `inline`
+  // にすると、650ms 後も印は0のままで、2秒ごとの確認でようやく1になった。
+  //
+  // ⚠️ **指紋を短い周期で取り直す形は採らなかった。** 宣言の中身まで混ぜた指紋は
+  // 10,000規則で1回 23〜31ms かかり（→ styleFingerprint の注記に実測値）、
+  // 400ms ごとに取るとそれだけで 6〜8% を使う。しかも指紋は「どこかが変わった」
+  // としか言えない。**控えの見え方そのものを測り直すほうが安く、かつ広い**——
+  // CSSOM に限らず、合図の出ない変化すべてに効く。
+  //
+  // 使いすぎの門（overBudget）を通すので、重いページでは自動的に見送られ、
+  // 2秒ごとの確認へ落ちる。正しさは落ちず、遅れるだけ。
+  // ⚠️ **間隔は控えの件数に合わせて空ける。** 1回の見直しの費用は件数に比例するので、
+  // 件数が増えても一定の間隔で回すと、そのぶんだけ CPU を食い続ける。実測（控え
+  // 5,000件・カーソル10移動）で `checkVisibility` が 35,042 → 46,844 回になった。
+  // 1秒あたりに見る件数を頭打ちにする（＝件数が増えたら間隔を空ける）。
+  const FAST_GAP = 400;
+  const FAST_GAP_MAX = 2000;          // ここまで空けたら、2秒ごとの確認と同じ
+  const FAST_RATE = 1250;             // 1秒あたりに見てよい候補数のめやす
+  const fastGap = () => Math.min(FAST_GAP_MAX,
+    Math.max(FAST_GAP, Math.round(latent.size / FAST_RATE * 1000)));
+  let fastTimer = null;
+  function scheduleFastCheck() {
+    if (!observing || fastTimer !== null) return;
+    fastTimer = setTimeout(() => {
+      fastTimer = null;
+      if (!observing) return;
+      // 見に行く相手（あとで見えるかもしれない候補）が無いなら、何もしない。
+      // ⚠️ **まとめ直し（runBatch）を予約しない。** ここは周期の見張りであって
+      // ページの変更ではない。予約すると「1回のページ変更で、まとめ直しは1回」を
+      // 守っている検査が、この見張りの分まで数えて落ちる（実測: 1 のはずが 3）。
+      // 見たいのは控えの側だけなので、控えの見直しへ直接入る。使った時間は
+      // `noteLatentCost` へ積まれるので、重ければ次から自動的に見送られる。
+      // ⚠️ **`dropStates()` を呼んではいけない。** 擬似クラスの状態の memo を消すと、
+      // 次のカーソルの合図が「まだ見ていない状態」として全件を回し直す。実測で
+      // `checkVisibility` が 3,542 → 18,108 回（500件・カーソル10移動）に膨らんだ。
+      // ここで見たいのは控えの側だけで、カーソルの状態は変わっていない。
+      // stylesheet が変わったときの memo 破棄は `pageUsesHoverRules` が担当する。
+      if (!document.hidden && latent.size > 0 && !overBudget()) {
+        bumpEpoch();
+        withRenderCache(() => discoverLatent());
+      }
+      scheduleFastCheck();
+    }, fastGap());
+  }
+
   /* ---------- 9. ON / OFF の切り替え ---------- */
   let observing = false;
 
@@ -3618,6 +3676,7 @@
     for (const t of HOVER_SIGNALS) document.addEventListener(t, onPointerOrFocus, true);
     for (const t of SCROLL_SIGNALS) document.addEventListener(t, onScrollSignal, true);
     scheduleIdleCheck();
+    scheduleFastCheck();
   }
 
   function stopRuntime() {
@@ -3632,6 +3691,7 @@
     for (const t of SCROLL_SIGNALS) document.removeEventListener(t, onScrollSignal, true);
     if (scrollTail !== null) { clearTimeout(scrollTail); scrollTail = null; }
     if (idleTimer !== null) { clearTimeout(idleTimer); idleTimer = null; }
+    if (fastTimer !== null) { clearTimeout(fastTimer); fastTimer = null; }
     if (latentResume !== null) { clearTimeout(latentResume); latentResume = null; }
     if (hoverTail !== null) { clearTimeout(hoverTail); hoverTail = null; }
     latentPass = null; latentCursor = 0;

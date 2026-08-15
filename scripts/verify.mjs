@@ -717,6 +717,14 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     /if \(ghostSelWalk\) pool = \[\.\.\.document\.querySelectorAll\('\*'\)\];/.test(code),
     '毎回すべての要素を歩くと、10,000要素で 6〜13ms 掛かる');
 
+  // RG-22-04 / RG-22-05 合図の出ない変化
+  check('合図の出ない変化を、短い周期で見に行っている（第22回 RG-22-04）',
+    /function scheduleFastCheck/.test(code) && /const FAST_GAP = /.test(code) &&
+    /scheduleFastCheck\(\);/.test(code),
+    'CSSOM の書き換えが、2秒ごとの確認まで説明されない');
+  check('その見直しは、使いすぎの門を通している（第22回 RG-22-04）',
+    /latent\.size > 0 && !overBudget\(\)/.test(code),
+    '重いページで、短い周期の見直しが CPU を食い続ける');
 
   /* ---------- 第19回で足した不変条件 ---------- */
   // RG-19-01 複数語の用語は、**全部の並び**が読めるときだけ可視

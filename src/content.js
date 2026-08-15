@@ -841,6 +841,27 @@
     return [r.now - r.max, r.now - r.min];
   }
 
+  // `scroll-snap-type: <axis> mandatory` の軸。
+  // ⚠️ 連続した区間のどこでも止まれる、としてはいけない（第19回 RG-19-02）。
+  // mandatory では、有効な止まり位置がある限りブラウザはそこへ吸い寄せるので、
+  // 途中の位置では**止まれない**（実測: 0〜200 を頼んでも実効 0、250〜401 を
+  // 頼んでも実効 401。その間にある語はどの止まり位置でも読めないのに印が付いた）。
+  // 止まり位置そのものは解かない。**いま見えているかだけを断定し、あとは
+  // 「断定できない」**として、スクロールが終わってから見直す。
+  function snapAxes(cs) {
+    const v = cs.scrollSnapType || 'none';
+    if (v === 'none' || !/mandatory/.test(v)) return { x: false, y: false };
+    if (/^\s*x\b/.test(v)) return { x: true, y: false };
+    if (/^\s*y\b/.test(v)) return { x: false, y: true };
+    if (/^\s*(block|inline)\b/.test(v)) {           // 論理軸は書字方向で決まる
+      const vertical = /^vertical|^sideways/.test(cs.writingMode || 'horizontal-tb');
+      const isBlock = /^\s*block\b/.test(v);
+      const horizontal = isBlock ? vertical : !vertical;
+      return { x: horizontal, y: !horizontal };
+    }
+    return { x: true, y: true };                    // both
+  }
+
   //   L    … 祖先ぶんも含めた変形の線形部分（viewport ← 変形前の座標）
   //   flat … その変形が 2D で表せるか（3D は解かない）
   function ownClips(el, cs, L, flat) {
@@ -902,10 +923,12 @@
     // 区間を伝播させて、全部の枠へ同時に入る位置があるかを見る（→ reachable）。
     let scroller = null;
     if (scrolls(cs.overflowX) || scrolls(cs.overflowY)) {
+      const snap = snapAxes(cs);
       scroller = {
         box: padBox(),
         dx: scrolls(cs.overflowX) ? shiftRange(el, cs, 'x') : [0, 0],
-        dy: scrolls(cs.overflowY) ? shiftRange(el, cs, 'y') : [0, 0]
+        dy: scrolls(cs.overflowY) ? shiftRange(el, cs, 'y') : [0, 0],
+        snapX: snap.x, snapY: snap.y
       };
     }
     // ② legacy clip。**絶対配置の要素にしか効かない**（position を見ずに判定すると、
@@ -1137,8 +1160,9 @@
     //   true … 確実に読める／false … 確実に読めない／'unknown' … 断定できない
       const rectState = r => {
         if (!inClip(r)) return false;
-        if (!reachable(r, chain)) return false;
-        let u = false;
+        const reach = reachable(r, chain);
+        if (reach === false) return false;
+        let u = reach === 'unknown';
         for (const t of chain.tests) {
           if (t(r) === false) return false;
         }
@@ -1202,10 +1226,13 @@
   function rootScroller(fixed) {
     const de = document.documentElement;
     const box = { x1: 0, y1: 0, x2: de.clientWidth, y2: de.clientHeight };
-    if (fixed) return { box, dx: [0, 0], dy: [0, 0] };   // 画面に固定＝動かせない
+    if (fixed) return { box, dx: [0, 0], dy: [0, 0], snapX: false, snapY: false };  // 画面に固定＝動かせない
     const se = document.scrollingElement || de;
     const cs = getComputedStyle(se);
-    return { box, dx: shiftRange(se, cs, 'x'), dy: shiftRange(se, cs, 'y') };
+    // 文書そのものの吸い寄せは `<html>` 側にも書ける
+    const snap = snapAxes(getComputedStyle(de));
+    return { box, dx: shiftRange(se, cs, 'x'), dy: shiftRange(se, cs, 'y'),
+             snapX: snap.x, snapY: snap.y };
   }
 
   // その矩形を、**全部の枠へ同時に入れられる**スクロール位置があるか。
@@ -1215,17 +1242,28 @@
   //   ・S_k は S_{k-1} に k 番目の可動量を足した範囲に入る
   //   ・語が k 番目の枠に入る条件は S_k ∈ (箱の始点 - 語の終点, 箱の終点 - 語の始点)
   // となり、内側から外側へ**区間を狭めていくだけ**で答えが出る（軸ごとに独立）。
+  // 返り値は true / false / 'unknown'。
+  // mandatory な吸い寄せがある枠では、**いまの位置でしか断定しない**。いま入って
+  // いなければ、連続区間で入れるかを見て、入れるなら 'unknown'（止まり位置は解かない）、
+  // 入れないなら false（吸い寄せが無くても届かない）。
   function reachable(r, chain) {
     const doms = chain.scrolls.concat([rootScroller(chain.fixed)]);
-    return feasible(r, doms, 'x') && feasible(r, doms, 'y');
+    const anySnap = doms.some(d => d.snapX || d.snapY);
+    if (!anySnap) {
+      return (feasible(r, doms, 'x', false) && feasible(r, doms, 'y', false)) ? true : false;
+    }
+    if (feasible(r, doms, 'x', true) && feasible(r, doms, 'y', true)) return true;   // いま見えている
+    return (feasible(r, doms, 'x', false) && feasible(r, doms, 'y', false)) ? 'unknown' : false;
   }
 
-  function feasible(r, doms, axis) {
+  //   pinSnap … true なら、吸い寄せのある枠を「いまの位置から動かせない」として解く
+  function feasible(r, doms, axis, pinSnap) {
     const t1 = axis === 'x' ? r.left : r.top;
     const t2 = axis === 'x' ? r.right : r.bottom;
     let lo = 0, hi = 0;
     for (const d of doms) {
-      const sh = axis === 'x' ? d.dx : d.dy;
+      const snapped = pinSnap && (axis === 'x' ? d.snapX : d.snapY);
+      const sh = snapped ? [0, 0] : (axis === 'x' ? d.dx : d.dy);
       lo += sh[0]; hi += sh[1];
       const b1 = axis === 'x' ? d.box.x1 : d.box.y1;
       const b2 = axis === 'x' ? d.box.x2 : d.box.y2;
@@ -2604,7 +2642,20 @@
   const onExternal = e => { if (!isOurNode(e.target)) schedule({ deep: true }); };
   const onViewport = () => schedule({ deep: true });
   // 利用者の操作は、属性に出ない状態（checked など）を変えうる
-  const onInteraction = () => schedule({ deep: true });
+    const onInteraction = () => schedule({ deep: true });
+
+  // スクロールが落ち着いたら見直す。**吸い寄せのある枠では、止まってからでないと
+  // 到達できるかを断定できない**（第19回 RG-19-02）。`scrollend` が無い版のために、
+  // `scroll` から遅らせて1回だけ出す形も置く。
+  const SCROLL_SETTLE = 150;
+  let scrollTail = null;
+  const onScrollSignal = () => {
+    if (scrollTail !== null) clearTimeout(scrollTail);
+    scrollTail = setTimeout(() => {
+      scrollTail = null;
+      if (observing) schedule({ deep: true });
+    }, SCROLL_SETTLE);
+  };
 
   // カーソルとフォーカスも合図にする。`:hover` / `:focus-within` だけで開く
   // メニューは、DOM も属性も transition も動かさないので、どの合図にも乗らない。
@@ -2678,6 +2729,9 @@
   };
   let hoverTriggered = false;
   const HOVER_SIGNALS = ['pointerover', 'pointerout', 'focusin', 'focusout'];
+  // `scrollend` はブラウザが「止まった」と決めた瞬間に1回だけ来る。無い版のために
+  // `scroll` も取り、そこから遅らせて1回にまとめる（→ onScrollSignal）。
+  const SCROLL_SIGNALS = ('onscrollend' in window) ? ['scrollend'] : ['scroll'];
 
   // 属性にも DOM にも出ない変化（property だけの書き換え）は、どの合図にも乗らない。
   // 暇なときにだけ、記録の見え方を確かめ直す。画面が見えていないときは何もしない。
@@ -2732,6 +2786,7 @@
     window.addEventListener('orientationchange', onViewport);
     for (const t of ['input', 'change', 'click']) document.addEventListener(t, onInteraction, true);
     for (const t of HOVER_SIGNALS) document.addEventListener(t, onPointerOrFocus, true);
+    for (const t of SCROLL_SIGNALS) document.addEventListener(t, onScrollSignal, true);
     scheduleIdleCheck();
   }
 
@@ -2744,6 +2799,8 @@
     window.removeEventListener('orientationchange', onViewport);
     for (const t of ['input', 'change', 'click']) document.removeEventListener(t, onInteraction, true);
     for (const t of HOVER_SIGNALS) document.removeEventListener(t, onPointerOrFocus, true);
+    for (const t of SCROLL_SIGNALS) document.removeEventListener(t, onScrollSignal, true);
+    if (scrollTail !== null) { clearTimeout(scrollTail); scrollTail = null; }
     if (idleTimer !== null) { clearTimeout(idleTimer); idleTimer = null; }
     if (latentResume !== null) { clearTimeout(latentResume); latentResume = null; }
     if (hoverTail !== null) { clearTimeout(hoverTail); hoverTail = null; }

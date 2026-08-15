@@ -506,6 +506,17 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     /function iconIsPainted/.test(code) && /if \(!iconIsPainted\(icon\)\) \{/.test(code) &&
     /if \(!iconIsPainted\(rec\.icon\)\) return false;/.test(code),
     '語は読めても、印だけが切り取りの外に出て見えない停止点になる');
+  // RG-19-02 mandatory な吸い寄せでは、止まれない位置を到達可能としない
+  check('吸い寄せのある軸を見ている',
+    /function snapAxes/.test(code) && /mandatory/.test(code) && /snapX/.test(code) && /snapY/.test(code),
+    '連続区間のどこでも止まれるとして、読めない語へ印を付ける');
+  check('吸い寄せがあるときは、いまの位置でしか断定しない',
+    /feasible\(r, doms, 'x', true\)/.test(code) && /pinSnap/.test(code) &&
+    /return \(feasible\(r, doms, 'x', false\) && feasible\(r, doms, 'y', false\)\) \? 'unknown' : false;/.test(code),
+    '止まり位置を解かないまま、到達できると断定してしまう');
+  check('スクロールが落ち着いたら、控えを見直している',
+    /const SCROLL_SIGNALS/.test(code) && /scrollend/.test(code) && /function onScrollSignal|const onScrollSignal/.test(code),
+    '吸い寄せで止まったあと、読めるようになった語が説明されない');
   check('絶対配置が切り取りから逃げることを見ている',
     /function establishesContainingBlock/.test(code) && /function positionEscape/.test(code),
     '包含ブロックでない祖先の切り取りで、読める語を落とす');

@@ -501,6 +501,11 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     /for \(const rects of runs\) \{[\s\S]{0,200}?const s = runState\(rects\);[\s\S]{0,120}?if \(s === false\) return false;/.test(code) &&
     !/rects\.some\(r => inClip\(r\)/.test(code),
     '`pull request` の `pull` だけ見えていても用語全体を可視と答える');
+  // RG-19-01 印そのものも、切り取りの中に描かれていること（実物を測る）
+  check('入れた印が描かれているかを、実物で測っている',
+    /function iconIsPainted/.test(code) && /if \(!iconIsPainted\(icon\)\) \{/.test(code) &&
+    /if \(!iconIsPainted\(rec\.icon\)\) return false;/.test(code),
+    '語は読めても、印だけが切り取りの外に出て見えない停止点になる');
   check('絶対配置が切り取りから逃げることを見ている',
     /function establishesContainingBlock/.test(code) && /function positionEscape/.test(code),
     '包含ブロックでない祖先の切り取りで、読める語を落とす');

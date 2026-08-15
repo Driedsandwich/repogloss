@@ -1165,7 +1165,32 @@
     }
     // 解けない描画効果があるときは「見える」と断定しない。後ろに確実に見える同じ語が
     // あればそちらへ付ける（第18回 RG-18-04 / RG-18-05）。
-      return unknown ? 'unknown' : true;
+    //
+    // ⚠️ **印が入る場所は、ここでは見ない。** 一度「用語の直後に 1.4em」と見積もって
+    // 判定へ入れたが、その見積もりが外れていた（実測: 35°回した楕円の中の語で、
+    // 見積もりは形の外なのに、実際の印は5点中4点が印そのものに当たる＝見えていた）。
+    // 印は**実物を測れる**ので、入れたあとの「まだ説明として使えるか」で見る
+    // （→ iconIsPainted）。
+    return unknown ? 'unknown' : true;
+  }
+
+  // 印そのものが、切り取りの中に描かれているか（第19回 RG-19-01）。
+  // 用語が読めても、印だけが切り取りの外へ出ることがある（実測:
+  // `overflow-clip-margin:100px` の枠で、語は余白の中に見えているのに、
+  // その直後に入った印は x=176 で余白の外＝5点すべてが印に当たらず、それでも
+  // `tabIndex:0` で Tab の順路に入っていた）。**見えない停止点を残さない。**
+  function iconIsPainted(icon) {
+    const chain = paintChain(icon, 'none');
+    if (chain.hidden) return false;
+    if (rectIsEmpty(chain.clip)) return false;
+    const b = icon.getBoundingClientRect();
+    if (!(b.width > 0 && b.height > 0)) return false;
+    const c = chain.clip;
+    if (c && !(Math.min(b.right, c.x2) - Math.max(b.left, c.x1) > 1 &&
+               Math.min(b.bottom, c.y2) - Math.max(b.top, c.y1) > 1)) return false;
+    if (reachable(b, chain) === false) return false;
+    for (const t of chain.tests) if (t(b) === false) return false;
+    return true;
   }
 
   // 文書そのものの枠（画面）と、そこで動かせる量。
@@ -2089,6 +2114,8 @@
       if (now.trigger !== rec.trigger) return false;
       return tabbable(rec.trigger);
     }
+    // 印そのものが切り取りの外なら、見えない停止点になる（第19回 RG-19-01）
+    if (!iconIsPainted(rec.icon)) return false;
     return tabbable(rec.icon);
   }
 
@@ -2227,6 +2254,23 @@
       parent.insertBefore(icon, tail ?? cur.nextSibling);
       applyIconSemantics(icon, placement);                  // 入った場所を見てから決める
       markHandled(cur);
+      // ⚠️ **入れてから、その印が本当に描かれているかを測る**（第19回 RG-19-01）。
+      // 語が読めても、直後に入る印だけが切り取りの外へ出ることがある（実測:
+      // 負の inset で外へ広げた枠と `overflow-clip-margin` の枠で、印の5点すべてが
+      // 印に当たらない＝描かれていないのに `tabIndex:0` で Tab の順路に入っていた）。
+      // 場所は**予測しない**——一度「用語の直後に 1.4em」と見積もって判定へ入れたが、
+      // 35°回した形の中で外れた。入れて測り、描かれていなければ引き取る。
+      // その語はこの世代では諦め、控えへ戻す（形が変われば入り直せる）。
+      if (!iconIsPainted(icon)) {
+        if (tip && tipIcons.includes(icon)) hideTip();
+        ownedIcons.delete(icon); iconTrigger.delete(icon); expectedAttrs.delete(icon);
+        removeOwn(icon);
+        if (placement.kind === 'hosted') releaseTriggerIfUnused(placement.trigger);
+        rememberLatent(cur);
+        if (!tail) break;
+        cur = tail; consumed = hit.end;
+        continue;
+      }
       // 実際に挿入できたものだけ、作ったものと一緒に控える。
       // termNode は用語を末尾に含む節点。片づけのとき、これを走査対象へ戻す。
       // tailNode は自分が作った右側（作らなかったときは null）。控えるのは

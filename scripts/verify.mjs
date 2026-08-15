@@ -1120,6 +1120,45 @@ check('content.js が保存キー iiyakuEnabled を変えていない', content.
   check('監査回を探す検査が、実際に捕まえる（陽性対照）',
     ROUND.test('監査のための資料（第15回監査用）'));
 
+  /* ---------- 変わった／変わらないの一覧を、実測と突き合わせる（第21回 RG-21-08） ----------
+     ⚠️ v1.8.19 の同じ説明が `styles.css` を**両方の一覧に**載せていた。版を上げるとき、
+     「無変更」へ足して「変更」から消し忘れたためで、文章だけでは誰も気づかない。
+     いまは `git diff` の実測を正本にし、**交差があれば落とす**。 */
+  {
+    const pick = re => { const m = re.exec(audit); return m ? m[1].trim().split(/\s+/).filter(Boolean) : null; };
+    const changed = pick(/^#\s*CHANGED:\s*(.*)$/m);
+    const unchanged = pick(/^#\s*UNCHANGED:\s*(.*)$/m);
+    check('AUDIT.md が、変わった／変わらないの一覧を機械可読で書いている',
+      !!changed && !!unchanged, '`# CHANGED:` と `# UNCHANGED:` の2行が要る');
+    if (changed && unchanged) {
+      const both = changed.filter(f => unchanged.includes(f));
+      check('同じファイルが、変わった側と変わらない側の両方に載っていない',
+        both.length === 0, `両方に載っている: ${both.join(', ')}`);
+      check('2つの一覧を合わせると、配布13ファイルちょうどになる',
+        new Set([...changed, ...unchanged]).size === PACKAGE_FILES.length &&
+        [...changed, ...unchanged].every(f => PACKAGE_FILES.includes(f)),
+        `合計 ${new Set([...changed, ...unchanged]).size} / 配布 ${PACKAGE_FILES.length}`);
+      const base = (/^base_commit:\s*(\S+)/m.exec(audit) || [])[1];
+      let real = null;
+      if (base && base !== 'null') {
+        try {
+          real = execFileSync('git', ['-C', ROOT, 'diff', '--name-only', base, '--', ...PACKAGE_FILES],
+                              { encoding: 'utf8' }).split('\n').filter(Boolean);
+        } catch (e) { real = null; }
+      }
+      // 測れなかったときに「0 件だから一致」としない（測定の失敗を合格にしない）
+      check('変わったファイルの一覧を、実測できている', real !== null,
+        '基点コミットを引けない環境では、この突き合わせを合格にしない');
+      if (real !== null) {
+        const miss = real.filter(f => !changed.includes(f));
+        const extra = changed.filter(f => !real.includes(f));
+        check('変わったと書いた一覧が、`git diff` の実測と一致する',
+          miss.length === 0 && extra.length === 0,
+          `書き漏らし: ${miss.join(', ') || 'なし'} / 余分: ${extra.join(', ') || 'なし'}`);
+      }
+    }
+  }
+
   const st = (/^state:\s*(\S+)/m.exec(audit) || [])[1];
   const tag = (/^tag:\s*(\S+)/m.exec(audit) || [])[1];
   if (st && st !== 'uncommitted' && tag && tag !== 'null') {

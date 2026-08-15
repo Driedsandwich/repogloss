@@ -28,14 +28,17 @@ RepoGloss は、GitHub の画面に出てくる英語のうち Git / GitHub 固�
 差分は次のコマンドで確認できます。
 
 ```sh
-git checkout v1.8.19                     # 監査対象を手元に出す
-git diff --name-only v1.8.18 v1.8.19     # 直前の版との差分
-# → 配布13ファイルのうち manifest.json・styles.css・src/content.js・README.md・
-#    DESIGN.md・PRIVACY.md が変わっている（辞書・matcher.js・styles.css・アイコン・LICENSE は無変更）
+git diff --name-only v1.8.19             # 直前の版との差分（作業ツリー）
+# CHANGED:   manifest.json src/content.js styles.css README.md DESIGN.md
+# UNCHANGED: src/matcher.js locales/dict.json PRIVACY.md LICENSE icons/icon16.png icons/icon32.png icons/icon48.png icons/icon128.png
 # → ほかに scripts/ と tests/ と docs/（配布物には入らない）
 ```
 
-**タグ `v1.8.19` を打ち、CI が提出候補 ZIP を作るところまで済んでいます。ストアへは未提出です。**
+> **この2行は手で書きません。** `verify` が `git diff` の実測と突き合わせ、**両方に載っている
+> ファイルがあれば落とします**（第21回 RG-21-08。実測: v1.8.19 の同じ説明が `styles.css` を
+> 「変わっている」と「無変更」の両方に挙げていた——版を上げるときに片方だけ直したため）。
+
+**この版はまだ commit していません。** commit / push / タグ / Release / ウェブストア操作は、いずれも未実施です。
 
 > **監査対象と `main` の関係について（第11回 RG-11-06 の是正）。** 前回まで、監査対象を「`main` の先頭」と**相対的に**書いていました。提出候補の SHA を記録するコミットを1つ積んだ時点で、その記述は事実でなくなります（実際にそうなりました）。いまは対象をタグとコミットだけで名乗り、**現在の `main` の SHA はここに書きません**——書けば、その値もまた次のコミットで古くなるためです。両者の関係は文章ではなく検査で担保します。`state` が `uncommitted` でないとき、`verify` が「ここが名乗るタグと、いまの配布13ファイルが同じか」を `git diff` で突き合わせ、タグを引けない環境では**通しません**。
 

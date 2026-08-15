@@ -525,6 +525,11 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   check('形の判定が三値を返せる',
     /const p = map\.backPoly\(rect\); return p \? t\(p\) : 'unknown';/.test(code),
     '断定できない形を、見える側にも見えない側にも倒してしまう');
+  // RG-19-04 background-size:auto の画像は自然寸法（同期では分からない＝断定しない）
+  check('background-size:auto の画像を、領域いっぱいとみなしていない',
+    /if \(!isGradientLayer\(layers\[i\]\)\) \{ unknown = true; continue; \}/.test(code) &&
+    /function isGradientLayer|const isGradientLayer/.test(code),
+    '1×1 の画像を段落いっぱいの塗りとして扱う');
   check('絶対配置が切り取りから逃げることを見ている',
     /function establishesContainingBlock/.test(code) && /function positionEscape/.test(code),
     '包含ブロックでない祖先の切り取りで、読める語を落とす');

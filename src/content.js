@@ -665,6 +665,13 @@
   // ⚠️ 「不透明な背景がある」だけでは足りない（第18回 RG-18-04。実測:
   // `background-position: 10000px 0; background-repeat: no-repeat` の語は0画素なのに
   // 印が付いた）。読み切れない指定は描かれる側へ倒す。
+  // ⚠️ `background-size: auto` の**画像**は、背景領域いっぱいではない（第19回 RG-19-04）。
+  // auto は置換画像の**自然寸法**を使う。領域全体の寸法で箱を作っていたため、1×1 の
+  // 画像を `no-repeat` で置いただけの段落を「語の位置まで塗る」と答えていた
+  // （実測: 語の画素は0なのに印が付いた）。自然寸法は同期では分からない——
+  // 読みに行けば新しい通信になるので、**断定せず 'unknown' を返す**。
+  // gradient の auto は領域いっぱいなので、そちらは今までどおり解ける。
+  //   true … 届く／false … 届かない／'unknown' … 断定できない
   function bgClipTextPaintsAt(el, cs, rect) {
     if (!TRANSPARENT.test(cs.backgroundColor || '')) return true;   // 背景色は全面を覆う
     const img = cs.backgroundImage;
@@ -677,12 +684,14 @@
     const area = refBoxRect(cs, el.getBoundingClientRect(), false,
                             origin === 'content-box' ? 'content-box'
                           : origin === 'border-box' ? 'border-box' : 'padding-box');
+    let unknown = false;
     for (let i = 0; i < layers.length; i++) {
       if (isFullyTransparentGradient(layers[i])) continue;
       const r = rep[i % rep.length] || 'repeat';
       if (!/no-repeat/.test(r)) return true;                        // 繰り返せば全面に届く
       const sz = size[i % size.length] || 'auto';
       if (sz !== 'auto') return true;                               // 寸法は解かない＝届く側へ
+      if (!isGradientLayer(layers[i])) { unknown = true; continue; } // 自然寸法が分からない
       const pv = (pos[i % pos.length] || '0px 0px').split(/\s+/);
       const px0 = lenToPx(pv[0], (area.x2 - area.x1) - (area.x2 - area.x1));
       const py0 = lenToPx(pv[1] !== undefined ? pv[1] : '50%', 0);
@@ -691,23 +700,31 @@
                     x2: area.x1 + px0 + (area.x2 - area.x1), y2: area.y1 + py0 + (area.y2 - area.y1) };
       if (rect.right > box.x1 && rect.left < box.x2 && rect.bottom > box.y1 && rect.top < box.y2) return true;
     }
-    return false;
+    return unknown ? 'unknown' : false;
   }
 
-  function textIsInvisible(cs, el, rect) {
+  const GRADIENT = /^(-webkit-)?(repeating-)?(linear|radial|conic)-gradient\(/;
+  const isGradientLayer = v => GRADIENT.test(v);
+
+  // その語の位置に、文字が描かれるか。
+  //   true … 描かれる／false … 描かれない／'unknown' … 断定できない
+  function textPaintsAt(cs, el, rect) {
     const fill = cs.webkitTextFillColor && cs.webkitTextFillColor !== 'currentcolor'
       ? cs.webkitTextFillColor : cs.color;
-    if (!TRANSPARENT.test(fill || '')) return false;
+    if (!TRANSPARENT.test(fill || '')) return true;
     // ① 縁取り。幅と色の**両方**がそろって初めて描かれる
     const sw = parseFloat(cs.webkitTextStrokeWidth || '0');
     const sc = cs.webkitTextStrokeColor || '';
-    if (sw > 0 && !TRANSPARENT.test(sc)) return false;
+    if (sw > 0 && !TRANSPARENT.test(sc)) return true;
     // ② 影。色と**ずらし量**を見る
-    if (shadowPaintsAt(cs.textShadow, rect)) return false;
+    if (shadowPaintsAt(cs.textShadow, rect)) return true;
     // ③ 背景を文字型に抜く指定。塗りが語の位置に届くかを見る
     const bc = cs.backgroundClip || cs.webkitBackgroundClip;
-    if (bc === 'text' && bgClipTextPaintsAt(el, cs, rect)) return false;
-    return true;
+    if (bc === 'text') {
+      const s = bgClipTextPaintsAt(el, cs, rect);
+      if (s !== false) return s;                                    // true か 'unknown'
+    }
+    return false;
   }
 
   // 色の並びのうち、1つでも不透明なものがあるか。`none` は無し。
@@ -1162,20 +1179,22 @@
     // スクロールできる入れ物の中なら、その入れ物を動かせる範囲で見る。ただし
     // **入れ物そのものが文書のどこにも出せない**なら、中身も出せない。
     //   true … 確実に読める／false … 確実に読めない／'unknown' … 断定できない
-      const rectState = r => {
-        if (!inClip(r)) return false;
-        const reach = reachable(r, chain);
-        if (reach === false) return false;
-        let u = reach === 'unknown';
-        for (const t of chain.tests) {
-          const v = t(r);
-          if (v === false) return false;
-          if (v === 'unknown') u = true;
-        }
-        // 文字の塗りは**語の位置**で見る（影のずらし・背景の位置がここに効く）
-        if (textIsInvisible(cs, el, r)) return false;
-        return u ? 'unknown' : true;
-      };
+    const rectState = r => {
+      if (!inClip(r)) return false;
+      const reach = reachable(r, chain);
+      if (reach === false) return false;
+      let u = reach === 'unknown';
+      for (const t of chain.tests) {
+        const v = t(r);
+        if (v === false) return false;
+        if (v === 'unknown') u = true;
+      }
+      // 文字の塗りは**語の位置**で見る（影のずらし・背景の位置がここに効く）
+      const p = textPaintsAt(cs, el, r);
+      if (p === false) return false;
+      if (p === 'unknown') u = true;
+      return u ? 'unknown' : true;
+    };
     // 1つの並びは、**どれか1つの断片**が通れば読める（折り返しても読める）。
     const runState = rects => {
       let best = false;

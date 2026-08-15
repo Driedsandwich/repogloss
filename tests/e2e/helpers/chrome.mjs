@@ -1271,3 +1271,97 @@ export const PAGEOWN18_PAGE = `<!doctype html><html lang="en"><head><meta charse
   <p id="src">A branch here.</p>
   <sup id="page" class="iiyaku-icon" role="button" tabindex="0" aria-label="page control"></sup>
 </body></html>`;
+
+/* ===== 第19回監査の反例（v1.8.18 で固定する） ===== */
+
+/* RG-19-01。複数語の用語は、**全部の並び**が読めるときだけ可視。
+   `pull` だけが見えて `request` が切り取りの外にある形（実測: pull 158画素・
+   request 0画素・切り取りの右端 35px に対し印は x=93.8 で見えない停止点）。 */
+export const PHRASE19_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>phr19</title><style>html,body{background:#fff;color:#000;margin:0;font:16px/1.5 monospace}</style></head><body>
+  <button id="before">before</button>
+  <div id="h-part" style="width:27px;overflow:clip;white-space:nowrap"><span>pull request</span></div>
+  <p id="l-part">A pull request visible later.</p>
+  <!-- ［対照］折り返しても両方読める形（印も収まる幅）は、前方に1つ付く。
+       ⚠️ 見本を2回間違えた。①後方の段落を別の語にしていたので、前方が落ちたのか
+       別の語が拾われたのかを見分けられなかった。②同じ語に揃えたら、今度は
+       上の l-part が先にその語を取ってしまった（印は1語につきページで1つ）。
+       **節ごとに別の語を使い、その節の中で前後を比べる**のが正しい形。
+       実測（60px）: force(0,27,40,17) と push(0,51,32,17) の2行に折り返し、
+       印も収まる → 前方1・後方0。 -->
+  <div id="h-wrap" style="width:60px;overflow:clip"><span>force push</span></div>
+  <p id="l-wrap">A force push visible later.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-19-02。mandatory な吸い寄せでは、途中の位置で止まれない。
+   実測: 0〜200 を頼んでも実効 0、250〜401 を頼んでも実効 401。 */
+export const SNAP19_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>snap19</title><style>html,body{background:#fff;color:#000;margin:0;font:16px/1.5 monospace}</style></head><body>
+  <button id="before">before</button>
+  <div id="h-snap" style="position:relative;width:100px;height:54px;overflow-x:auto;overflow-y:hidden;scroll-snap-type:x mandatory">
+    <div style="position:absolute;left:0;width:1px;height:1px;scroll-snap-align:start;scroll-snap-stop:always"></div>
+    <div style="position:absolute;left:500px;width:1px;height:1px;scroll-snap-align:start;scroll-snap-stop:always"></div>
+    <span style="position:absolute;left:200px;top:14px">branch</span>
+    <div style="width:501px;height:1px"></div>
+  </div>
+  <p id="l-snap">A branch visible later.</p>
+  <!-- ［対照］吸い寄せが無ければ、途中の位置でも読める -->
+  <div id="h-free" style="position:relative;width:100px;height:54px;overflow-x:auto;overflow-y:hidden">
+    <span style="position:absolute;left:200px;top:14px">commit</span>
+    <div style="width:501px;height:1px"></div>
+  </div>
+  <p id="l-free">A commit visible later.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-19-03。ちょうど45°では変形前の矩形が復元できない＝断定しない。
+   実測: 45°回した楕円の外の語は0画素で、5点すべての hit test が BODY。 */
+export const TRANS19_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>tr19</title><style>html,body{background:#fff;color:#000;margin:0;font:16px/1.5 monospace}
+ .slot{position:relative;height:340px}</style></head><body>
+  <button id="before">before</button>
+  <div class="slot" id="h-45out"><div style="position:relative;width:120px;height:120px;transform:rotate(45deg);transform-origin:60px 60px;clip-path:ellipse(50px 20px at 60px 60px);margin:100px"><span style="position:absolute;left:15px;top:35px;font:5px/5px Arial">branch</span></div></div>
+  <p id="l-45out">A branch visible later.</p>
+  <!-- ［対照］44.9° は解けるので、形の外は落とせる -->
+  <div class="slot" id="h-449out"><div style="position:relative;width:120px;height:120px;transform:rotate(44.9deg);transform-origin:60px 60px;clip-path:ellipse(50px 20px at 60px 60px);margin:100px"><span style="position:absolute;left:15px;top:35px;font:5px/5px Arial">commit</span></div></div>
+  <p id="l-449out">A commit visible later.</p>
+  <!-- ［対照］44.9° の形の中は、そのまま付く -->
+  <div class="slot" id="h-449in"><div style="position:relative;width:120px;height:120px;transform:rotate(44.9deg);transform-origin:60px 60px;clip-path:ellipse(50px 20px at 60px 60px);margin:100px"><span style="position:absolute;left:50px;top:57px;font:5px/5px Arial">merge</span></div></div>
+  <p id="l-449in">A merge visible later.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+const PX1 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==';
+
+/* RG-19-04 / RG-19-05。背景の自然寸法・filter の url()・mask-mode。 */
+export const PAINT19_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>paint19</title><style>html,body{background:#fff;color:#000;margin:0;font:16px/1.5 monospace}</style></head><body>
+  <button id="before">before</button>
+  <div id="h-bgauto"><p style="margin-left:100px;width:300px;color:transparent;-webkit-text-fill-color:transparent;background-image:url(data:image/png;base64,${PX1});background-repeat:no-repeat;background-position:0 0;background-size:auto;-webkit-background-clip:text;background-clip:text;font-size:20px">A branch invisible.</p></div>
+  <p id="l-bgauto">A branch visible later.</p>
+  <div id="h-bgrep"><p style="margin-left:100px;width:300px;color:transparent;-webkit-text-fill-color:transparent;background-image:url(data:image/png;base64,${PX1});background-repeat:repeat;background-size:auto;-webkit-background-clip:text;background-clip:text;font-size:20px">A commit visible.</p></div>
+  <p id="l-bgrep">A commit visible later.</p>
+  <div id="h-bggrad"><p style="width:300px;color:transparent;-webkit-text-fill-color:transparent;background-image:linear-gradient(black,black);background-repeat:no-repeat;background-size:auto;-webkit-background-clip:text;background-clip:text;font-size:20px">A merge visible.</p></div>
+  <p id="l-bggrad">A merge visible later.</p>
+  <div id="h-fltnone"><svg width="0" height="0" style="position:absolute"><filter id="f19a"><feFlood flood-color="black" flood-opacity="0"/></filter></svg><p style='filter:url("#f19a");font-size:20px'>A rebase invisible.</p></div>
+  <p id="l-fltnone">A rebase visible later.</p>
+  <div id="h-msklum"><p style="-webkit-mask-image:linear-gradient(black,black);mask-image:linear-gradient(black,black);mask-mode:luminance;font-size:20px">A fetch invisible.</p></div>
+  <p id="l-msklum">A fetch visible later.</p>
+  <div id="h-mskalpha"><p style="-webkit-mask-image:linear-gradient(black,black);mask-image:linear-gradient(black,black);mask-mode:alpha;font-size:20px">A conflict visible.</p></div>
+  <p id="l-mskalpha">A conflict visible later.</p>
+  <div id="h-msklumw"><p style="-webkit-mask-image:linear-gradient(white,white);mask-image:linear-gradient(white,white);mask-mode:luminance;font-size:20px">A diff visible.</p></div>
+  <p id="l-msklumw">A diff visible later.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-19-06。ページが同じ名前のレイヤーを先に宣言しても、ページの指定は無傷。
+   実測（v1.8.17）: display:grid → inline、赤 → 黒、140×30px → auto。 */
+export const LAYER19_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>layer19</title><style>@layer repogloss-e7b41d-scope, repogloss-e7b41d;
+ @layer repogloss-e7b41d { .iiyaku-icon[data-iiyaku-owner]{display:grid;color:rgb(255,0,0);position:relative;z-index:5;width:140px;height:30px;background:rgb(255,255,0)} }</style>
+</head><body>
+  <sup id="pageown" class="iiyaku-icon" data-iiyaku-owner="page">x</sup>
+  <p id="src">A branch here.</p>
+</body></html>`;
+

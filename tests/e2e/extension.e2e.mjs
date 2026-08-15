@@ -22,6 +22,8 @@ import { launchChrome, startTestServer, stageExtension, stageExtensionWith,
          PAINT16_PAGE, REACH16_PAGE, NAMESPACE16_PAGE,
          PAINT17_PAGE, REACH17_PAGE, CAPTURED17_PAGE, NAMESPACE17_PAGE,
          PAINT18_PAGE, NESTED18_PAGE, VERTICAL18_PAGE, RTLROOT18_PAGE, PAGEOWN18_PAGE,
+         PHRASE19_PAGE, SNAP19_PAGE, TRANS19_PAGE, PAINT19_PAGE, LAYER19_PAGE,
+         retryStartup, startupDiagText, STARTUP_METHODS,
          openPage, sleep, waitFor,
          pressKey, collectTabOrder, tabUntil } from './helpers/chrome.mjs';
 
@@ -2461,13 +2463,15 @@ test('潰れた参照ボックスの切り取りを、寸法不明と混ぜな�
     assert.deepEqual([await nIn('#zero'), await nIn('#zero-later')], [0, 1]);
   });
 
-  await t.test('RG-12-05 対照: 負の inset で外へ広がる形は、誤って落とさない', async () => {
-    // ⚠️ v1.8.13 で一度 [0,1] へ反転させたが、それは **macOS だけの実測**だった。
-    // CI で ubuntu と windows は [1,0] を返し、折り返し次第で答えが割れると分かった。
-    // 見本のほうを折り返さない形（nowrap ＋ 広い負の inset）へ直し、
-    // 「負の inset で外へ広がった先の語は落とさない」という**性質だけ**を見る。
-    assert.deepEqual([await nIn('#zero-neg'), await nIn('#neg-later')], [1, 0],
-      '負の inset で外へ広がった先の語を落としている');
+  await t.test('RG-12-05 / RG-19-01 負の inset の先は語が読めても、印は切り取りの外', async () => {
+    // ⚠️ v1.8.18 で [1,0] → [0,1] へ書き直した。**印の実物を測って分かった**——
+    // 語（commit）は負の inset で広げた切り取りの中にあって読めるが、その直後に入る
+    // 印は x=117.1 で切り取り（右端 110）の外にあり、**5点すべてが印に当たらない**
+    // ＝描かれていないのに `tabIndex:0` で Tab の順路に入っていた（第19回 RG-19-01）。
+    // 前の期待値は、その見えない停止点のほうを固定していた。
+    // いまは印を入れてから測り、描かれていなければ引き取って、後ろの読める語へ譲る。
+    assert.deepEqual([await nIn('#zero-neg'), await nIn('#neg-later')], [0, 1],
+      '見えない印を、切り取りの外に残している');
   });
 
   await t.test('RG-12-05 対照: 潰れていない content box の inset(0) は可視', async () => {
@@ -2967,10 +2971,20 @@ test('形と描画の判定（第16回）', async t => {
     ['stkb', 'RG-16-04【対照】黒い縁取り', [1, 0]],
     ['shd', 'RG-16-04 透明な塗りでも、影が文字を描く', [1, 0]],
     ['bgc', 'RG-16-04 背景を文字型に抜いている', [1, 0]],
-    ['flt', 'RG-16-05 `opacity(0)` の後ろで描き直される', [1, 0]],
+    // ⚠️ v1.8.18 で [1,0] → [0,1] へ書き直した。`url()` の SVG filter は
+    // `SourceGraphic` 以外を入力にでき、出力を完全に透明にもできる（第19回 RG-19-05。
+    // 実測: `feFlood flood-opacity="0"` を指すだけで語の画素は0）。解けない以上
+    // **可視へは昇格させない**ので、後ろに確実に読める同じ語があればそちらへ付く。
+    // RG-16-05 の害（語がどこにも説明されない）は戻っていない——後ろが無ければ
+    // 2周目でここへ付く（`tests/e2e` の「断定できない候補」の試験で固定）。
+    ['flt', 'RG-16-05 / RG-19-05 `opacity(0)` の後ろの `url()` は断定しない', [0, 1]],
     ['flt0', 'RG-16-05【対照】`opacity(0)` だけ', [0, 1]],
     ['ocm', 'RG-16-07 `overflow:hidden` に余白は効かない', [0, 1]],
-    ['ocmc', 'RG-16-07【対照】`overflow:clip` の余白の中', [1, 0]]
+    // ⚠️ v1.8.18 で [1,0] → [0,1] へ書き直した。語（webhook）は
+    // `overflow-clip-margin:100px` の余白の中にあって読めるが、その直後に入る印は
+    // x=176.3 で余白（右端 160）の外にあり、**5点すべてが印に当たらない**のに
+    // `tabIndex:0` で Tab の順路に入っていた（第19回 RG-19-01・実測）。
+    ['ocmc', 'RG-16-07 / RG-19-01 余白の中の語でも、印が外なら残さない', [0, 1]]
   ]) {
     await t.test(why, async () => {
       assert.deepEqual([await nIn(`#h-${id}`), await nIn(`#l-${id}`)], want, why);
@@ -3232,7 +3246,9 @@ test('形と塗りの判定（第18回）', async t => {
     ['bgfar', 'RG-18-04 10000px 先にだけ届く背景の抜き', [0, 1]],
     ['bgnear', 'RG-18-04【対照】語を覆う背景の抜き', [1, 0]],
     ['flt2', 'RG-18-05 `filter` の最後がもう一度 `opacity(0)`', [0, 1]],
-    ['flt1', 'RG-18-05【対照】`filter` の最後が `url()`', [1, 0]],
+    // ⚠️ v1.8.18 で [1,0] → [0,1] へ書き直した（第19回 RG-19-05）。
+    // 解けない `url()` は可視へ昇格させないので、後ろの確実に読める語へ譲る。
+    ['flt1', 'RG-18-05 / RG-19-05 `filter` の最後が `url()` なら断定しない', [0, 1]],
     ['mskx', 'RG-18-05 同じ層を2つ `exclude`（打ち消し合う）', [0, 1]],
     ['mska', 'RG-18-05【対照】同じ層を2つ `add`', [1, 0]]
   ]) {
@@ -3332,4 +3348,249 @@ test('ページ所有の要素には触れない（第18回）', async t => {
   });
 
   await tab.close();
+});
+
+/* ===== 第19回監査への対応（v1.8.18） ===== */
+
+// 前方（読めないはず）と後方（読めるはず）の印の数で見る、という物差しは前巡と同じ。
+async function pair(tab, id) {
+  return [await tab.evaluate(`document.querySelectorAll('#h-${id} [data-iiyaku-key]').length`),
+          await tab.evaluate(`document.querySelectorAll('#l-${id} [data-iiyaku-key]').length`)];
+}
+
+async function openWith(t, page) {
+  const srv = await startTestServer(page);
+  const chrome = await launchChrome({ port: srv.port });
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await chrome.cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(chrome.cdp, PAGE);
+  await waitFor('走査が終わる', async () =>
+    await tab.evaluate(`document.readyState === 'complete'`));
+  await sleep(2500);   // 見た目は走り出しに読み込むので、前巡より少し待つ
+  return { chrome, tab };
+}
+
+test('複数語の用語は、全部の並びが読めるときだけ（第19回）', async t => {
+  const { tab } = await openWith(t, PHRASE19_PAGE);
+
+  await t.test('RG-19-01 `pull` だけ見えて `request` が切り取りの外', async () => {
+    assert.deepEqual(await pair(tab, 'part'), [0, 1],
+      '一部だけ読める用語を可視として扱っている');
+  });
+  await t.test('RG-19-01 切り取りの外に、見えない印が1つも残らない', async () => {
+    // 印が在るなら、その印そのものが実際に描かれていること（当たり判定で見る）
+    const bad = await tab.evaluate(`(() => {
+      const out = [];
+      for (const ic of document.querySelectorAll('[data-iiyaku-key]')) {
+        const b = ic.getBoundingClientRect();
+        if (b.width <= 0 || b.height <= 0) { out.push(['size', ic.dataset.iiyakuKey]); continue; }
+        const pts = [[b.x+b.width/2,b.y+b.height/2],[b.x+1,b.y+1],[b.right-1,b.bottom-1]];
+        if (!pts.some(([x,y]) => ic.contains(document.elementFromPoint(x,y)) ||
+                                 document.elementFromPoint(x,y) === ic)) {
+          out.push(['unpainted', ic.dataset.iiyakuKey, [b.x,b.y,b.width,b.height]]);
+        }
+      }
+      return out;
+    })()`);
+    assert.deepEqual(bad, [], `描かれていない印が残っている: ${JSON.stringify(bad)}`);
+  });
+  await t.test('RG-19-01【対照】折り返しても両方読める用語には付く', async () => {
+    assert.deepEqual(await pair(tab, 'wrap'), [1, 0],
+      '読める用語まで落としている');
+  });
+
+  await tab.close();
+});
+
+test('吸い寄せで止まれない位置は、到達可能としない（第19回）', async t => {
+  const { tab } = await openWith(t, SNAP19_PAGE);
+
+  await t.test('RG-19-02 実効の止まり位置は 0 と 401 だけ', async () => {
+    const eff = await tab.evaluate(`(() => {
+      const sc = document.getElementById('h-snap'); const out = [];
+      for (const want of [0,50,100,150,200,250,300,350,400,401]) {
+        sc.scrollLeft = want; out.push(Math.round(sc.scrollLeft));
+      }
+      sc.scrollLeft = 0; return [...new Set(out)].sort((a,b)=>a-b);
+    })()`);
+    assert.deepEqual(eff, [0, 401], `実効の止まり位置が想定と違う: ${JSON.stringify(eff)}`);
+  });
+  await t.test('RG-19-02 どの止まり位置でも読めない語', async () => {
+    assert.deepEqual(await pair(tab, 'snap'), [0, 1],
+      '止まれない中間位置を到達可能として扱っている');
+  });
+  await t.test('RG-19-02【対照】吸い寄せが無ければ、途中でも読める', async () => {
+    assert.deepEqual(await pair(tab, 'free'), [1, 0],
+      'スクロールで出せる語まで落としている');
+  });
+
+  await tab.close();
+});
+
+test('変形前へ戻せない角度では、断定しない（第19回）', async t => {
+  const { tab } = await openWith(t, TRANS19_PAGE);
+
+  await t.test('RG-19-03 ちょうど45°の形の外', async () => {
+    assert.deepEqual(await pair(tab, '45out'), [0, 1],
+      '広い平行四辺形で代用して、形の外の語を拾っている');
+  });
+  await t.test('RG-19-03【対照】44.9°なら形の外を落とせる', async () => {
+    assert.deepEqual(await pair(tab, '449out'), [0, 1]);
+  });
+  await t.test('RG-19-03【対照】44.9°の形の中には付く', async () => {
+    assert.deepEqual(await pair(tab, '449in'), [1, 0],
+      '解ける角度まで断定できないことにしている');
+  });
+
+  await tab.close();
+});
+
+test('塗りの判定（第19回）', async t => {
+  const { tab } = await openWith(t, PAINT19_PAGE);
+
+  for (const [id, why, want] of [
+    ['bgauto',   'RG-19-04 1×1 の画像を `background-size:auto` で置いただけ', [0, 1]],
+    ['bgrep',    'RG-19-04【対照】同じ画像を繰り返して覆う',                  [1, 0]],
+    ['bggrad',   'RG-19-04【対照】gradient の auto は領域いっぱい',           [1, 0]],
+    ['fltnone',  'RG-19-05 透明な出力を作る filter の `url()`',              [0, 1]],
+    ['msklum',   'RG-19-05 `mask-mode:luminance` の黒',                      [0, 1]],
+    ['mskalpha', 'RG-19-05【対照】`mask-mode:alpha` の黒',                    [1, 0]],
+    ['msklumw',  'RG-19-05【対照】`mask-mode:luminance` の白',                [1, 0]]
+  ]) {
+    await t.test(why, async () => {
+      assert.deepEqual(await pair(tab, id), want, why);
+    });
+  }
+
+  await tab.close();
+});
+
+test('レイヤー名を狙って合わせられても、ページの指定は無傷（第19回）', async t => {
+  const { tab } = await openWith(t, LAYER19_PAGE);
+
+  await t.test('RG-19-06 ページ所有の要素の見え方が、1つも変わらない', async () => {
+    const got = await tab.evaluate(`(() => { const c = getComputedStyle(document.getElementById('pageown'));
+      return { display:c.display, color:c.color, width:c.width, height:c.height,
+               z:c.zIndex, bg:c.backgroundColor }; })()`);
+    assert.deepEqual(got, { display: 'grid', color: 'rgb(255, 0, 0)', width: '140px',
+                            height: '30px', z: '5', bg: 'rgb(255, 255, 0)' },
+      'ページ自身の指定が差し戻されている');
+  });
+  await t.test('RG-19-06 レイヤー名が読み込みごとに変わっている', async () => {
+    // ⚠️ ページ側も同じ固定名を宣言している見本なので、**自分が入れた stylesheet
+    // だけ**を見る（最初、ページの宣言を自分のものと数えて誤判定した）。
+    const got = await tab.evaluate(`(() => {
+      for (const s of document.styleSheets) {
+        let rs; try { rs = s.cssRules; } catch (e) { continue; }
+        const texts = [...(rs || [])].map(r => r.cssText || '');
+        const decl = texts.find(t => /^@layer iiyaku-[a-z0-9]{8}-look, iiyaku-[a-z0-9]{8}-scope;/.test(t));
+        if (decl) return { decl, fixed: texts.filter(t => /repogloss-e7b41d/.test(t)).length };
+      }
+      return null;
+    })()`);
+    assert.ok(got, '合言葉つきのレイヤー宣言を入れていない');
+    assert.equal(got.fixed, 0, '自分の stylesheet に固定名のレイヤーが残っている');
+  });
+  await t.test('RG-19-06 印そのものは、ちゃんと見えている', async () => {
+    const n = await tab.evaluate(`document.querySelectorAll('#src [data-iiyaku-key]').length`);
+    assert.equal(n, 1, 'ページの規則を避けた結果、自分の印まで出なくなっている');
+  });
+
+  await tab.close();
+});
+
+test('控えの見直しは、状態が変わらなければ繰り返さない（第19回）', async t => {
+  // ⚠️ 計測器は**隔離された世界の中**へ入れる。ページ側から
+  // `Element.prototype.checkVisibility` を包んでも、content script は別の世界で
+  // 動くので1回も数えられない（最初これで v1.8.17 も v1.8.18 も 0 回と誤測した）。
+  const srv = await startTestServer(latentPage(2000));
+  const chrome = await launchChrome({ port: srv.port });
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await chrome.cdp.send('Extensions.loadUnpacked', {
+    path: stageExtensionWith({ 'latent-probe.js': 'tests/e2e/latent-probe.js' },
+      js => ['latent-probe.js', ...js]) });
+  const tab = await openPage(chrome.cdp, PAGE);
+  const get = k => tab.evaluate(`localStorage.getItem(${JSON.stringify('rg-' + k)})`);
+  await waitFor('拡張が印を付ける', async () =>
+    await tab.evaluate(`document.querySelectorAll('.iiyaku-icon').length`) > 0, { timeout: 60000 });
+  await sleep(2500);
+
+  await t.test('RG-19-08 数えている道具そのものが効いている（陽性対照）', async () => {
+    assert.equal(await get('cv-selftest'), '1',
+      '隔離された世界の中で checkVisibility を包めていない');
+  });
+
+  // 何も変わらないまま、カーソルが要素の境目を10回またぐ
+  await tab.evaluate(`localStorage.setItem('rg-cv-reset','1'); true`);
+  await sleep(200);
+  const before = Number(await get('cv'));
+  await tab.evaluate(`(() => {
+    const a = document.getElementById('before'), b = document.body;
+    for (let i = 0; i < 10; i++) {
+      (i % 2 ? b : a).dispatchEvent(new PointerEvent('pointerout', { bubbles: true, composed: true }));
+      (i % 2 ? a : b).dispatchEvent(new PointerEvent('pointerover', { bubbles: true, composed: true }));
+    }
+    return true;
+  })()`);
+  await sleep(1500);
+  const moves = Number(await get('cv')) - before;
+
+  await t.test('RG-19-08 無関係なカーソル移動が、控えの見直しを増やさない', () => {
+    // 実測（2,000候補・10移動・同じ計測器）:
+    //   v1.8.17 = 6,009 回（≒3N。カーソルの合図ごとに全件を回していた）
+    //   v1.8.18 = 2,003 回（≒N。残るのは2秒ごとの確認1回ぶんだけ）
+    // しきい値は 1.5N に置く（2,003 < 3,000 < 6,009 で、両者をはっきり分ける）。
+    assert.ok(moves < 3000,
+      `カーソルの合図ごとに控え全件を回しているように見える: ${moves} 回`
+      + '（2,000候補・10移動。v1.8.17 は 6,009 回・v1.8.18 は 2,003 回）');
+  });
+
+  await tab.close();
+});
+
+test('起動段階だけを試し直す（第19回 RG-19-09）', async t => {
+  await t.test('試し直してよいのは Extensions.loadUnpacked だけ', () => {
+    assert.deepEqual([...STARTUP_METHODS], ['Extensions.loadUnpacked']);
+  });
+
+  await t.test('1回目が落ちても、2回目で成功する', async () => {
+    let calls = 0;
+    const logs = [];
+    const r = await retryStartup('Extensions.loadUnpacked', async () => {
+      if (++calls === 1) throw new Error('CDP タイムアウト: Extensions.loadUnpacked');
+      return { id: 'ok' };
+    }, () => ({ pid: 1, killed: false, exitCode: null, pending: ['Extensions.loadUnpacked'], stderr: 'x' }),
+       { log: m => logs.push(m) });
+    assert.deepEqual(r, { id: 'ok' });
+    assert.equal(calls, 2);
+    assert.ok(logs.some(m => m.includes('起動段階だけ試し直します')), '診断を出していない');
+    assert.ok(logs.some(m => m.includes('CDP の待ち')), '待ちを残していない');
+  });
+
+  await t.test('2回とも落ちれば、失敗のまま返す（緑に化けない）', async () => {
+    let calls = 0;
+    await assert.rejects(() => retryStartup('Extensions.loadUnpacked', async () => {
+      calls++; throw new Error('CDP タイムアウト: Extensions.loadUnpacked');
+    }, () => ({ pid: 1, killed: false, exitCode: null, pending: [], stderr: '' }),
+       { log: () => {} }), /CDP タイムアウト/);
+    assert.equal(calls, 2, '試す回数が想定と違う');
+  });
+
+  await t.test('Chrome が死んでいたら試し直さない', async () => {
+    let calls = 0;
+    await assert.rejects(() => retryStartup('Extensions.loadUnpacked', async () => {
+      calls++; throw new Error('Chrome が終了した');
+    }, () => ({ pid: 1, killed: true, exitCode: 1, pending: [], stderr: 'crash' }),
+       { log: () => {} }), /Chrome が終了した/);
+    assert.equal(calls, 1, '死んだ Chrome へ何度も投げている');
+  });
+
+  await t.test('診断には、経過・待ち・stderr がそろっている', () => {
+    const s = startupDiagText('Extensions.loadUnpacked', 0, 1, 28360,
+      new Error('CDP タイムアウト: Extensions.loadUnpacked'),
+      { pid: 42, killed: false, exitCode: null, pending: ['Extensions.loadUnpacked'], stderr: 'boom' });
+    for (const want of ['28360ms', 'pid=42', 'Extensions.loadUnpacked', 'boom', '1 / 2']) {
+      assert.ok(s.includes(want), `診断に ${want} が無い:\n${s}`);
+    }
+  });
 });

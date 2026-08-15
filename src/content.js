@@ -2920,14 +2920,43 @@
   // 見張りでは気づけない（第20回 RG-20-06。実測: 起動後に `insertRule` で足した
   // `:hover` メニューが、2秒ごとの確認まで説明されなかった）。
   // 枚数と規則の数だけを読む（各 stylesheet の `cssRules.length` は走査を伴わない）。
+  // ⚠️ **件数の和だけでは、同数の差し替えを見逃す**（第21回 RG-21-04）。実測:
+  // 1つの規則の `selectorText` を `:hover` の規則へ差し替えると、枚数も規則数も
+  // 変わらないので気づけず、その語は**2秒ごとの確認まで説明されなかった**
+  // （300ms・600ms で印0、2,400ms でようやく1）。
+  // 選択子・条件・入れ子の数まで混ぜた**構造の指紋**にする。
+  // ⚠️ 走査は費用がかかるので、**直前の指紋を短い窓のあいだ使い回す**
+  // （カーソルの間引きが 150〜300ms なので、それより短い窓に留める）。
+  const PRINT_GAP = 120;
+  const PRINT_SCAN_MAX = 20000;
+  let printAt = -1, printVal = -1;
+  function hashStr(h, s) {
+    for (let i = 0; i < s.length; i++) h = (h * 33 ^ s.charCodeAt(i)) >>> 0;
+    return h;
+  }
   function styleFingerprint() {
-    let n = 0, sum = 0;
+    const now = performance.now();
+    if (printVal !== -1 && now - printAt < PRINT_GAP) return printVal;
+    let h = 2166136261, seen = 0;
     for (const sheet of document.styleSheets) {
-      n++;
-      try { sum += sheet.cssRules ? sheet.cssRules.length : 0; }
-      catch (e) { sum += 1; }                 // 読めない sheet は定数として数える
+      h = (h * 33 ^ 0x9e37) >>> 0;                       // 枚の区切り
+      let rules;
+      try { rules = sheet.cssRules; } catch (e) { h = hashStr(h, 'opaque'); continue; }
+      if (!rules) continue;
+      const stack = [rules];
+      while (stack.length) {
+        const rs = stack.pop();
+        h = (h * 33 ^ rs.length) >>> 0;
+        for (const r of rs) {
+          if (++seen > PRINT_SCAN_MAX) { stack.length = 0; break; }
+          if (r.selectorText) h = hashStr(h, r.selectorText);
+          else if (r.conditionText) h = hashStr(h, r.conditionText);
+          if (r.cssRules) stack.push(r.cssRules);
+        }
+      }
     }
-    return n * 1000003 + sum;
+    printAt = now; printVal = h;
+    return h;
   }
 
   let hoverCssSerial = -1, hoverCssPrint = -1, hoverCssHas = true;
@@ -3271,7 +3300,7 @@
     return body + '\n' + off;
   }
 
-  let ownStyleRuleCount = -1;
+  let ownStyleDigest = -1;
 
   function scopeOwnStyle() {
     try {
@@ -3280,17 +3309,30 @@
       st.textContent = ownStyleText;
       (document.head || document.documentElement).appendChild(st);
       ownStyle = st;
-      // 入れた直後の規則の数を控える（→ ensureOwnStyle が生きた規則と突き合わせる）
-      ownStyleRuleCount = liveRuleCount(st);
+      // 入れた直後の**規則の中身**を控える（→ ensureOwnStyle が生きた規則と突き合わせる）
+      ownStyleDigest = ruleDigest(st);
     } catch (e) {
       // 足せなくても本体の動作は変わらない（複製は sanitizeClones が無力化する）
       console.error('[iiyaku] 見た目を足せません:', e);
     }
   }
 
-  function liveRuleCount(st) {
-    try { return (st.sheet && st.sheet.cssRules) ? st.sheet.cssRules.length : -1; }
-    catch (e) { return -1; }
+  // 生きている規則の**中身**をたどって1つの値にする。自分の style は3規則しかないので
+  // 全量で構わない。⚠️ 規則の数だけでは足りない（第21回 RG-21-04。実測: 規則数も
+  // `textContent` も変えずに `opacity:0!important` を1つ足されると、印は退役して
+  // 消えたのに style は直されなかった）。
+  function ruleDigest(st) {
+    try {
+      const sheet = st.sheet;
+      if (!sheet || !sheet.cssRules) return -1;
+      let h = 2166136261;
+      const walk = rs => {
+        h = (h * 33 ^ rs.length) >>> 0;
+        for (const r of rs) { h = hashStr(h, r.cssText || ''); if (r.cssRules) walk(r.cssRules); }
+      };
+      walk(sheet.cssRules);
+      return h;
+    } catch (e) { return -1; }
   }
 
   // ページ側が消したら足し直す。消されたままだと、複製や同名要素へ自分の見た目が戻る。
@@ -3300,10 +3342,10 @@
     // 自分の style の規則を3つとも消しても文字列は 7,943 文字のままで、
     // 規則0件の style を正常と判定していた。印は装飾を失い幅0になる）。
     if (ownStyle && ownStyle.isConnected && ownStyle.textContent === ownStyleText
-        && (ownStyleRuleCount < 0 || liveRuleCount(ownStyle) === ownStyleRuleCount)) return;
+        && (ownStyleDigest < 0 || ruleDigest(ownStyle) === ownStyleDigest)) return;
     if (ownStyle && ownStyle.isConnected) removeOwn(ownStyle);
     ownStyle = null;
-    ownStyleRuleCount = -1;
+    ownStyleDigest = -1;
     scopeOwnStyle();
   }
 

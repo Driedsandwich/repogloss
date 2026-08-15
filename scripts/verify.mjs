@@ -590,9 +590,13 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     /function styleFingerprint/.test(code) && /hoverCssPrint/.test(code),
     'insertRule で足した hover 規則に気づけない');
   // RG-20-07 自前 style の生きた規則を見る
-  check('自前 style の生きた規則の数も見ている',
-    /function liveRuleCount/.test(code) && /liveRuleCount\(ownStyle\) === ownStyleRuleCount/.test(code),
-    'deleteRule で規則を消されても直さない');
+  // ⚠️ v1.8.19 は**規則の数**しか見ていなかった。数も `textContent` も変えずに
+  // `opacity:0!important` を1つ足されると直せず、印は消えたままだった
+  // （第21回 RG-21-04）。中身をたどった値で突き合わせる。
+  check('自前 style の生きた規則の中身も見ている（第21回 RG-21-04）',
+    /function ruleDigest/.test(code) && /ruleDigest\(ownStyle\) === ownStyleDigest/.test(code) &&
+    /h = hashStr\(h, r\.cssText \|\| ''\);/.test(code),
+    'deleteRule や宣言の書き換えで印が消えても直さない');
   // RG-20-09 擬似クラスの状態
   check('擬似クラスの状態を覚えて、同じ状態では測り直さない',
     /function pseudoStateKey/.test(code) && /if \(doneStates\.has\(key\)\) return;/.test(code) &&

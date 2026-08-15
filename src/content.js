@@ -694,32 +694,62 @@
   // 読みに行けば新しい通信になるので、**断定せず 'unknown' を返す**。
   // gradient の auto は領域いっぱいなので、そちらは今までどおり解ける。
   //   true … 届く／false … 届かない／'unknown' … 断定できない
+  // ⚠️ **層は同じ番号どうしで対応する**（第20回 RG-20-05）。以前は2つ間違えていた:
+  //   ① `background-size` が `auto` 以外なら即「届く」としていた。実測: 明示 1px×1px の
+  //      背景を `no-repeat` で置いた語は0画素なのに印が付いた
+  //   ② `background-clip` を層ごとに見ず、文字列全体で `=== 'text'` を見ていた。実測:
+  //      1層目だけが `text` の見本で、語は 374画素描かれているのに落としていた
+  // `image / size / position / repeat / origin / clip` を同じ層番号で対応付け、
+  // 明示の寸法は実寸へ解いて語の矩形と交わるかを見る。
+  //   true … 届く／false … 届かない／'unknown' … 断定できない
   function bgClipTextPaintsAt(el, cs, rect) {
-    if (!TRANSPARENT.test(cs.backgroundColor || '')) return true;   // 背景色は全面を覆う
+    const at = (v, i, d) => { const a = splitTopLevel(v || d).map(x => x.trim());
+                              return a[i % a.length] || d; };
+    const clipAll0 = cs.backgroundClip || cs.webkitBackgroundClip || 'border-box';
+    const clipList = splitTopLevel(clipAll0).map(x => x.trim());
+    // `background-color` はいちばん下に敷かれ、**最後の層の clip** で抜かれる。
+    // そこが `text` で色が不透明なら、文字は全面が塗られる。
+    if (clipList[clipList.length - 1] === 'text' && !TRANSPARENT.test(cs.backgroundColor || '')) return true;
     const img = cs.backgroundImage;
     if (!img || img === 'none') return false;
     const layers = splitTopLevel(img).map(x => x.trim());
-    const rep = splitTopLevel(cs.backgroundRepeat || 'repeat').map(x => x.trim());
-    const pos = splitTopLevel(cs.backgroundPosition || '0% 0%').map(x => x.trim());
-    const size = splitTopLevel(cs.backgroundSize || 'auto').map(x => x.trim());
     const origin = cs.backgroundOrigin || 'padding-box';
     const area = refBoxRect(cs, el.getBoundingClientRect(), false,
                             origin === 'content-box' ? 'content-box'
                           : origin === 'border-box' ? 'border-box' : 'padding-box');
+    const aw = area.x2 - area.x1, ah = area.y2 - area.y1;
+    const clipAll = clipAll0;
     let unknown = false;
     for (let i = 0; i < layers.length; i++) {
+      // ② その層が文字型に抜かれていなければ、文字は描かない
+      if (at(clipAll, i, 'border-box') !== 'text') continue;
       if (isFullyTransparentGradient(layers[i])) continue;
-      const r = rep[i % rep.length] || 'repeat';
+      const r = at(cs.backgroundRepeat, i, 'repeat');
       if (!/no-repeat/.test(r)) return true;                        // 繰り返せば全面に届く
-      const sz = size[i % size.length] || 'auto';
-      if (sz !== 'auto') return true;                               // 寸法は解かない＝届く側へ
-      if (!isGradientLayer(layers[i])) { unknown = true; continue; } // 自然寸法が分からない
-      const pv = (pos[i % pos.length] || '0px 0px').split(/\s+/);
-      const px0 = lenToPx(pv[0], (area.x2 - area.x1) - (area.x2 - area.x1));
-      const py0 = lenToPx(pv[1] !== undefined ? pv[1] : '50%', 0);
-      if (px0 === null || py0 === null) return true;                // 読めない＝届く側へ
+      // ① 塗る箱の寸法を出す
+      const sz = at(cs.backgroundSize, i, 'auto');
+      let bw, bh;
+      if (sz === 'auto' || sz === 'auto auto') {
+        if (!isGradientLayer(layers[i])) { unknown = true; continue; }  // 画像の自然寸法は解けない
+        bw = aw; bh = ah;                                           // gradient の auto は領域いっぱい
+      } else if (/^(cover|contain)$/.test(sz)) {
+        if (!isGradientLayer(layers[i])) { unknown = true; continue; }  // 自然比が要る
+        bw = aw; bh = ah;
+      } else {
+        const parts = sz.split(/\s+/);
+        bw = lenToPx(parts[0], aw);
+        bh = parts[1] === undefined || parts[1] === 'auto'
+          ? (isGradientLayer(layers[i]) ? ah : null) : lenToPx(parts[1], ah);
+        if (parts[0] === 'auto') bw = isGradientLayer(layers[i]) ? aw : null;
+        if (bw === null || bh === null) { unknown = true; continue; }
+      }
+      // 置く場所
+      const pv = at(cs.backgroundPosition, i, '0% 0%').split(/\s+/);
+      const px0 = lenToPx(pv[0], aw - bw);
+      const py0 = lenToPx(pv[1] !== undefined ? pv[1] : '50%', ah - bh);
+      if (px0 === null || py0 === null) { unknown = true; continue; }
       const box = { x1: area.x1 + px0, y1: area.y1 + py0,
-                    x2: area.x1 + px0 + (area.x2 - area.x1), y2: area.y1 + py0 + (area.y2 - area.y1) };
+                    x2: area.x1 + px0 + bw, y2: area.y1 + py0 + bh };
       if (rect.right > box.x1 && rect.left < box.x2 && rect.bottom > box.y1 && rect.top < box.y2) return true;
     }
     return unknown ? 'unknown' : false;
@@ -740,9 +770,11 @@
     if (sw > 0 && !TRANSPARENT.test(sc)) return true;
     // ② 影。色と**ずらし量**を見る
     if (shadowPaintsAt(cs.textShadow, rect)) return true;
-    // ③ 背景を文字型に抜く指定。塗りが語の位置に届くかを見る
-    const bc = cs.backgroundClip || cs.webkitBackgroundClip;
-    if (bc === 'text') {
+    // ③ 背景を文字型に抜く指定。塗りが語の位置に届くかを見る。
+    // ⚠️ 入口も**層ごと**に見る（第20回 RG-20-05）。文字列全体で `=== 'text'` を
+    // 見ていたため、`background-clip: text, border-box` の見本を素通りしていた。
+    const bc = cs.backgroundClip || cs.webkitBackgroundClip || '';
+    if (splitTopLevel(bc).some(x => x.trim() === 'text')) {
       const s = bgClipTextPaintsAt(el, cs, rect);
       if (s !== false) return s;                                    // true か 'unknown'
     }

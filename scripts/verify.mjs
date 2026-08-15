@@ -552,6 +552,14 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     code.includes(String.raw`/^\s*(-webkit-)?(image-set\()?\s*url\(\s*["']?#/.test(layer)`) &&
     code.includes(`return mode === 'luminance' ? 'unknown' : 'shown';`),
     'match-source の SVG mask（mask-type:luminance）を可視と答える');
+  // RG-20-05 背景は層ごとに対応付ける
+  check('背景の層を、同じ番号どうしで対応付けている',
+    /const at = \(v, i, d\) =>/.test(code) &&
+    /if \(at\(clipAll, i, 'border-box'\) !== 'text'\) continue;/.test(code),
+    '複数層のうち1層だけが文字型に抜く場合を取り違える');
+  check('明示された背景の寸法を、実寸へ解いている',
+    /bw = lenToPx\(parts\[0\], aw\);/.test(code) && !/if \(sz !== 'auto'\) return true;/.test(code),
+    '1px の背景でも「届く」と答える');
 
   /* ---------- 第19回で足した不変条件 ---------- */
   // RG-19-01 複数語の用語は、**全部の並び**が読めるときだけ可視

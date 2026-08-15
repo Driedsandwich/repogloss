@@ -491,6 +491,16 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   check('断定できない候補で、その語を使い切らない',
     /let acceptUnknown = false/.test(code) && /unknownNodes/.test(code),
     '前方の断定できない候補が、後ろの確実に見える語を抑止する');
+
+  /* ---------- 第19回で足した不変条件 ---------- */
+  // RG-19-01 複数語の用語は、**全部の並び**が読めるときだけ可視
+  check('語の矩形を、並びごとに分けて持っている',
+    /function rangeRuns/.test(code) && !/function rangeRects/.test(code),
+    '1つへ潰すと「どれか1つ見えれば可視」になる');
+  check('全部の並びが読めることを求めている',
+    /for \(const rects of runs\) \{[\s\S]{0,200}?const s = runState\(rects\);[\s\S]{0,120}?if \(s === false\) return false;/.test(code) &&
+    !/rects\.some\(r => inClip\(r\)/.test(code),
+    '`pull request` の `pull` だけ見えていても用語全体を可視と答える');
   check('絶対配置が切り取りから逃げることを見ている',
     /function establishesContainingBlock/.test(code) && /function positionEscape/.test(code),
     '包含ブロックでない祖先の切り取りで、読める語を落とす');

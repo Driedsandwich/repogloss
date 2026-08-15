@@ -1082,12 +1082,22 @@
   // 切り取りの外なのに、空白ぶんの幅が形の中を横切って可視と答えていた
   // （実測: `word-spacing:70px` の見本で、語の画素は0なのに印が付いた）。
   // 空白で切って、**塗りのある並びごと**に矩形を取る。
+  //
+  // ⚠️ 並びは**まとめずに、並びごとに分けて**返す（第19回 RG-19-01）。1つの配列へ
+  // 平らにしていたため、「どれか1つの矩形が通れば可視」で用語全体を可視と答えて
+  // いた。`pull request` の `pull` だけが見えて `request` が切り取りの外にある見本で、
+  // 用語の意味が読めないのに印が付き、その印自体も切り取りの外にあって見えない
+  // Tab の停止点になっていた（実測: `pull` 158画素・`request` 0画素・切り取りの
+  // 右端 35px に対し印は x=93.8）。
   const SPACE = /\s/;
-  function rangeRects(node, start, end) {
-    const out = [];
-    const add = r => { for (const x of r.getClientRects()) if (x.width > 0 && x.height > 0) out.push(x); };
+  function rangeRuns(node, start, end) {
+    const runs = [];
+    const add = r => {
+      const rects = [...r.getClientRects()].filter(x => x.width > 0 && x.height > 0);
+      if (rects.length) runs.push(rects);
+    };
     if (start === null) {
-      const r = document.createRange(); r.selectNodeContents(node); add(r); return out;
+      const r = document.createRange(); r.selectNodeContents(node); add(r); return runs;
     }
     const text = node.nodeValue || '';
     let i = start;
@@ -1098,7 +1108,7 @@
       if (j > i) { const r = document.createRange(); r.setStart(node, i); r.setEnd(node, j); add(r); }
       i = j;
     }
-    return out;
+    return runs;
   }
 
   // **その語**が、切り取りを越えて実際に描かれているか。
@@ -1112,25 +1122,50 @@
     const chain = paintChain(el, 'none');
     if (chain.hidden) return false;
     if (rectIsEmpty(chain.clip)) return false;
-    const rects = rangeRects(node, start, end);
-    if (rects.length === 0) return false;
-    // 文字の塗りは**語の位置**で見る（影のずらし・背景の位置がここに効く）
+    const runs = rangeRuns(node, start, end);
+    if (runs.length === 0) return false;
     const cs = getComputedStyle(el);
-    if (rects.every(r => textIsInvisible(cs, el, r))) return false;
-    // **同じ断片が、全部の条件を通ること**を求める。条件ごとに「どれか1つの断片が
-    // 通るか」を見ていたため、断片Aが形Aだけ・断片Bが形Bだけを通る場合に、
-    // どの断片も全部は通っていないのに合格していた（第15回 RG-15-03）。
     const c = chain.clip;
     const inClip = r => !c || (Math.min(r.right, c.x2) - Math.max(r.left, c.x1) > 1 &&
                                Math.min(r.bottom, c.y2) - Math.max(r.top, c.y1) > 1);
+    // **同じ断片が、全部の条件を通ること**を求める。条件ごとに「どれか1つの断片が
+    // 通るか」を見ていたため、断片Aが形Aだけ・断片Bが形Bだけを通る場合に、
+    // どの断片も全部は通っていないのに合格していた（第15回 RG-15-03）。
     // 画面（または動かせる範囲）の外にある語は、読めないしスクロールでも出せない。
     // スクロールできる入れ物の中なら、その入れ物を動かせる範囲で見る。ただし
     // **入れ物そのものが文書のどこにも出せない**なら、中身も出せない。
-    const inReach = r => reachable(r, chain);
-    const ok = rects.some(r => inClip(r) && inReach(r) && chain.tests.every(t => t(r)));
+    //   true … 確実に読める／false … 確実に読めない／'unknown' … 断定できない
+      const rectState = r => {
+        if (!inClip(r)) return false;
+        if (!reachable(r, chain)) return false;
+        let u = false;
+        for (const t of chain.tests) {
+          if (t(r) === false) return false;
+        }
+        // 文字の塗りは**語の位置**で見る（影のずらし・背景の位置がここに効く）
+        if (textIsInvisible(cs, el, r)) return false;
+        return u ? 'unknown' : true;
+      };
+    // 1つの並びは、**どれか1つの断片**が通れば読める（折り返しても読める）。
+    const runState = rects => {
+      let best = false;
+      for (const r of rects) {
+        const s = rectState(r);
+        if (s === true) return true;
+        if (s === 'unknown') best = 'unknown';
+      }
+      return best;
+    };
+    let unknown = chain.paintUnknown;
+    // **全部の並び**が読めることを求める（第19回 RG-19-01）。
+    for (const rects of runs) {
+      const s = runState(rects);
+      if (s === false) return false;
+      if (s === 'unknown') unknown = true;
+    }
     // 解けない描画効果があるときは「見える」と断定しない。後ろに確実に見える同じ語が
     // あればそちらへ付ける（第18回 RG-18-04 / RG-18-05）。
-    return ok ? (chain.paintUnknown ? 'unknown' : true) : false;
+      return unknown ? 'unknown' : true;
   }
 
   // 文書そのものの枠（画面）と、そこで動かせる量。

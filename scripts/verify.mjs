@@ -482,8 +482,13 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     /isFullyTransparentGradient/.test(code));
   // filter は最後まで見る。最初の opacity(0) で打ち切ると、後ろの opacity(0) を見落とす
   check('filter の並びを最後までたどっている',
-    /for \(const f of fns\) \{\s*\n\s*if \(FILTER_OPACITY_ZERO\.test\(f\)\) zero = true;/.test(code),
+    /for \(const f of fns\) \{\s*\n\s*if \(FILTER_OPACITY_ZERO\.test\(f\)\) state = 'hidden';/.test(code),
     '`opacity(0) url(#f) opacity(0)` を可視と答える');
+  // 解けない filter URL は、可視へ**昇格させない**（第19回 RG-19-05）
+  check('解けない filter URL を可視へ戻していない',
+    /\/\^url\\\(\/i\.test\(f\)\) state = 'unknown'/.test(code) &&
+    !/\/\^url\\\(\/\.test\(f\)\) zero = false/.test(code),
+    '透明な出力を作る SVG filter の語を可視と答える');
   // 合成の演算は解かない。足し合わせ以外は「断定できない」として後回しにする
   check('mask の合成が足し合わせ以外なら、断定しない',
     /function maskState/.test(code) && /allAdd/.test(code) && /'unknown'/.test(code),
@@ -530,6 +535,14 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     /if \(!isGradientLayer\(layers\[i\]\)\) \{ unknown = true; continue; \}/.test(code) &&
     /function isGradientLayer|const isGradientLayer/.test(code),
     '1×1 の画像を段落いっぱいの塗りとして扱う');
+  // RG-19-05 mask-mode を層ごとに見る
+  check('mask-mode を層ごとに見ている',
+    /function maskLayerState/.test(code) && /mode !== 'luminance'/.test(code) &&
+    /cs\.maskMode/.test(code),
+    'luminance の黒（＝完全に消える）を可視として扱う');
+  check('明るさを色から出している',
+    /function luminanceOf/.test(code) && /0\.2126/.test(code) && /0\.7152/.test(code),
+    'luminance の判定ができない');
   check('絶対配置が切り取りから逃げることを見ている',
     /function establishesContainingBlock/.test(code) && /function positionEscape/.test(code),
     '包含ブロックでない祖先の切り取りで、読める語を落とす');

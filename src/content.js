@@ -752,15 +752,48 @@
   //   その他     … 透明な入力は透明のまま返す（断定は変わらない）
   // 最後まで見て「確実に0」のときだけ消えていると言う。`url()` で描き直された先は
   // 見えているかもしれないので、そこは可視の側へ倒す（断定しない）。
+  // ⚠️ `url()` を見たら「見えている」へ**戻して**いた（第19回 RG-19-05）。SVG の
+  // filter は `SourceGraphic` 以外を入力にでき、出力は何にでもなる——完全に透明にも
+  // できる（実測: `feFlood flood-opacity="0"` を指すだけの filter で、語の画素は0
+  // なのに印が付いた）。**解けないものは「断定できない」**として、可視へは昇格しない。
   function filterState(v) {
     const fns = v.match(/[a-zA-Z-]+\([^()]*(\([^()]*\)[^()]*)*\)/g);
     if (!fns) return 'shown';
-    let zero = false;
+    let state = 'shown';
     for (const f of fns) {
-      if (FILTER_OPACITY_ZERO.test(f)) zero = true;
-      else if (/^url\(/.test(f)) zero = false;
+      if (FILTER_OPACITY_ZERO.test(f)) state = 'hidden';   // ここで確実に 0 になる
+      else if (/^url\(/i.test(f)) state = 'unknown';       // 何を描くか解けない
     }
-    return zero ? 'hidden' : 'shown';
+    return state;
+  }
+
+  // 色の明るさ（0〜1）。透明なら 0。読めなければ null。
+  function luminanceOf(c) {
+    const n = (c.match(/[\d.]+/g) || []).map(parseFloat);
+    if (n.length < 3) return null;
+    const a = n.length > 3 ? n[3] : 1;
+    if (a === 0) return 0;
+    return (0.2126 * n[0] + 0.7152 * n[1] + 0.0722 * n[2]) / 255 * a;
+  }
+
+  // 覆いの1層が、その場所を残すか。
+  //   'shown' … 残る／'hidden' … 消える／'unknown' … 断定できない
+  // ⚠️ `mask-mode` を見ていなかった（第19回 RG-19-05）。`luminance` では色の明るさが
+  // 覆いの値になるので、**黒は 0＝完全に消える**。alpha では黒も不透明なので残る。
+  // 既定の `match-source` は、画像・gradient に対しては alpha として働く。
+  function maskLayerState(layer, mode) {
+    if (isFullyTransparentGradient(layer)) return 'hidden';   // alpha 0 はどちらの解釈でも 0
+    if (mode !== 'luminance') return 'shown';
+    if (!isGradientLayer(layer)) return 'unknown';            // 画像の明るさは解けない
+    const colors = layer.match(/rgba?\([^)]*\)/g);
+    if (!colors || !colors.length) return 'unknown';
+    let best = 0;
+    for (const c of colors) {
+      const l = luminanceOf(c);
+      if (l === null) return 'unknown';
+      if (l > best) best = l;
+    }
+    return best > 0 ? 'shown' : 'hidden';
   }
 
   // `mask-image` は**層の並び**で、カンマ区切りの各層を合成した結果が最終の覆いになる。
@@ -780,7 +813,15 @@
     const comp = splitTopLevel(cs.maskComposite || cs.webkitMaskComposite || 'add').map(x => x.trim());
     const allAdd = comp.every(c => c === '' || c === 'add' || c === 'source-over');
     if (!allAdd) return 'unknown';
-    return layers.every(l => isFullyTransparentGradient(l)) ? 'hidden' : 'shown';
+    // 層ごとに `mask-mode` を見る。足し合わせなので、1層でも残せば残る。
+    const modes = splitTopLevel(cs.maskMode || cs.webkitMaskSourceType || 'match-source').map(x => x.trim());
+    let unknown = false;
+    for (let i = 0; i < layers.length; i++) {
+      const s = maskLayerState(layers[i], modes[i % modes.length] || 'match-source');
+      if (s === 'shown') return 'shown';
+      if (s === 'unknown') unknown = true;
+    }
+    return unknown ? 'unknown' : 'hidden';
   }
 
   // カンマで切る。ただし `rgba(…)` や `url(…)` の中のカンマでは切らない。

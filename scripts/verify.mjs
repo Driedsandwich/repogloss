@@ -560,6 +560,10 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   check('明示された背景の寸法を、実寸へ解いている',
     /bw = lenToPx\(parts\[0\], aw\);/.test(code) && !/if \(sz !== 'auto'\) return true;/.test(code),
     '1px の背景でも「届く」と答える');
+  // RG-20-06 CSSOM の変更を見る
+  check('stylesheet の形の指紋を見ている',
+    /function styleFingerprint/.test(code) && /hoverCssPrint/.test(code),
+    'insertRule で足した hover 規則に気づけない');
 
   /* ---------- 第19回で足した不変条件 ---------- */
   // RG-19-01 複数語の用語は、**全部の並び**が読めるときだけ可視

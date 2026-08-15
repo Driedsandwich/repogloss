@@ -2864,10 +2864,28 @@
   // ⚠️ **自分の stylesheet は数えない**（`:hover` / `:focus-visible` を持っている）。
   const HOVERISH = /:hover|:focus|:focus-within|:focus-visible|:active|:has\(/i;
   const RULE_SCAN_MAX = 20000;
-  let hoverCssSerial = -1, hoverCssHas = true;
+
+  // stylesheet の「形」の指紋。**`insertRule` / `deleteRule` は DOM に何も出さない**ので、
+  // 見張りでは気づけない（第20回 RG-20-06。実測: 起動後に `insertRule` で足した
+  // `:hover` メニューが、2秒ごとの確認まで説明されなかった）。
+  // 枚数と規則の数だけを読む（各 stylesheet の `cssRules.length` は走査を伴わない）。
+  function styleFingerprint() {
+    let n = 0, sum = 0;
+    for (const sheet of document.styleSheets) {
+      n++;
+      try { sum += sheet.cssRules ? sheet.cssRules.length : 0; }
+      catch (e) { sum += 1; }                 // 読めない sheet は定数として数える
+    }
+    return n * 1000003 + sum;
+  }
+
+  let hoverCssSerial = -1, hoverCssPrint = -1, hoverCssHas = true;
   function pageUsesHoverRules() {
-    if (hoverCssSerial === styleSerial) return hoverCssHas;
+      const print = styleFingerprint();
+      if (hoverCssSerial === styleSerial && hoverCssPrint === print) return hoverCssHas;
+      if (hoverCssPrint !== print) bumpEpoch();   // 規則が増減した
     hoverCssSerial = styleSerial;
+    hoverCssPrint = print;
     let seen = 0;
     const give = v => { hoverCssHas = v; return v; };
     try {

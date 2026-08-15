@@ -702,6 +702,23 @@
   // `image / size / position / repeat / origin / clip` を同じ層番号で対応付け、
   // 明示の寸法は実寸へ解いて語の矩形と交わるかを見る。
   //   true … 届く／false … 届かない／'unknown' … 断定できない
+  // ⚠️ **`background-repeat` は軸ごとに違う**（第21回 RG-21-02）。「`no-repeat` を
+  // 含まなければ全面に届く」としていたため、`repeat-x` の背景が下方の語へ届かないのに
+  // 可視としていた（実測: 語は0画素なのに印が付いた）。x と y へ正規化する。
+  // `space` / `round` は隙間や縮尺が絡むので解かない。
+  //   [x が繰り返すか, y が繰り返すか]／null … 解けない
+  function repeatAxes(v) {
+    const parts = (v || 'repeat').trim().split(/\s+/);
+    const one = w => w === 'repeat' ? [true, true]
+                   : w === 'no-repeat' ? [false, false]
+                   : w === 'repeat-x' ? [true, false]
+                   : w === 'repeat-y' ? [false, true] : null;
+    if (parts.length === 1) return one(parts[0]);
+    const ax = parts[0] === 'repeat' ? true : parts[0] === 'no-repeat' ? false : null;
+    const ay = parts[1] === 'repeat' ? true : parts[1] === 'no-repeat' ? false : null;
+    return (ax === null || ay === null) ? null : [ax, ay];
+  }
+
   function bgClipTextPaintsAt(el, cs, rect) {
     const at = (v, i, d) => { const a = splitTopLevel(v || d).map(x => x.trim());
                               return a[i % a.length] || d; };
@@ -713,11 +730,7 @@
     const img = cs.backgroundImage;
     if (!img || img === 'none') return false;
     const layers = splitTopLevel(img).map(x => x.trim());
-    const origin = cs.backgroundOrigin || 'padding-box';
-    const area = refBoxRect(cs, el.getBoundingClientRect(), false,
-                            origin === 'content-box' ? 'content-box'
-                          : origin === 'border-box' ? 'border-box' : 'padding-box');
-    const aw = area.x2 - area.x1, ah = area.y2 - area.y1;
+    const border = el.getBoundingClientRect();
     const clipAll = clipAll0;
     let unknown = false;
     for (let i = 0; i < layers.length; i++) {
@@ -742,27 +755,22 @@
       // ① 塗る箱の寸法を出す
       const sz = at(cs.backgroundSize, i, 'auto');
       let bw, bh;
-      if (sz === 'auto' || sz === 'auto auto') {
-        if (!isGradientLayer(layers[i])) { unknown = true; continue; }  // 画像の自然寸法は解けない
-        bw = aw; bh = ah;                                           // gradient の auto は領域いっぱい
-      } else if (/^(cover|contain)$/.test(sz)) {
-        if (!isGradientLayer(layers[i])) { unknown = true; continue; }  // 自然比が要る
-        bw = aw; bh = ah;
+      if (sz === 'auto' || sz === 'auto auto' || /^(cover|contain)$/.test(sz)) {
+        bw = aw; bh = ah;                                           // gradient は領域いっぱい
       } else {
         const parts = sz.split(/\s+/);
-        bw = lenToPx(parts[0], aw);
-        bh = parts[1] === undefined || parts[1] === 'auto'
-          ? (isGradientLayer(layers[i]) ? ah : null) : lenToPx(parts[1], ah);
-        if (parts[0] === 'auto') bw = isGradientLayer(layers[i]) ? aw : null;
+        bw = parts[0] === 'auto' ? aw : lenToPx(parts[0], aw);
+        bh = parts[1] === undefined || parts[1] === 'auto' ? ah : lenToPx(parts[1], ah);
         if (bw === null || bh === null) { unknown = true; continue; }
       }
-      // 置く場所
+      // 置く場所。繰り返す軸は領域いっぱいへ広がる
       const pv = at(cs.backgroundPosition, i, '0% 0%').split(/\s+/);
-      const px0 = lenToPx(pv[0], aw - bw);
-      const py0 = lenToPx(pv[1] !== undefined ? pv[1] : '50%', ah - bh);
+      const px0 = rep[0] ? 0 : lenToPx(pv[0], aw - bw);
+      const py0 = rep[1] ? 0 : lenToPx(pv[1] !== undefined ? pv[1] : '50%', ah - bh);
       if (px0 === null || py0 === null) { unknown = true; continue; }
       const box = { x1: area.x1 + px0, y1: area.y1 + py0,
-                    x2: area.x1 + px0 + bw, y2: area.y1 + py0 + bh };
+                    x2: area.x1 + (rep[0] ? aw : px0 + bw),
+                    y2: area.y1 + (rep[1] ? ah : py0 + bh) };
       if (rect.right > box.x1 && rect.left < box.x2 && rect.bottom > box.y1 && rect.top < box.y2) return true;
     }
     return unknown ? 'unknown' : false;

@@ -560,12 +560,20 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     /if \(at\(clipAll, i, 'border-box'\) !== 'text'\) continue;/.test(code),
     '複数層のうち1層だけが文字型に抜く場合を取り違える');
   check('明示された背景の寸法を、実寸へ解いている',
-    /bw = lenToPx\(parts\[0\], aw\);/.test(code) && !/if \(sz !== 'auto'\) return true;/.test(code),
+    /bw = parts\[0\] === 'auto' \? aw : lenToPx\(parts\[0\], aw\);/.test(code) &&
+    !/if \(sz !== 'auto'\) return true;/.test(code),
     '1px の背景でも「届く」と答える');
   // 第21回 RG-21-01 / RG-21-02
   check('背景の URL 画像は断定していない（第21回 RG-21-01）',
     /if \(!isGradientLayer\(layers\[i\]\)\) \{ unknown = true; continue; \}/.test(code),
     '透明な画像を background-clip:text に敷いた0画素の語を可視と答える');
+  check('background-repeat を軸ごとに解いている（第21回 RG-21-02）',
+    /function repeatAxes/.test(code) && /'repeat-x' \? \[true, false\]/.test(code) &&
+    !/if \(!\/no-repeat\/\.test\(r\)\) return true;/.test(code),
+    'repeat-x の背景が届かない語を可視と答える');
+  check('background-origin を層ごとに取り出している（第21回 RG-21-02）',
+    /const og = at\(cs\.backgroundOrigin, i, 'padding-box'\);/.test(code),
+    '複数層の origin をひとつに潰し、描かれている語を落とす');
   // RG-20-06 CSSOM の変更を見る
   check('stylesheet の形の指紋を見ている',
     /function styleFingerprint/.test(code) && /hoverCssPrint/.test(code),

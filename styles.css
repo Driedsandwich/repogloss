@@ -85,6 +85,30 @@
   outline-offset: 2px;
 }
 
+/* ⚠️ **shadow root を持つ印は、light DOM 側で絵を描かない**（v1.8.21）。
+   v1.8.20 で単独の印を closed shadow root へ移したとき、この上の規則を
+   そのままにしていたため、**輪が二重になり、"i" が箱の外へはみ出していた**
+   （実測: 印を8倍に拡大して撮影。host の 14px の輪と、中の button の 8×11 の輪が
+   重なり、host の `::after` の "i" が flex の2つ目の項目として右へ押し出されていた）。
+   単独の印の絵は、中の button が全部描く。ここでは場所を取る箱だけ残す。
+
+   見分け方は、いま付いている意味づけだけで足りる:
+     - 装飾扱いの印   … `data-iiyaku-for` が付く（入口の説明として使う）→ light DOM で描く
+     - shadow の無い印 … `role="button"` が付く（Chrome 105 未満の落としどころ）→ 同上
+     - shadow のある印 … どちらも付かない → ここで描くのをやめる
+   ページが shadow のある host へ `role` を足しても、`isCoherent` がその印を
+   退役させるので、二重の輪が残ることはない。 */
+.iiyaku-icon[data-iiyaku-owner]:not([data-iiyaku-for]):not([role]) {
+  /* ⚠️ 色ではなく**幅ごと** 0 にする。`box-sizing: border-box` なので箱の大きさは
+     変わらず、中の button が `width: 100%` で host と**同じ大きさ**になる。
+     色だけ透明にすると 1px ずつ内側へ入り、12×12 の輪が 14×14 の箱に描かれる（実測）。 */
+  border-width: 0;
+}
+
+.iiyaku-icon[data-iiyaku-owner]:not([data-iiyaku-for]):not([role])::after {
+  content: none;
+}
+
 /* OFF のときに印を隠す規則は、ここには書かない（v1.8.15）。
    以前は `<html>` へ `iiyaku-off` という class を付けていたが、**ページが同じ名前の
    class を持っていると起動時に消していた**（第16回 RG-16-06。実測: ページの
@@ -248,14 +272,25 @@ button {
   align-items: center;
   justify-content: center;
   box-sizing: border-box;
-  width: 1.15em;
-  height: 1.15em;
+  /* ⚠️ **host いっぱいに広げる。** v1.8.20 は light DOM の規則をそのまま写して
+     `1.15em` にしていたが、host には既に `font-size: .78em` が効いているので
+     二重に縮み、14px の host の中に 8×11 の輪が入れ子で描かれていた（実測）。
+     大きさは host（＝ページの文字の大きさに合わせた箱）から取る。 */
+  width: 100%;
+  height: 100%;
   padding: 0;
   border: 1px solid currentColor;
   border-radius: 50%;
   background: transparent;
-  color: var(--fgColor-accent, var(--color-accent-fg, #2563eb));
-  font: 700 0.78em/1 Georgia, "Times New Roman", "Liberation Serif", "Hiragino Mincho ProN", serif;
+  /* ⚠️ `--rg-fg` を先に見る（第22回 RG-22-02）。custom property は shadow の境界を
+     越えて継承するので、ページが `--fgColor-accent: transparent` を置くと、ここまで
+     届いて字も枠も 0 画素になる（実測: 印の矩形で白でない画素が 129 → 0。それでも
+     Tab では止まっていた）。`content.js` が実際の塗りを測り、塗れないときだけ
+     `--rg-fg` をこの button のインラインへ書く（closed shadow root の中なので
+     ページからは触れない）。塗れているあいだは書かないので、テーマ追従は変わらない。 */
+  color: var(--rg-fg, var(--fgColor-accent, var(--color-accent-fg, #2563eb)));
+  /* 字の大きさは host から継いだものをそのまま使う（`.78em` を掛け直さない）。 */
+  font: 700 1em/1 Georgia, "Times New Roman", "Liberation Serif", "Hiragino Mincho ProN", serif;
   font-style: normal;
   text-decoration: none;
   cursor: help;
@@ -264,11 +299,20 @@ button {
   transition: opacity 0.15s ease, background-color 0.15s ease;
 }
 
+/* 印の "i"。**light DOM ではなくここで描く**（v1.8.21。→ 上の :not(...) の注記）。
+   本文をコピーしても印が混ざらないよう、文字ではなく生成内容として置く。 */
+button::after {
+  content: "i";
+  /* Windows は Times New Roman / Georgia、macOS は Georgia / Hiragino Mincho、
+     Linux は Liberation Serif。どれかは必ずあるので、印の "i" は豆腐にならない。 */
+  font-family: Georgia, "Times New Roman", "Liberation Serif", "Hiragino Mincho ProN", serif;
+}
+
 button:hover,
 button:focus-visible {
   opacity: 1;
   background-color: currentColor;
-  color: var(--bgColor-default, var(--color-canvas-default, #ffffff));
+  color: var(--rg-bg, var(--bgColor-default, var(--color-canvas-default, #ffffff)));
 }
 
 /* キーボードで止まったことが分かるようにする。マウス操作では出さない。 */

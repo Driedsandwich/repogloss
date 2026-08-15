@@ -1393,6 +1393,131 @@
   // ⑥**実際の当たり判定**（自分か自分の子孫が最前面に出る点があるか）。
   const ICON_PROBES = [[0.5, 0.5], [0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]];
 
+  /* ---------- 当たり判定に映らない覆い（第22回 RG-22-03） ---------- */
+  //
+  // `pointer-events: none` の箱は hit testing から外れる。だから `elementFromPoint`
+  // はその**下**にあるものを返し、印は「最前面」に見える。実測（実際に読み込んだ
+  // 拡張・スクリーンショットの画素を数えた）: 印の上へ不透明な白い箱を
+  // `position:fixed; z-index:2147483647; pointer-events:none` で置くと、印の矩形の
+  // 白でない画素は **129 → 0**。それでも5点すべてが印を返し、印は Tab の停止点として
+  // 残り、後方の読める同じ語は説明されないままだった。
+  //
+  // ⚠️ **IntersectionObserver v2（`trackVisibility`）は使えない。** 遮蔽まで見てくれる
+  //    API だが、実測では**覆いが無くても**この印を `isVisible: false` と答えた
+  //    （同じ実行で、ふつうの `<div>` と `<button>` は true。つまり環境の問題ではなく、
+  //    この印が対象外と判定されている）。覆いの有無で答えが変わらないので、
+  //    判別には使えない。
+  //
+  // ⚠️ **全要素を歩いて集める形も採らなかった。** 実測で 10,000要素あたり 6〜13ms。
+  //    代わりに、`pointer-events: none` を**宣言している規則の選択子**と、
+  //    `style` 属性にそう書いてある要素から候補を引く。宣言が1つも無ければ走査は
+  //    起きない（ふつうのページはここで終わる）。読めない stylesheet が1枚でもあれば
+  //    見落とすので、そのときだけ全要素を歩くほうへ落とす。
+  //
+  // ⚠️ **断定できるものだけを覆いと数える。** 地の色が不透明で、透けておらず、
+  //    位置指定があり、重なり順で印より前に来るもの。画像や gradient で塗られた箱、
+  //    重なり順を推し量れない箱は「覆いではない」側へ倒す（落としすぎると、
+  //    ふつうのページの語が説明されなくなる）。→ 残る限界は AUDIT.md §7。
+  const PE_NONE_INLINE = /(^|[;\s])pointer-events\s*:\s*none/i;
+  let ghostSelSerial = -1, ghostSelPrint = -1, ghostSelectors = null, ghostSelWalk = false;
+
+  function ghostSelectorList() {
+    const print = styleFingerprint();
+    if (ghostSelectors !== null && ghostSelSerial === styleSerial && ghostSelPrint === print) {
+      return ghostSelectors;
+    }
+    ghostSelSerial = styleSerial; ghostSelPrint = print;
+    const sels = [];
+    let walk = false, seen = 0;
+    for (const sheet of document.styleSheets) {
+      let rules;
+      try { rules = sheet.cssRules; } catch (e) { walk = true; continue; }   // 読めない
+      if (!rules) continue;
+      const stack = [rules];
+      while (stack.length) {
+        for (const r of stack.pop()) {
+          if (++seen > RULE_SCAN_MAX) { walk = true; stack.length = 0; break; }
+          if (r.selectorText && r.style && r.style.getPropertyValue('pointer-events') === 'none') {
+            sels.push(r.selectorText);
+          }
+          if (r.cssRules) stack.push(r.cssRules);
+        }
+      }
+    }
+    ghostSelWalk = walk;
+    ghostSelectors = sels;
+    return sels;
+  }
+
+  // 祖先まで含めて、その箱が透けていないか
+  function opaqueChain(el) {
+    for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
+      const cs = getComputedStyle(n);
+      if (cs.visibility !== 'visible' || cs.display === 'none') return false;
+      if (parseFloat(cs.opacity) !== 1) return false;
+    }
+    return true;
+  }
+
+  const GHOST_GAP = 120;
+  let ghostAt = -1, ghostList = null;
+
+  function ghostCovers() {
+    const now = performance.now();
+    if (ghostList !== null && now - ghostAt < GHOST_GAP) return ghostList;
+    const out = [];
+    const sels = ghostSelectorList();
+    let pool = [];
+    if (ghostSelWalk) pool = [...document.querySelectorAll('*')];
+    else {
+      if (sels.length) {
+        // 選択子はページの持ち物。1つでも読めない形が混じると全部が落ちるので、
+        // まとめて渡さず、落ちたぶんだけ捨てる。
+        for (const s of sels) {
+          try { pool.push(...document.querySelectorAll(s)); } catch (e) { /* 読めない選択子 */ }
+        }
+      }
+      for (const el of document.querySelectorAll('[style]')) {
+        if (PE_NONE_INLINE.test(el.getAttribute('style') || '')) pool.push(el);
+      }
+      // `pointer-events` は継承する。当たった要素の中も候補に入れる。
+      const inner = [];
+      for (const el of pool) if (el.firstElementChild) inner.push(...el.querySelectorAll('*'));
+      pool.push(...inner);
+    }
+    const seen = new Set();
+    for (const el of pool) {
+      if (seen.has(el)) continue;
+      seen.add(el);
+      if (isOurNode(el) || ownedIcons.has(el)) continue;      // 自分の持ち物は覆いに数えない
+      const cs = getComputedStyle(el);
+      if (cs.pointerEvents !== 'none') continue;
+      if (cs.position === 'static') continue;                 // 重なり順を推し量れない
+      if (TRANSPARENT.test(cs.backgroundColor)) continue;     // 地が透明＝断定しない
+      const z = cs.zIndex === 'auto' ? 0 : (parseInt(cs.zIndex, 10) || 0);
+      if (z < 0) continue;                                    // 後ろに敷いてある
+      const r = el.getBoundingClientRect();
+      if (!(r.width > 0 && r.height > 0)) continue;
+      if (!opaqueChain(el)) continue;
+      out.push({ el, r, z });
+    }
+    ghostAt = now; ghostList = out;
+    return out;
+  }
+
+  // その点が、当たり判定に映らない覆いで塞がれているか
+  function ghostBlocks(icon, x, y) {
+    const list = ghostCovers();
+    for (const g of list) {
+      if (x < g.r.left || x >= g.r.right || y < g.r.top || y >= g.r.bottom) continue;
+      if (g.el === icon || g.el.contains(icon) || icon.contains(g.el)) continue;
+      if (g.z > 0) return true;
+      // 重なり順の指定が無いときは、**後から来たほうが上**に描かれる
+      if (icon.compareDocumentPosition(g.el) & Node.DOCUMENT_POSITION_FOLLOWING) return true;
+    }
+    return false;
+  }
+
   function iconIsPainted(icon) {
     const chain = paintChain(icon, 'none');
     if (chain.hidden) return false;
@@ -1410,6 +1535,22 @@
     if (parseFloat(cs.opacity) === 0) return false;
     if (cs.contentVisibility === 'hidden') return false;
     if (HAS_CHECK_VISIBILITY && !icon.checkVisibility(CHECK_VISIBILITY_OPTS)) return false;
+    // ⑤-2 **押せる実体**そのものが塗られているか（第22回 RG-22-02）。
+    // host だけを見ていては足りない——ページの custom property は shadow の中まで
+    // 継承するので、host はふつうに見えているのに、中の button が 0 画素になりうる。
+    // 先に塗り直しを試み（ensureShadowPaint）、それでも塗れないなら印を作らない。
+    const target = focusTargetOf(icon);
+    if (target !== icon) {
+      ensureShadowPaint(icon);
+      const ts = getComputedStyle(target);
+      if (ts.visibility !== 'visible' || ts.display === 'none') return false;
+      if (parseFloat(ts.opacity) === 0) return false;
+      const tb = target.getBoundingClientRect();
+      if (!(tb.width > 0 && tb.height > 0)) return false;
+      // 字・枠・地のどれか1つでも塗れていればよい（丸い枠だけでも印として見える）
+      if (TRANSPARENT.test(ts.color) && TRANSPARENT.test(ts.borderTopColor) &&
+          TRANSPARENT.test(ts.backgroundColor)) return false;
+    }
     // ⑥ 覆われていないか。**画面の中にある点だけ**で見る（画面外は覆いの話ではなく
     // 到達性の話で、そこは④で見ている）。画面内の点が1つも無ければ判定しない。
     //
@@ -1426,9 +1567,8 @@
     //   同じもので、この判定に足すものが無かった。実測の重なりは
     //   `[first(::after), 印, first, BODY, HTML]` で、先頭を見れば足りる。）
     //
-    // ⚠️ **`pointer-events: none` の覆いは、当たり判定では見えない**（既知の限界）。
-    // 印自身が `pointer-events: none` にされた場合も、当たり判定では何も言えない。
-    // どちらも「覆いを判定しない」側へ倒す（→ AUDIT.md §7）。
+    // ⚠️ **印自身が `pointer-events: none` にされたら、当たり判定では何も言えない**
+    // （残る限界）。そのときは覆いを判定しない側へ倒す（→ AUDIT.md §7）。
     if (cs.pointerEvents === 'none') return true;
     let inView = 0, exposed = 0;
     for (const [fx, fy] of ICON_PROBES) {
@@ -1436,8 +1576,12 @@
       if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) continue;
       inView++;
       // 最前面が印そのものか、印の子孫のときだけ「その点で見えている」と数える。
+      // ⚠️ **当たり判定に映らない覆いも見る**（第22回 RG-22-03。→ ghostBlocks）。
+      // `pointer-events: none` の箱は hit testing から外れるので、`elementFromPoint`
+      // は印を返し続ける。点ごとに見るので、**部分的な覆いでは残りの点が露出と数えられ**、
+      // 「全面が覆われている」とは判定されない。
       const hit = document.elementFromPoint(x, y);
-      if (hit && (hit === icon || icon.contains(hit))) exposed++;
+      if (hit && (hit === icon || icon.contains(hit)) && !ghostBlocks(icon, x, y)) exposed++;
     }
     if (inView > 0 && exposed === 0 && visibleNow(b, chain)) return false;   // 全面が覆われている
     return true;
@@ -2026,6 +2170,7 @@
   const USE_SHADOW_STANDALONE = true;      // 戻せるようにしておく（監査の助言）
   const iconButton = new WeakMap();        // host → 中の button
   const iconDesc = new WeakMap();          // host → 中の説明文
+  const iconShadow = new WeakMap();        // host → closed shadow root（付け直しを避ける）
   let shadowSheet;                         // 1枚だけ作って全部の shadow root で共有する
 
   // `styles.css` のうち、**shadow root の中だけ**で使う区間。
@@ -2055,9 +2200,13 @@
   function ensureShadowButton(host) {
     let btn = iconButton.get(host);
     if (btn) return btn;
-    let root;
-    try { root = host.attachShadow({ mode: 'closed' }); }
-    catch (e) { return null; }             // 付けられない環境では light DOM のまま
+    // 一度付けた shadow root は外せない。畳んだ相手をもう一度使うことになっても
+    // `attachShadow` をやり直さない（例外になって light DOM の形へ落ちてしまう）。
+    let root = iconShadow.get(host);
+    if (!root) {
+      try { root = host.attachShadow({ mode: 'closed' }); }
+      catch (e) { return null; }           // 付けられない環境では light DOM のまま
+    }
     try {
       const sheet = shadowIconSheet();
       if (sheet) root.adoptedStyleSheets = [sheet];
@@ -2074,14 +2223,91 @@
     // `textContent = 'A squash merge inside.'` を入れて本文へ戻すと、
     // 中の語が走査されず 0 件になった。ページの持ち物を壊している）。
     // ふだんの印は light DOM が空なので、slot は何も描かない。
-    root.append(btn, desc, document.createElement('slot'));
+    // 畳んだ相手を使い直す場合、slot は残してあるので足さない（2枚あると二重に描く）。
+    root.append(btn, desc);
+    if (!root.querySelector('slot')) root.append(document.createElement('slot'));
+    iconShadow.set(host, root);
     iconButton.set(host, btn);
     iconDesc.set(host, desc);
     return btn;
   }
 
+  // 退役した印の「中身」を失効させる（第22回 RG-22-01）。
+  //
+  // ⚠️ **複製されないことと、退役した元が失効することは別の不変条件**である。
+  // closed shadow root は `cloneNode` で複製されないが、**元の host はそのまま残る**。
+  // ページが退役した印を本文の入れ物として使い回すと（`textContent = 'PAGE CONTENT'`）、
+  // light DOM からは自分の印だと分からなくなるのに、中の button は生きたままだった。
+  // 実測（実際に読み込んだ拡張・アクセシビリティのツリー）: 使い回された後、
+  // 「「branch」の解説」という名前の押せる button が **2個**あり、そのうち1個は
+  // ページの本文の中に居て、**実際に Tab で止まった**（停止点1）。
+  //
+  // light DOM の側（class・data 属性・操作性）は `stripOwnIdentity` が落とすが、
+  // shadow の中はページからも自分の走査からも見えないので、ここで明示的に畳む。
+  // ⚠️ **`<slot>` は残す。** 外すとページが入れた本文が描かれなくなる（第21回の実測）。
+  function deactivateShadowIcon(host) {
+    const btn = iconButton.get(host);
+    const desc = iconDesc.get(host);
+    iconButton.delete(host);
+    iconDesc.delete(host);
+    if (btn) {
+      // 取り除く前に**先に押せなくする**。取り除きに失敗しても、Tab の停止点は残さない。
+      try { btn.disabled = true; } catch (e) { /* 無視できる */ }
+      btn.tabIndex = -1;
+      btn.removeAttribute('aria-label');
+      btn.removeAttribute('aria-describedby');
+      btn.removeAttribute('aria-expanded');
+      btn.remove();
+    }
+    if (desc) { desc.textContent = ''; desc.remove(); }
+  }
+
   // その印の「押せる実体」。shadow を使わない場合は host 自身。
   const focusTargetOf = icon => iconButton.get(icon) || icon;
+
+  // shadow の中の button が、ページ由来の変数のせいで 0 画素にならないようにする
+  // （第22回 RG-22-02）。
+  //
+  // ⚠️ **custom property は shadow の境界を越えて継承する。** 見た目を GitHub の
+  // テーマに合わせるため、button の色は `--fgColor-accent` などを読んでいる。
+  // ページが前方の段落へ `--fgColor-accent: transparent` を置くと、その値が
+  // shadow の中まで届き、字も枠も透明になる。実測（実際に読み込んだ拡張・
+  // スクリーンショットの画素を数えた）: 印の矩形 14×14 のうち白でない画素が
+  // **129 → 0**。それでも実際に Tab で止まり、後方の読める同じ語は説明されなかった。
+  //
+  // ⚠️ `@property { inherits: false }` は使えない。登録は**文書ぜんぶに効く**ので、
+  // ページ自身が使っている `--fgColor-accent` の振る舞いまで変えてしまう。
+  //
+  // 直し方は「測ってから、shadow の中だけで塗り直す」。closed shadow root の中の
+  // インライン指定はページから触れないので、上書きされない。塗れているあいだは
+  // 何もしないので、ふだんの見た目（テーマ追従）はそのまま。
+  const SHADOW_FG = '--rg-fg';
+  const SHADOW_BG = '--rg-bg';
+  const shadowPaintSeen = new WeakMap();       // host → 直近に見たページ側の値
+  const THEME_VARS = ['--fgColor-accent', '--color-accent-fg',
+                      '--bgColor-default', '--color-canvas-default'];
+
+  function ensureShadowPaint(host) {
+    const btn = iconButton.get(host);
+    if (!btn) return;
+    const hs = getComputedStyle(host);
+    // ページ側の値が変わっていなければ測り直さない（測るたびに style を外して
+    // 付け直すので、無条件に毎回やると描き直しを誘う）。
+    let seen = hs.color;
+    for (const v of THEME_VARS) seen += '' + hs.getPropertyValue(v).trim();
+    if (shadowPaintSeen.get(host) === seen) return;
+    shadowPaintSeen.set(host, seen);
+    // いったん上書きを外し、**ページのテーマ色で塗れるか**を測る
+    btn.style.removeProperty(SHADOW_FG);
+    btn.style.removeProperty(SHADOW_BG);
+    if (!TRANSPARENT.test(getComputedStyle(btn).color)) return;   // 塗れている
+    // 塗れない。ページの本文の色を借りる——その色は、語そのものが読める場所では
+    // 必ず地と対比している。本文の色も透明なら、環境の既定色（forced-colors でも
+    // 生きている system color）へ落とす。
+    const ink = TRANSPARENT.test(hs.color) ? 'CanvasText' : hs.color;
+    btn.style.setProperty(SHADOW_FG, ink);
+    btn.style.setProperty(SHADOW_BG, 'Canvas');
+  }
 
   function makeIcon(key, term, ja) {
     const icon = document.createElement('span');
@@ -2128,6 +2354,7 @@
       btn.setAttribute('aria-label', `「${icon.dataset.iiyakuTerm}」の解説`);
       btn.setAttribute('aria-expanded', 'false');
       if (desc) desc.textContent = icon.dataset.iiyaku;
+      ensureShadowPaint(icon);      // ページの変数で 0 画素にならないようにする
     } else {
       // shadow を付けられなかった場合の従来どおりの形（Chrome 105 未満など）。
       // 押して開閉するので、role は img ではなく button にする。
@@ -2547,6 +2774,11 @@
     ownedIcons.delete(rec.icon);
     iconTrigger.delete(rec.icon);
     expectedAttrs.delete(rec.icon);
+    // 中の押せる実体も、ここで畳む（第22回 RG-22-01）。
+    // ⚠️ **DOM に繋がっているかを条件にしない。** ページが外して持っていた印を
+    // あとから戻すことがあり、そのとき中の button が生き返る。所有を取り消すのと
+    // 同じ場所で、同じ回数だけ畳む。
+    deactivateShadowIcon(rec.icon);
     if (rec.icon.isConnected) {
       // その印について説明を出している最中なら、先に閉じる
       if (tip && tipIcons.includes(rec.icon)) hideTip();
@@ -3091,6 +3323,16 @@
           if (++seen > PRINT_SCAN_MAX) { stack.length = 0; break; }
           if (r.selectorText) h = hashStr(h, r.selectorText);
           else if (r.conditionText) h = hashStr(h, r.conditionText);
+          else if (r.keyText) h = hashStr(h, r.keyText);       // @keyframes の中の位置
+          // 宣言の**本数**まで混ぜる（足された／外された宣言に気づくため）。
+          // ⚠️ **中身（`cssText`）は混ぜない。** 第22回 RG-22-04 で一度そうしたが、
+          // 実測（10,000規則）で 1回 23〜31ms かかった（本数までなら 0.6〜1.4ms、
+          // 選択子だけの現行が 2〜8ms）。費用の中身も測ってあり、文字を舐める分では
+          // なく **`cssText` を作る分**（20〜27ms）が主なので、安い書き方が無い。
+          // この指紋はカーソルの合図ごと（120ms の窓）に取るので、そこへ 25ms を
+          // 足すと、カーソルを動かしているあいだ 20% を使うことになる。
+          // 値だけの書き換えは、下の「短い周期の見直し」（→ scheduleFastCheck）が拾う。
+          if (r.style) h = (h * 33 ^ r.style.length) >>> 0;
           if (r.cssRules) stack.push(r.cssRules);
         }
       }
@@ -3233,9 +3475,18 @@
     if (e.type === 'pointerdown') pressedNode = e.target;
     else if (e.type === 'pointerup' || e.type === 'pointercancel') pressedNode = null;
   }
+  // ⚠️ 入力のやり方も鍵に入れる（第22回 RG-22-05）。連なりだけを鍵にすると、
+  // 「同じ相手にフォーカスしたまま modality だけ変わった」が同じ鍵になり、
+  // `doneStates` に阻まれて一度も測り直されない。
+  function focusVisibleNow() {
+    const a = document.activeElement;
+    if (!a || typeof a.matches !== 'function') return '-';
+    try { return a.matches(':focus-visible') ? 'k' : 'm'; } catch (e) { return '-'; }
+  }
   function pseudoStateKey(e) {
     return chainKey(e && e.target) + '|' + chainKey(document.activeElement)
-         + '|' + (pressedNode ? chainKey(pressedNode) : '-');
+         + '|' + (pressedNode ? chainKey(pressedNode) : '-')
+         + '|' + focusVisibleNow();
   }
   let pendingState = null;
 
@@ -3320,8 +3571,20 @@
   // ⚠️ `:active` は規則の走査（HOVERISH）では見ているのに、**購読していなかった**
   // （第21回 RG-21-05。実測: `:active` だけで開くメニューは、押しているあいだ印0で、
   // 2秒ごとの確認まで説明されなかった。対照の `:hover` は即1）。
+  // ⚠️ `keydown` も要る（第22回 RG-22-05）。**フォーカスの相手を変えずに、入力の
+  // やり方（マウス→キーボード）だけが変わると `:focus-visible` が付く。** 実測:
+  // マウスで押して focus した状態から矢印キーを1回押すと `:focus-visible` は
+  // false → true になり、それで開くメニューは 600ms 後も印0のままだった
+  // （2秒ごとの確認でようやく1）。`focusin` は相手が変わらないので来ない。
   const HOVER_SIGNALS = ['pointerover', 'pointerout', 'focusin', 'focusout',
-                         'pointerdown', 'pointerup', 'pointercancel'];
+                         'pointerdown', 'pointerup', 'pointercancel', 'keydown'];
+  // 画面内の移動（`:target` の付け替え）。DOM も属性も動かないので、どの合図にも乗らない。
+  // 実測: `location.hash` を変えて `:target` で開いたメニューは、600ms 後も印0だった。
+  const NAV_SIGNALS = ['hashchange', 'popstate'];
+  const onNavState = () => { bumpEpoch(); dropStates(); schedule({ deep: true }); };
+  // `pushState` は何の event も出さない。Navigation API があれば、そこも拾う。
+  const navApi = (typeof navigation === 'object' && navigation &&
+                  typeof navigation.addEventListener === 'function') ? navigation : null;
   // `scrollend` はブラウザが「止まった」と決めた瞬間に1回だけ来る。無い版のために
   // `scroll` も取り、そこから遅らせて1回にまとめる（→ onScrollSignal）。
   const SCROLL_SIGNALS = ('onscrollend' in window) ? ['scrollend'] : ['scroll'];
@@ -3349,6 +3612,54 @@
       if (canIdle) requestIdleCallback(run, { timeout: IDLE_GAP });
       else run();
     }, IDLE_GAP);
+  }
+
+  // 合図の出ない変化を、**もっと短い周期**で見に行く（第22回 RG-22-04）。
+  //
+  // CSSOM の書き換え（`sheet.cssRules[0].style.display = 'inline'`）は、DOM にも
+  // 属性にも event にも出ない。実測: 選択子も規則の数も変えずに `none` → `inline`
+  // にすると、650ms 後も印は0のままで、2秒ごとの確認でようやく1になった。
+  //
+  // ⚠️ **指紋を短い周期で取り直す形は採らなかった。** 宣言の中身まで混ぜた指紋は
+  // 10,000規則で1回 23〜31ms かかり（→ styleFingerprint の注記に実測値）、
+  // 400ms ごとに取るとそれだけで 6〜8% を使う。しかも指紋は「どこかが変わった」
+  // としか言えない。**控えの見え方そのものを測り直すほうが安く、かつ広い**——
+  // CSSOM に限らず、合図の出ない変化すべてに効く。
+  //
+  // 使いすぎの門（overBudget）を通すので、重いページでは自動的に見送られ、
+  // 2秒ごとの確認へ落ちる。正しさは落ちず、遅れるだけ。
+  // ⚠️ **間隔は控えの件数に合わせて空ける。** 1回の見直しの費用は件数に比例するので、
+  // 件数が増えても一定の間隔で回すと、そのぶんだけ CPU を食い続ける。実測（控え
+  // 5,000件・カーソル10移動）で `checkVisibility` が 35,042 → 46,844 回になった。
+  // 1秒あたりに見る件数を頭打ちにする（＝件数が増えたら間隔を空ける）。
+  const FAST_GAP = 400;
+  const FAST_GAP_MAX = 2000;          // ここまで空けたら、2秒ごとの確認と同じ
+  const FAST_RATE = 1250;             // 1秒あたりに見てよい候補数のめやす
+  const fastGap = () => Math.min(FAST_GAP_MAX,
+    Math.max(FAST_GAP, Math.round(latent.size / FAST_RATE * 1000)));
+  let fastTimer = null;
+  function scheduleFastCheck() {
+    if (!observing || fastTimer !== null) return;
+    fastTimer = setTimeout(() => {
+      fastTimer = null;
+      if (!observing) return;
+      // 見に行く相手（あとで見えるかもしれない候補）が無いなら、何もしない。
+      // ⚠️ **まとめ直し（runBatch）を予約しない。** ここは周期の見張りであって
+      // ページの変更ではない。予約すると「1回のページ変更で、まとめ直しは1回」を
+      // 守っている検査が、この見張りの分まで数えて落ちる（実測: 1 のはずが 3）。
+      // 見たいのは控えの側だけなので、控えの見直しへ直接入る。使った時間は
+      // `noteLatentCost` へ積まれるので、重ければ次から自動的に見送られる。
+      // ⚠️ **`dropStates()` を呼んではいけない。** 擬似クラスの状態の memo を消すと、
+      // 次のカーソルの合図が「まだ見ていない状態」として全件を回し直す。実測で
+      // `checkVisibility` が 3,542 → 18,108 回（500件・カーソル10移動）に膨らんだ。
+      // ここで見たいのは控えの側だけで、カーソルの状態は変わっていない。
+      // stylesheet が変わったときの memo 破棄は `pageUsesHoverRules` が担当する。
+      if (!document.hidden && latent.size > 0 && !overBudget()) {
+        bumpEpoch();
+        withRenderCache(() => discoverLatent());
+      }
+      scheduleFastCheck();
+    }, fastGap());
   }
 
   /* ---------- 9. ON / OFF の切り替え ---------- */
@@ -3385,7 +3696,10 @@
     for (const t of ['input', 'change', 'click']) document.addEventListener(t, onInteraction, true);
     for (const t of HOVER_SIGNALS) document.addEventListener(t, onPointerOrFocus, true);
     for (const t of SCROLL_SIGNALS) document.addEventListener(t, onScrollSignal, true);
+    for (const t of NAV_SIGNALS) window.addEventListener(t, onNavState);
+    if (navApi) navApi.addEventListener('navigatesuccess', onNavState);
     scheduleIdleCheck();
+    scheduleFastCheck();
   }
 
   function stopRuntime() {
@@ -3398,8 +3712,11 @@
     for (const t of ['input', 'change', 'click']) document.removeEventListener(t, onInteraction, true);
     for (const t of HOVER_SIGNALS) document.removeEventListener(t, onPointerOrFocus, true);
     for (const t of SCROLL_SIGNALS) document.removeEventListener(t, onScrollSignal, true);
+    for (const t of NAV_SIGNALS) window.removeEventListener(t, onNavState);
+    if (navApi) navApi.removeEventListener('navigatesuccess', onNavState);
     if (scrollTail !== null) { clearTimeout(scrollTail); scrollTail = null; }
     if (idleTimer !== null) { clearTimeout(idleTimer); idleTimer = null; }
+    if (fastTimer !== null) { clearTimeout(fastTimer); fastTimer = null; }
     if (latentResume !== null) { clearTimeout(latentResume); latentResume = null; }
     if (hoverTail !== null) { clearTimeout(hoverTail); hoverTail = null; }
     latentPass = null; latentCursor = 0;
@@ -3441,7 +3758,18 @@
     btn.type = 'button';
     toggleBtn = btn;
     updateToggle();
-    btn.addEventListener('click', async () => {
+    btn.addEventListener('click', async event => {
+      // ⚠️ **恒久の設定を変えるのは、利用者が押したときだけ**（第22回 RG-22-06）。
+      // この切替ボタンは light DOM に居るのでページから参照でき、`.click()` や
+      // `dispatchEvent(new MouseEvent('click'))` で押せてしまう。実測: ページ側の
+      // script から `.click()` を1回呼ぶだけで表示が「解説 OFF」に変わり、
+      // **別のタブを開いてもそのまま OFF だった**（＝保存まで届いていた）。
+      // ブラウザが起こした操作だけ `isTrusted` が真になる。実際のマウス操作・
+      // Enter / Space・支援技術による activation はどれも真なので、そのまま通る。
+      // ⚠️ この門は**設定を変える経路だけ**に掛ける。見え方を測り直すための
+      // 受け身の合図（カーソル・フォーカス・スクロール）へ広げてはいけない。
+      // 合成された変化でも「見えるようになった」ことは本当に起きているため。
+      if (!event.isTrusted) return;
       const prev = enabled;
       applyEnabled(!prev);   // 先に表示を変える。ページの再読み込みはしない
       try {

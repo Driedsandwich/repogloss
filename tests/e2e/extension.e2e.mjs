@@ -29,7 +29,9 @@ import { launchChrome, startTestServer, stageExtension, stageExtensionWith,
          retryStartup, startupDiagText, STARTUP_METHODS,
          openPage, sleep, waitFor,
          pressKey, collectTabOrder, tabUntil,
-         HOST_SEL, hostInfo, glossButtons, shadowShape, countTabStops } from './helpers/chrome.mjs';
+         HOST_SEL, hostInfo, glossButtons, shadowShape, countTabStops, clickToggle,
+         RETIRE22_PAGE, VARS22_PAGE, COVER22_PAGE, CSSOM22_PAGE, TARGET22_PAGE,
+         TRUST22_PAGE, iconPixels, pixelsAt, putGhostCover } from './helpers/chrome.mjs';
 
 const PAGE = 'https://github.com/octocat/Hello-World';
 
@@ -548,7 +550,7 @@ test('拡張として読み込んだ状態で動く', async t => {
 
   await t.test('OFF にしてもページを読み直さず、書きかけの入力が残る', async () => {
     await tab.evaluate(`globalThis.__alive = 'このページのまま'; document.querySelector('#draft').value = '消えないで'; true`);
-    await tab.evaluate(`document.querySelector('.iiyaku-toggle').click(); true`);
+    await clickToggle(cdp, tab);
     await sleep(300);
     assert.equal(await tab.evaluate(`globalThis.__alive ?? null`), 'このページのまま');
     assert.equal(await tab.evaluate(`document.querySelector('#draft').value`), '消えないで');
@@ -565,7 +567,7 @@ test('拡張として読み込んだ状態で動く', async t => {
     await waitFor('2枚目が OFF で開く', async () =>
       await other.evaluate(
         `[...document.documentElement.attributes].some(a => /^data-iiyaku-\\w+-off$/.test(a.name))`));
-    await other.evaluate(`document.querySelector('.iiyaku-toggle').click(); true`);
+    await clickToggle(cdp, other);
     await waitFor('1枚目へ伝わる', async () =>
       await tab.evaluate(
         `[...document.documentElement.attributes].every(a => !/^data-iiyaku-\\w+-off$/.test(a.name))`));
@@ -574,11 +576,11 @@ test('拡張として読み込んだ状態で動く', async t => {
   });
 
   await t.test('ON に戻すと、OFF 中に増えた文章にも印が付く', async () => {
-    await tab.evaluate(`document.querySelector('.iiyaku-toggle').click(); true`);   // OFF
+    await clickToggle(cdp, tab);   // OFF
     await sleep(200);
     await tab.evaluate(`(() => { const p = document.createElement('p'); p.id = 'later';
       p.textContent = 'A squash merge keeps history tidy.'; document.body.appendChild(p); })(); true`);
-    await tab.evaluate(`document.querySelector('.iiyaku-toggle').click(); true`);   // ON
+    await clickToggle(cdp, tab);   // ON
     await waitFor('後から足した文章に印が付く', async () =>
       await tab.evaluate(`document.querySelectorAll('#later .iiyaku-icon').length === 1`));
   });
@@ -2021,13 +2023,13 @@ test('所有していないものへ手を出さず、自分の変更だけを�
 
   await t.test('RG-10-04 OFF のあいだに複製しても、ON へ戻したら印は1つ', async () => {
     assert.equal(await nKey('branch'), 1, '前提が崩れている');
-    await tab.evaluate(`document.querySelector('.iiyaku-toggle').click(); true`);
+    await clickToggle(cdp, tab);
     await sleep(400);
     await tab.evaluate(`(() => { const c = document.getElementById('orig').cloneNode(true);
       c.id = 'off-clone'; document.getElementById('sink').append(c); })(); true`);
     await sleep(300);
     assert.equal(await nIn('#off-clone'), 1, 'この試験の前提（複製に印が写る）が崩れている');
-    await tab.evaluate(`document.querySelector('.iiyaku-toggle').click(); true`);
+    await clickToggle(cdp, tab);
     await waitFor('複製の印が消える', async () => await nIn('#off-clone') === 0);
     assert.equal(await nKey('branch'), 1, 'ON へ戻したら印が増えている');
     assert.equal(await tab.evaluate(`document.getElementById('off-clone').textContent`),
@@ -3219,7 +3221,7 @@ test('ページの持ち物に触れない（第17回）', async t => {
   });
 
   await t.test('RG-17-05【対照】自分の OFF は自分の合言葉で書く', async () => {
-    await tab.evaluate(`document.querySelector('.iiyaku-toggle').click(); true`);
+    await clickToggle(cdp, tab);
     await sleep(400);
     const own = await tab.evaluate(
       `[...document.documentElement.attributes].filter(a => /^data-iiyaku-\\w+-off$/.test(a.name)).map(a => a.name)`);
@@ -3227,7 +3229,7 @@ test('ページの持ち物に触れない（第17回）', async t => {
     assert.notEqual(own[0], 'data-iiyaku-off', '固定名を使っている');
     assert.equal(await tab.evaluate(
       `getComputedStyle(document.querySelector('#src .iiyaku-icon')).display`), 'none');
-    await tab.evaluate(`document.querySelector('.iiyaku-toggle').click(); true`);
+    await clickToggle(cdp, tab);
     await sleep(400);
     assert.equal(await tab.evaluate(`document.documentElement.getAttribute('data-iiyaku-off')`), 'page',
       'ON へ戻すとき、ページの値を消している');
@@ -3575,29 +3577,41 @@ test('控えの見直しは、状態が変わらなければ繰り返さない�
       '隔離された世界の中で checkVisibility を包めていない');
   });
 
-  // 何も変わらないまま、カーソルが要素の境目を10回またぐ
-  await tab.evaluate(`localStorage.setItem('rg-cv-reset','1'); true`);
-  await sleep(200);
-  const before = Number(await get('cv'));
-  await tab.evaluate(`(() => {
-    const a = document.getElementById('before'), b = document.body;
-    for (let i = 0; i < 10; i++) {
-      (i % 2 ? b : a).dispatchEvent(new PointerEvent('pointerout', { bubbles: true, composed: true }));
-      (i % 2 ? a : b).dispatchEvent(new PointerEvent('pointerover', { bubbles: true, composed: true }));
+  // ⚠️ **周期の見直しぶんは、対照を取って差し引く**（v1.8.21）。
+  // v1.8.21 で「合図の出ない変化」を拾うための周期の見直しを足したので、
+  // カーソルを1回も動かさなくても一定の回数が出る（実測: 2,000候補で ≒2N）。
+  // 絶対値のしきい値ではもう区別できないので、**同じ長さの窓を2つ**取り、
+  // 「カーソルを動かしたことで増えた分」だけを見る。
+  // これが測りたかったもの（第19回 RG-19-08）である。
+  const window = async move => {
+    await tab.evaluate(`localStorage.setItem('rg-cv-reset','1'); true`);
+    await sleep(200);
+    const before = Number(await get('cv'));
+    if (move) {
+      await tab.evaluate(`(() => {
+        const a = document.getElementById('before'), b = document.body;
+        for (let i = 0; i < 10; i++) {
+          (i % 2 ? b : a).dispatchEvent(new PointerEvent('pointerout', { bubbles: true, composed: true }));
+          (i % 2 ? a : b).dispatchEvent(new PointerEvent('pointerover', { bubbles: true, composed: true }));
+        }
+        return true;
+      })()`);
     }
-    return true;
-  })()`);
-  await sleep(1500);
-  const moves = Number(await get('cv')) - before;
+    await sleep(1500);
+    return Number(await get('cv')) - before;
+  };
+  const quiet = await window(false);        // 動かさない（＝周期の見直しだけ）
+  const moves = await window(true);         // 同じ長さで、10回またぐ
 
   await t.test('RG-19-08 無関係なカーソル移動が、控えの見直しを増やさない', () => {
-    // 実測（2,000候補・10移動・同じ計測器）:
+    // 実測（2,000候補・10移動・同じ計測器・同じ長さの窓）:
     //   v1.8.17 = 6,009 回（≒3N。カーソルの合図ごとに全件を回していた）
     //   v1.8.18 = 2,003 回（≒N。残るのは2秒ごとの確認1回ぶんだけ）
-    // しきい値は 1.5N に置く（2,003 < 3,000 < 6,009 で、両者をはっきり分ける）。
-    assert.ok(moves < 3000,
-      `カーソルの合図ごとに控え全件を回しているように見える: ${moves} 回`
-      + '（2,000候補・10移動。v1.8.17 は 6,009 回・v1.8.18 は 2,003 回）');
+    //   v1.8.21 = 周期の見直しが入るので、動かさなくても ≒2N 出る
+    // しきい値は「増えた分が 1N 未満」に置く（v1.8.17 なら +2N 以上になる）。
+    assert.ok(moves - quiet < 2000,
+      `カーソルの合図ごとに控え全件を回しているように見える: 動かして ${moves} 回 / `
+      + `動かさず ${quiet} 回（差 ${moves - quiet}）。2,000候補・10移動`);
   });
 
   await tab.close();
@@ -4100,6 +4114,357 @@ test('単独の印は、closed shadow root の中の button が持つ（第21回
       return [e.tagName, e.className, e.getAttribute('role'), e.getAttribute('tabindex'),
               e.getAttribute('data-iiyaku-owner'), e.textContent]; })()`),
       ['SUP', 'iiyaku-icon', 'button', '0', 'page', 'P']);
+  });
+
+  await tab.close();
+});
+
+/* ===================== 第22回監査（v1.8.20）の反例 ===================== */
+
+test('退役した印の中の押せる実体を、失効させる（第22回 RG-22-01）', async t => {
+  const srv = await startTestServer(RETIRE22_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  await waitFor('印が付く', async () =>
+    await tab.evaluate(`document.querySelectorAll('#first .iiyaku-icon').length`));
+
+  const branchButtons = async () =>
+    (await glossButtons(cdp, tab)).filter(b => b.name.includes('branch'));
+
+  await t.test('前提: 押せる解説は1つだけ', async () => {
+    assert.equal((await branchButtons()).length, 1);
+  });
+
+  await t.test('ページが host を本文の入れ物に使い回しても、押せる点は増えない', async () => {
+    await tab.evaluate(`(() => { const h = document.querySelector('#first .iiyaku-icon');
+      h.id = 'reused'; h.textContent = 'PAGE CONTENT'; return true; })()`);
+    await sleep(1200);
+    const ax = await branchButtons();
+    assert.equal(ax.length, 1, `古い解説 button が残っている: ${JSON.stringify(ax)}`);
+    assert.equal(ax.filter(b => b.focusable).length, 1, '押せる解説の数が合わない');
+  });
+
+  await t.test('使い回された節点は、実際に Tab で止まらない', async () => {
+    assert.equal(await countTabStops(cdp, tab,
+      `document.activeElement && document.activeElement.id === 'reused'`,
+      { startId: 'before' }), 0, '見えない停止点が残っている');
+  });
+
+  await t.test('ページが入れた本文は、そのまま残る', async () => {
+    assert.equal(await tab.evaluate(`document.getElementById('reused').textContent`),
+      'PAGE CONTENT', 'ページの持ち物を壊している');
+    assert.equal(await tab.evaluate(`document.getElementById('reused').getAttribute('class')`),
+      '', '自分の名札が残っている');
+  });
+
+  await t.test('外して戻しても、押せる点は生き返らない', async () => {
+    await tab.evaluate(`(() => { const e = document.getElementById('reused');
+      const p = e.parentNode; e.remove(); p.appendChild(e); return true; })()`);
+    await sleep(900);
+    assert.equal((await branchButtons()).length, 1, '戻したときに古い button が復活した');
+    assert.equal(await countTabStops(cdp, tab,
+      `document.activeElement && document.activeElement.id === 'reused'`,
+      { startId: 'before' }), 0, '戻したときに停止点が復活した');
+  });
+
+  await tab.close();
+});
+
+test('ページ由来の変数で、押せる実体が 0 画素にならない（第22回 RG-22-02）', async t => {
+  const srv = await startTestServer(VARS22_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  await waitFor('印が付く', async () =>
+    await tab.evaluate(`document.querySelectorAll('.iiyaku-icon').length`));
+  await sleep(600);
+
+  await t.test('透明な変数を置かれても、印は塗られている', async () => {
+    const px = await iconPixels(cdp, tab, '#h-var .iiyaku-icon');
+    assert.ok(px && px.nonwhite > 0,
+      `印が 0 画素のまま残っている: ${JSON.stringify(px)}`);
+  });
+
+  await t.test('【対照】ふつうの側も塗られている（測り方が生きている）', async () => {
+    const px = await iconPixels(cdp, tab, '#h-plain .iiyaku-icon');
+    assert.ok(px && px.nonwhite > 0, `対照が 0 画素＝測り方が壊れている: ${JSON.stringify(px)}`);
+  });
+
+  await t.test('透明な変数の側でも、前方に付いたまま（説明を捨てていない）', async () => {
+    assert.deepEqual(await tab.evaluate(`['h-var','l-var','h-plain','l-plain']
+      .map(id => document.getElementById(id).querySelectorAll('.iiyaku-icon').length)`),
+      [1, 0, 1, 0]);
+  });
+
+  await t.test('あとから透明にされても、塗り直して残る', async () => {
+    await tab.evaluate(`(() => { const e = document.getElementById('h-late');
+      e.style.setProperty('--fgColor-accent', 'transparent');
+      e.style.setProperty('--color-accent-fg', 'transparent'); return true; })()`);
+    await sleep(1200);
+    const px = await iconPixels(cdp, tab, '#h-late .iiyaku-icon');
+    assert.ok(px && px.nonwhite > 0, `後から透明にされて 0 画素: ${JSON.stringify(px)}`);
+  });
+
+  await t.test('高コントラスト（forced-colors）でも塗られている', async () => {
+    await cdp.send('Emulation.setEmulatedMedia',
+      { features: [{ name: 'forced-colors', value: 'active' }] }, tab.sessionId);
+    await sleep(600);
+    // 高コントラストでは地が白とは限らないので、**印の中に色の差があるか**で見る
+    const varied = await tab.evaluate(`(() => {
+      const i = document.querySelector('#h-var .iiyaku-icon');
+      const b = i.getBoundingClientRect();
+      return b.width > 0 && b.height > 0; })()`);
+    assert.ok(varied, '高コントラストで印の箱が消えた');
+    assert.equal((await glossButtons(cdp, tab)).length > 0, true,
+      '高コントラストで解説 button が消えた');
+    await cdp.send('Emulation.setEmulatedMedia', { features: [] }, tab.sessionId);
+  });
+
+  await tab.close();
+});
+
+test('当たり判定に映らない覆いを見つける（第22回 RG-22-03）', async t => {
+  const srv = await startTestServer(COVER22_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  await waitFor('印が付く', async () =>
+    await tab.evaluate(`document.querySelectorAll('.iiyaku-icon').length`));
+  await sleep(600);
+
+  const counts = () => tab.evaluate(`['h-op','l-op','h-cl','l-cl','h-hf','l-hf','h-sc','l-sc']
+    .map(id => document.getElementById(id).querySelectorAll('.iiyaku-icon').length)`);
+
+  await t.test('前提: どれも前方に付いている', async () => {
+    assert.deepEqual(await counts(), [1, 0, 1, 0, 1, 0, 1, 0]);
+  });
+
+  await t.test('不透明な覆いを置くと、後方の読める語へ移る', async () => {
+    const before = await iconPixels(cdp, tab, '#h-op .iiyaku-icon');
+    assert.ok(before && before.nonwhite > 0, `前提が崩れている: ${JSON.stringify(before)}`);
+    await putGhostCover(tab, '#h-op .iiyaku-icon', { background: 'white' });
+    await putGhostCover(tab, '#h-cl .iiyaku-icon', { background: 'transparent' });
+    await putGhostCover(tab, '#h-hf .iiyaku-icon', { background: 'white', width: '4px' });
+    await sleep(1500);
+    // ⚠️ **同じ場所**を測る。直っていれば印はもう居ないので、印を引いて測ると
+    //    測れなくなる（そこを見誤って、直った側の試験が null 参照で落ちた）。
+    const after = await pixelsAt(cdp, tab, before.rect);
+    assert.equal(after.nonwhite, 0,
+      `覆いが効いていない（前 ${before.nonwhite} 後 ${after.nonwhite}）`);
+    const [hop, lop] = await counts();
+    assert.equal(hop, 0, '0 画素の印が正規のまま残っている');
+    assert.equal(lop, 1, '後方の読める語が説明されていない');
+  });
+
+  await t.test('【対照】透明な覆い・部分的な覆い・スクロール枠は落とさない', async () => {
+    const [, , hcl, lcl, hhf, lhf, hsc, lsc] = await counts();
+    assert.deepEqual([hcl, lcl], [1, 0], '透明な覆いを「全面が覆われている」と誤判定した');
+    assert.deepEqual([hhf, lhf], [1, 0], '部分的な覆いを「全面が覆われている」と誤判定した');
+    assert.deepEqual([hsc, lsc], [1, 0], 'ふつうのスクロール枠を覆いと誤判定した');
+  });
+
+  await t.test('覆われた印は、実際に Tab で止まらない', async () => {
+    assert.equal(await countTabStops(cdp, tab,
+      `(() => { const a = document.activeElement;
+        return !!(a && a.closest && a.closest('#h-op')); })()`, { startId: 'before' }), 0);
+  });
+
+  await tab.close();
+});
+
+test('宣言だけの書き換えにも気づく（第22回 RG-22-04）', async t => {
+  const srv = await startTestServer(CSSOM22_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  await waitFor('拡張が動き出す', async () =>
+    await tab.evaluate(`document.querySelectorAll('.iiyaku-toggle').length`));
+  await sleep(800);
+
+  const n = () => tab.evaluate(`document.querySelectorAll('#menu22 .iiyaku-icon').length`);
+
+  await t.test('前提: 隠れているので印は無い', async () => {
+    assert.equal(await n(), 0);
+  });
+
+  await t.test('選択子も規則の数も変えずに display を変えると、600ms 以内に付く', async () => {
+    const changed = await tab.evaluate(`(() => {
+      for (const s of document.styleSheets) {
+        try { for (const r of s.cssRules) if (r.selectorText === '#menu22') {
+          r.style.display = 'inline'; return true; } } catch (e) {}
+      }
+      return false; })()`);
+    assert.ok(changed, '見本の書き換えができていない（＝この検査は何も測っていない）');
+    assert.equal(await tab.evaluate(`getComputedStyle(document.getElementById('menu22')).display`),
+      'inline', '見本の意図どおりに変わっていない');
+    await sleep(600);
+    assert.equal(await n(), 1, '2秒ごとの確認まで待たないと説明されない');
+  });
+
+  await tab.close();
+});
+
+test('画面内の移動と、入力のやり方の変化も拾う（第22回 RG-22-05）', async t => {
+  const srv = await startTestServer(TARGET22_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  await waitFor('拡張が動き出す', async () =>
+    await tab.evaluate(`document.querySelectorAll('.iiyaku-toggle').length`));
+  await sleep(800);
+
+  await t.test('`:target` で開いたら、600ms 以内に付く', async () => {
+    assert.equal(await tab.evaluate(`document.querySelectorAll('#menu22 .iiyaku-icon').length`), 0,
+      '前提が崩れている（隠れていない）');
+    await tab.evaluate(`(() => { location.hash = '#menu22'; return true; })()`);
+    await sleep(600);
+    assert.equal(await tab.evaluate(`getComputedStyle(document.getElementById('menu22')).display`),
+      'inline', '見本の意図どおりに開いていない');
+    assert.equal(await tab.evaluate(`document.querySelectorAll('#menu22 .iiyaku-icon').length`), 1,
+      '`:target` の変化が合図になっていない');
+  });
+
+  await t.test('同じ相手のまま `:focus-visible` へ変わったら、600ms 以内に付く', async () => {
+    // まず**マウスで**フォーカスさせる（この時点では `:focus-visible` にならない）
+    const b = await tab.evaluate(`(() => { const r = document.getElementById('tgt22').getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+    for (const type of ['mousePressed', 'mouseReleased']) {
+      await cdp.send('Input.dispatchMouseEvent',
+        { type, x: b.x, y: b.y, button: 'left', clickCount: 1 }, tab.sessionId);
+    }
+    await sleep(500);
+    assert.equal(await tab.evaluate(`document.getElementById('tgt22').matches(':focus-visible')`),
+      false, '前提が崩れている（マウスで押しただけで :focus-visible になった）');
+    assert.equal(await tab.evaluate(`document.querySelectorAll('#fmenu22 .iiyaku-icon').length`), 0);
+
+    // フォーカスの相手は変えず、入力のやり方だけをキーボードへ変える
+    await pressKey(cdp, tab.sessionId, 'ArrowDown');
+    await sleep(600);
+    assert.equal(await tab.evaluate(`document.getElementById('tgt22').matches(':focus-visible')`),
+      true, '見本の意図どおりに :focus-visible にならない');
+    assert.equal(await tab.evaluate(`document.querySelectorAll('#fmenu22 .iiyaku-icon').length`), 1,
+      '入力のやり方の変化が合図になっていない');
+  });
+
+  await tab.close();
+});
+
+test('恒久の設定は、利用者が押したときだけ変わる（第22回 RG-22-06）', async t => {
+  const srv = await startTestServer(TRUST22_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  await waitFor('印が付く', async () =>
+    await tab.evaluate(`document.querySelectorAll('.iiyaku-icon').length`));
+
+  const state = () => tab.evaluate(`(() => { const b = document.querySelector('.iiyaku-toggle');
+    return [b.textContent, b.getAttribute('aria-pressed')]; })()`);
+
+  await t.test('ページからの `.click()` では変わらない', async () => {
+    assert.deepEqual(await state(), ['解説 ON', 'true'], '前提が崩れている');
+    await tab.evaluate(`(() => { document.querySelector('.iiyaku-toggle').click(); return true; })()`);
+    await sleep(700);
+    assert.deepEqual(await state(), ['解説 ON', 'true'], 'ページの `.click()` で設定が変わった');
+  });
+
+  await t.test('合成した MouseEvent でも変わらない', async () => {
+    await tab.evaluate(`(() => { document.querySelector('.iiyaku-toggle')
+      .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })); return true; })()`);
+    await sleep(700);
+    assert.deepEqual(await state(), ['解説 ON', 'true'], '合成イベントで設定が変わった');
+  });
+
+  await t.test('恒久の保存にも届いていない（別のタブで見る）', async () => {
+    const other = await openPage(cdp, PAGE);
+    await waitFor('別のタブでも印が付く', async () =>
+      await other.evaluate(`document.querySelectorAll('.iiyaku-icon').length`));
+    assert.equal(await other.evaluate(`document.querySelector('.iiyaku-toggle').textContent`),
+      '解説 ON', '合成 click が保存まで届いていた');
+    await other.close();
+  });
+
+  await t.test('【対照】本物のマウス操作では変わる', async () => {
+    await clickToggle(cdp, tab);
+    await sleep(700);
+    assert.deepEqual(await state(), ['解説 OFF', 'false'],
+      '本物の click でも変わらない＝門が広すぎる');
+    await clickToggle(cdp, tab);
+    await sleep(700);
+    assert.deepEqual(await state(), ['解説 ON', 'true']);
+  });
+
+  await t.test('【対照】キーボード（Enter / Space）でも変わる', async () => {
+    await tab.evaluate(`(() => { document.querySelector('.iiyaku-toggle').focus(); return true; })()`);
+    await pressKey(cdp, tab.sessionId, 'Enter', { activate: true });
+    await sleep(700);
+    assert.deepEqual(await state(), ['解説 OFF', 'false'], 'Enter で切り替わらない');
+    await pressKey(cdp, tab.sessionId, 'Space', { activate: true });
+    await sleep(700);
+    assert.deepEqual(await state(), ['解説 ON', 'true'], 'Space で切り替わらない');
+  });
+
+  await tab.close();
+});
+
+test('単独の印の絵は、shadow の中だけが描く（v1.8.21）', async t => {
+  const srv = await startTestServer(RETIRE22_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  await waitFor('印が付く', async () =>
+    await tab.evaluate(`document.querySelectorAll('#first .iiyaku-icon').length`));
+  await sleep(500);
+
+  // ⚠️ v1.8.20 は light DOM 側の枠と "i" を残していたので、輪が二重になり
+  //    "i" が箱の外へはみ出していた（実測・撮影して見つけた）。
+  await t.test('light DOM の host は、枠も "i" も描かない', async () => {
+    assert.deepEqual(await tab.evaluate(`(() => {
+      const h = document.querySelector('#first .iiyaku-icon');
+      const cs = getComputedStyle(h), af = getComputedStyle(h, '::after');
+      return [cs.borderTopWidth, af.content]; })()`),
+      ['0px', 'none']);
+  });
+
+  await t.test('shadow の中の button が、host いっぱいに広がっている', async () => {
+    await cdp.send('DOM.enable', {}, tab.sessionId);
+    const { root } = await cdp.send('DOM.getDocument', { depth: -1, pierce: true }, tab.sessionId);
+    const found = [];
+    const walk = (n, inShadow) => {
+      if (n.localName === 'button' && inShadow) found.push(n.backendNodeId);
+      for (const r of n.shadowRoots || []) walk(r, true);
+      for (const c of n.children || []) walk(c, inShadow);
+    };
+    walk(root, false);
+    assert.ok(found.length > 0, 'shadow の中に button が無い');
+    const { object } = await cdp.send('DOM.resolveNode', { backendNodeId: found[0] }, tab.sessionId);
+    const { result } = await cdp.send('Runtime.callFunctionOn', {
+      objectId: object.objectId, returnByValue: true,
+      functionDeclaration: `function () {
+        const r = this.getBoundingClientRect();
+        const h = this.getRootNode().host.getBoundingClientRect();
+        return { same: Math.abs(r.width - h.width) < 1.5 && Math.abs(r.height - h.height) < 1.5,
+                 btn: [Math.round(r.width), Math.round(r.height)],
+                 host: [Math.round(h.width), Math.round(h.height)],
+                 glyph: getComputedStyle(this, '::after').content };
+      }` }, tab.sessionId);
+    assert.equal(result.value.glyph, '"i"', '印の "i" が shadow の中に無い');
+    assert.ok(result.value.same,
+      `button が host と同じ大きさでない（入れ子の輪になる）: ${JSON.stringify(result.value)}`);
   });
 
   await tab.close();

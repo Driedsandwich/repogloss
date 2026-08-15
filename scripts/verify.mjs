@@ -540,10 +540,13 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   // 祖先の `::after` が印を覆うと `elementFromPoint` はその祖先を返すので、
   // 0画素の印が合格していた（第21回 RG-21-03）。**その書き方が戻っていないこと**を
   // 検査する。スクロールで出せる印を守るのは `visibleNow` の門のほう。
+  // ⚠️ **1行まるごとで留めない。** v1.8.20 はこの `exposed++` の行を文字どおり
+  //    見ていたので、当たり判定に映らない覆いの判定を足した瞬間に落ちた（v1.8.21）。
+  //    見たいのは「露出と数える条件が、印そのものか印の子孫であること」という性質。
   check('印が覆われていないかを、当たり判定で見ている',
     /const ICON_PROBES/.test(code) && /document\.elementFromPoint\(x, y\)/.test(code) &&
     /if \(inView > 0 && exposed === 0 && visibleNow\(b, chain\)\) return false;/.test(code) &&
-    /if \(hit && \(hit === icon \|\| icon\.contains\(hit\)\)\) exposed\+\+;/.test(code) &&
+    /hit === icon \|\| icon\.contains\(hit\)[\s\S]{0,80}exposed\+\+;/.test(code) &&
     /function visibleNow/.test(code),
     '不透明な要素に全面を覆われた印が残る／逆に、スクロールで出せる印を覆いと誤判定する');
   check('祖先が最前面に出ることを、露出の証拠にしていない（第21回 RG-21-03）',
@@ -643,8 +646,12 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     'host 側に role / tabindex が残ると、複製にも押せる点が移る');
   // ⚠️ `<slot>` が無いと、退役した印をページが本文の入れ物に使い回したとき、
   //    その文字が描かれなくなる（実測で再現した）
+  // ⚠️ **書き方で留めない。** v1.8.20 では `root.append(btn, desc, …slot)` という
+  //    1行そのものを見ていたので、slot を条件付きで足す形へ変えた瞬間に落ちた。
+  //    見たいのは「slot を必ず1つ置くか」という性質のほう。
   check('shadow の中に slot を置いている（第21回 RG-21-06）',
-    /root\.append\(btn, desc, document\.createElement\('slot'\)\);/.test(code),
+    /createElement\('slot'\)/.test(code) &&
+    /if \(!root\.querySelector\('slot'\)\) root\.append/.test(code),
     'ページが使い回した節点の本文が描かれなくなる');
   // ⚠️ shadow 専用の区間には裸の `button {…}` が入る。ページ側の style へ入れると、
   //    ページのボタンまで作り替えてしまう（実測: 切替ボタンの字形指定が落ちた）
@@ -655,6 +662,132 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   check('開閉の状態を、押せる実体へ書いている（第21回 RG-21-06）',
     /function setExpanded/.test(code) && /const btn = iconButton\.get\(icon\);/.test(code),
     'shadow の外の host へ aria-expanded を書いても、読み上げに出ない');
+
+  /* ---------- 第22回で足した不変条件 ---------- */
+  // ⚠️ ここは `css` / `subscribes` が作られるより前に走る。自分の分をここで用意する。
+  const css22 = read('styles.css');
+  const hoverList22 = (/const HOVER_SIGNALS = \[([\s\S]*?)\];/.exec(code) || [, ''])[1];
+  const subscribes22 = t => hoverList22.includes(`'${t}'`);
+  // RG-22-01 退役した印の中身を失効させる
+  check('退役するとき、shadow の中の押せる実体も畳んでいる（第22回 RG-22-01）',
+    /function deactivateShadowIcon/.test(code) &&
+    /deactivateShadowIcon\(rec\.icon\);/.test(code),
+    'ページが使い回した節点の中で、古い押せる点が生き続ける');
+  check('畳むのは、DOM に繋がっているかに関わらず行う（第22回 RG-22-01）',
+    // 所有の取り消しと同じ場所（`isConnected` の判定より前）で畳んでいること
+    /expectedAttrs\.delete\(rec\.icon\);[\s\S]{0,400}deactivateShadowIcon\(rec\.icon\);[\s\S]{0,80}if \(rec\.icon\.isConnected\)/.test(code),
+    'ページが外して持っていた印を戻すと、中の button が生き返る');
+  check('畳むとき、押せなくしてから取り除いている（第22回 RG-22-01）',
+    /btn\.disabled = true;[\s\S]{0,200}btn\.tabIndex = -1;[\s\S]{0,300}btn\.remove\(\);/.test(code),
+    '取り除きに失敗したとき、Tab の停止点だけが残る');
+  check('畳んでも、所有の記録を残さない（第22回 RG-22-01）',
+    /iconButton\.delete\(host\);/.test(code) && /iconDesc\.delete\(host\);/.test(code),
+    '同じ host が「まだ自分の印」として扱われ続ける');
+
+  // RG-22-02 押せる実体そのものの塗り
+  check('押せる実体の塗りを、ページの変数だけに委ねていない（第22回 RG-22-02）',
+    /function ensureShadowPaint/.test(code) &&
+    /const SHADOW_FG = '--rg-fg';/.test(code) &&
+    /--rg-fg/.test(css22) && /--rg-bg/.test(css22),
+    'ページが `--fgColor-accent: transparent` を置くと、印が 0 画素になる');
+  check('押せる実体の塗りを、実測してから決めている（第22回 RG-22-02）',
+    /btn\.style\.removeProperty\(SHADOW_FG\);/.test(code) &&
+    /if \(!TRANSPARENT\.test\(getComputedStyle\(btn\)\.color\)\) return;/.test(code),
+    '塗れているのに上書きすると、テーマ追従が失われる');
+  check('印の実測が、押せる実体のほうも見ている（第22回 RG-22-02）',
+    /const target = focusTargetOf\(icon\);/.test(code) &&
+    /TRANSPARENT\.test\(ts\.color\) && TRANSPARENT\.test\(ts\.borderTopColor\) &&/.test(code),
+    'host だけ見ても、shadow の中が 0 画素かは分からない');
+  // ⚠️ v1.8.20 は light DOM 側の絵をそのまま残していたので、輪が二重になり
+  //    "i" が箱の外へはみ出していた（v1.8.21 で実測・撮影して直した）
+  check('shadow のある印は、light DOM 側で絵を描かない（v1.8.21）',
+    /:not\(\[data-iiyaku-for\]\):not\(\[role\]\)[\s\S]{0,400}?border-width: 0;/.test(css22) &&
+    /:not\(\[data-iiyaku-for\]\):not\(\[role\]\)::after\s*\{\s*\n?\s*content: none;/.test(css22) &&
+    /button::after\s*\{\s*\n?\s*content: "i";/.test(css22),
+    '輪が二重になり、"i" が印の箱の外へはみ出す');
+  check('shadow の中の button は、host いっぱいに広げている（v1.8.21）',
+    /width: 100%;\n\s*height: 100%;/.test(css22) &&
+    /font: 700 1em\/1 Georgia/.test(css22),
+    '`.78em` が二重に掛かり、印の中に小さい輪が入れ子で描かれる');
+
+  // RG-22-03 当たり判定に映らない覆い
+  check('当たり判定に映らない覆いも見ている（第22回 RG-22-03）',
+    /function ghostCovers/.test(code) && /function ghostBlocks/.test(code) &&
+    /&& !ghostBlocks\(icon, x, y\)\) exposed\+\+;/.test(code),
+    '`pointer-events: none` の不透明な覆いで 0 画素になった印が、正規のまま残る');
+  check('覆いは、断定できるものだけ数えている（第22回 RG-22-03）',
+    /if \(TRANSPARENT\.test\(cs\.backgroundColor\)\) continue;/.test(code) &&
+    /if \(cs\.position === 'static'\) continue;/.test(code) &&
+    /if \(!opaqueChain\(el\)\) continue;/.test(code),
+    '透明な覆い・重なり順の分からない箱まで覆いと数え、読める語が説明されなくなる');
+  check('覆いを、点ごとに見ている（第22回 RG-22-03）',
+    /for \(const \[fx, fy\] of ICON_PROBES\)[\s\S]{0,600}ghostBlocks\(icon, x, y\)/.test(code),
+    '部分的な覆いを「全面が覆われている」と誤判定する');
+  check('覆いの候補を、宣言のある規則から引いている（第22回 RG-22-03）',
+    /function ghostSelectorList/.test(code) &&
+    /getPropertyValue\('pointer-events'\) === 'none'/.test(code) &&
+    /if \(ghostSelWalk\) pool = \[\.\.\.document\.querySelectorAll\('\*'\)\];/.test(code),
+    '毎回すべての要素を歩くと、10,000要素で 6〜13ms 掛かる');
+
+  // RG-22-04 / RG-22-05 合図の出ない変化
+  check('合図の出ない変化を、短い周期で見に行っている（第22回 RG-22-04）',
+    /function scheduleFastCheck/.test(code) && /const FAST_GAP = /.test(code) &&
+    /scheduleFastCheck\(\);/.test(code),
+    'CSSOM の書き換えが、2秒ごとの確認まで説明されない');
+  check('その見直しは、使いすぎの門を通している（第22回 RG-22-04）',
+    /latent\.size > 0 && !overBudget\(\)/.test(code),
+    '重いページで、短い周期の見直しが CPU を食い続ける');
+  check('画面内の移動も合図にしている（第22回 RG-22-05）',
+    /const NAV_SIGNALS = \[/.test(code) &&
+    ['hashchange', 'popstate'].every(t =>
+      (/const NAV_SIGNALS = \[([\s\S]*?)\];/.exec(code) || [, ''])[1].includes(`'${t}'`)) &&
+    /window\.addEventListener\(t, onNavState\)/.test(code),
+    '`:target` で開いたメニューが、2秒ごとの確認まで説明されない');
+  check('入力のやり方の変化も合図にしている（第22回 RG-22-05）',
+    subscribes22('keydown') && /function focusVisibleNow/.test(code) &&
+    /\+ '\|' \+ focusVisibleNow\(\)/.test(code),
+    '同じ相手にフォーカスしたまま `:focus-visible` が付いても、測り直されない');
+
+  // ⚠️ §7 の番号は、版を上げるたびに新しい行を**途中へ**差し込むので衝突しやすい。
+  //    v1.8.20 では 22/23/24 が2組ずつあった（第21回の3行を既存の並びの前へ入れたため）。
+  //    値を見比べるのではなく、**いくつあるか**を数える。
+  {
+    const audit = read('AUDIT.md');
+    const sec = audit.slice(audit.indexOf('## 7. 意図的に直していない既知の制約'),
+                            audit.indexOf('## 8. これまでの監査の履歴'));
+    const nums = [...sec.matchAll(/^\| ([\d-]+b?) \| /gm)].map(m => m[1]);
+    const dup = [...new Set(nums.filter(n => nums.filter(x => x === n).length > 1))];
+    check('AUDIT.md §7 の番号が重複していない',
+      nums.length > 0 && dup.length === 0,
+      dup.length ? `重複: ${dup.join(', ')}` : '§7 の行を1つも読めていない');
+  }
+
+  // ⚠️ **内訳を書いたら、その場で合計と足し合わせる。** §8 は第21回まで8行しか無く、
+  //    第9回以降が抜けていた（合計 69件のまま）。行が増えても誰も足し算をしていなかった。
+  {
+    const audit = read('AUDIT.md');
+    const sec = audit.slice(audit.indexOf('## 8. これまでの監査の履歴'),
+                            audit.indexOf('## 9. 監査で特に見てほしいところ'));
+    const rows = [...sec.matchAll(/^\| (\d+) \| (\d+)件 \|/gm)];
+    const total = /^\| \*\*合計\*\* \| \*\*(\d+)件\*\* \|/m.exec(sec);
+    const sum = rows.reduce((a, m) => a + Number(m[2]), 0);
+    const rounds = rows.map(m => Number(m[1]));
+    const gaps = rounds.filter((n, i) => i > 0 && n !== rounds[i - 1] + 1);
+    check('AUDIT.md §8 の合計が、各行の和と一致する',
+      !!total && rows.length > 0 && sum === Number(total[1]) && gaps.length === 0,
+      total ? `行の和 ${sum} / 名乗る合計 ${total[1]}${gaps.length ? ` / 抜けている回: ${gaps.join(', ')}` : ''}`
+            : '§8 の合計行を読めていない');
+  }
+
+  // RG-22-06 恒久の設定を変えるのは、利用者が押したときだけ
+  check('合成された click では設定を変えない（第22回 RG-22-06）',
+    /btn\.addEventListener\('click', async event => \{/.test(code) &&
+    /if \(!event\.isTrusted\) return;/.test(code),
+    'ページ側の script が `.click()` するだけで、恒久の ON/OFF を書き換えられる');
+  check('`isTrusted` の門を、受け身の合図へ広げていない（第22回 RG-22-06）',
+    // 出てくるのは切替ボタンの1か所だけ
+    (code.match(/isTrusted/g) || []).length === 1,
+    '合成された変化でも「見えるようになった」ことは本当に起きているので、測り直しは止めない');
 
   /* ---------- 第19回で足した不変条件 ---------- */
   // RG-19-01 複数語の用語は、**全部の並び**が読めるときだけ可視
@@ -1240,12 +1373,16 @@ check('content.js が保存キー iiyakuEnabled を変えていない', content.
     /if \(mu\.target !== document\.documentElement\) roots\.push\(mu\.target\)/.test(code));
 
   // カーソルとフォーカスも合図にする（CSS だけで開くメニューは他の合図に乗らない）
+  // ⚠️ **並びを1行で留めない。** 合図は回を追うごとに増える（第21回に `:active`、
+  //    第22回に `keydown`）。そのたびに正しい実装が落ちるので、**入っているか**で見る。
+  const hoverSignalList = (/const HOVER_SIGNALS = \[([\s\S]*?)\];/.exec(code) || [, ''])[1];
+  const subscribes = t => hoverSignalList.includes(`'${t}'`);
   check('カーソルとフォーカスを、控えの見直しの合図にしている',
-    /const HOVER_SIGNALS = \['pointerover', 'pointerout', 'focusin', 'focusout',/.test(code) &&
+    ['pointerover', 'pointerout', 'focusin', 'focusout'].every(subscribes) &&
     /addEventListener\(t, onPointerOrFocus, true\)/.test(code));
   // ⚠️ `:active` は規則の走査では見ているのに購読していなかった（第21回 RG-21-05）
   check('`:active` の合図も購読している（第21回 RG-21-05）',
-    /'pointerdown', 'pointerup', 'pointercancel'\]/.test(code) &&
+    ['pointerdown', 'pointerup', 'pointercancel'].every(subscribes) &&
     /if \(e\.type === 'pointerdown'\) pressedNode = e\.target;/.test(code) &&
     /\+ '\|' \+ \(pressedNode \? chainKey\(pressedNode\) : '-'\)/.test(code),
     '押しているあいだだけ開くメニューが、2秒ごとの確認まで説明されない');

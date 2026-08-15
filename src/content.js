@@ -1021,6 +1021,14 @@
       if (lc) shape = intersectRect(shape, lc);
     }
     // ③ clip-path。外接矩形に加えて、形そのものとの交差も控える。
+    //
+    // ⚠️ **解けない形は「制限なし」ではない**（第20回 RG-20-02）。`shapeHitTest` が
+    // 解けるのは `circle()` / `ellipse()` / 角丸つき `inset()` だけで、それ以外
+    // （`polygon()` / `path()` / `shape()` / `calc()` を含む形など）は null を返す。
+    // その null を「形の制限は無い」として通していたため、**面積0の
+    // `polygon(0 0,0 0,0 0)` の中の語が確実に見えるものとして扱われて**いた
+    // （実測: 語も印も0画素・印の5点すべてが BODY・それでも Tab の順路に入った）。
+    // 解けないときは「断定できない」を返す。
     if (cs.clipPath && cs.clipPath !== 'none') {
       const { shape: sh, box } = splitGeometryBox(cs.clipPath.trim());
       if (!skewed) {
@@ -1028,7 +1036,8 @@
         const sr = shapeBoundsRect(sh, ref);
         if (sr) shape = intersectRect(shape, sr);
         const t = shapeHitTest(sh, ref);
-        if (t) tests.push(rect => t(rectPoly(rect)));
+        if (typeof t === 'function') tests.push(rect => t(rectPoly(rect)));
+        else if (t !== 'rect') tests.push(() => 'unknown');   // 解けない形＝断定できない
       } else if (flat) {
         // 回転・拡大縮小があるときは、形も一緒に回っている。viewport の軸に沿った
         // まま判定していたため、中心も半径もずれ、**外にある語へ印が付き、
@@ -1056,16 +1065,27 @@
           }
           const t = shapeHitTest(sh, ref);
           // 変形前へ戻せない角度（ちょうど45°など）では断定しない（第19回 RG-19-03）
-          if (t) tests.push(rect => { const p = map.backPoly(rect); return p ? t(p) : 'unknown'; });
+          if (typeof t === 'function') {
+            tests.push(rect => { const p = map.backPoly(rect); return p ? t(p) : 'unknown'; });
+          } else if (t !== 'rect') tests.push(() => 'unknown');   // 解けない形
+        } else {
+          tests.push(() => 'unknown');               // 変形前の箱が取れない
         }
+      } else {
+        // 3D・perspective では形を解けない。以前は「制限しない」側へ倒していたが、
+        // それは「確実に見える」と同じ意味になってしまう（第20回 RG-20-02）。
+        tests.push(() => 'unknown');
       }
-      // flat でない（3D・perspective）ときは形を解かない＝制限しない側へ倒す
     }
     return { overflow, shape, tests, scroller };
   }
 
   // 形そのものとの交差判定。矩形で足りる形は null を返す（外接矩形だけで決まる）。
   function shapeHitTest(shape, ref) {
+    // 形の指定が無く**参照ボックスだけ**（`clip-path: content-box` など）は、
+    // その箱そのもの＝外接矩形で足りる。解けないのとは違う（第20回 RG-20-02 の
+    // 直しで、ここを一緒くたにして `clip-path: content-box` の中の語を落とした）。
+    if (!shape || !shape.trim()) return 'rect';
     let m = /^circle\((.*)\)$/.exec(shape);
     if (m) {
       const { radii, pos } = splitShapeArgs(m[1]);
@@ -1092,7 +1112,10 @@
     m = /^inset\((.*)\)$/.exec(shape);
     if (m) {
       const parts = m[1].split(/\s+round\s+/);
-      if (parts.length !== 2) return null;
+      // 角を丸めていない `inset()` は、**外接矩形そのもの**。形の判定は要らない。
+      // ⚠️ ここを「解けない」と同じ扱いにすると、ふつうの `inset(0)` まで断定
+      // できないことになり、読める語を軒並み落とす（対照12件が落ちて気づいた）。
+      if (parts.length !== 2) return insetRect(parts[0], ref) ? 'rect' : null;
       const box = insetRect(parts[0], ref);
       if (!box) return null;
       const radii = cornerRadii(parts[1], box);

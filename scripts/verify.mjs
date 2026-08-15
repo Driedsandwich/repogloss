@@ -520,6 +520,17 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     !/acceptUnknown/.test(code) && !/unknownNodes/.test(code),
     '0画素の語が辞書のキーを取り、見えない押せる点になる');
 
+  /* ---------- 第20回で足した不変条件 ---------- */
+  // RG-20-02 解けない形は「制限なし」ではない
+  check('解けない clip-path を、断定できないこととして扱っている',
+    /else if \(t !== 'rect'\) tests\.push\(\(\) => 'unknown'\);/.test(code),
+    '面積0の polygon の中の語を、確実に見えるものとして扱う');
+  // ⚠️ 「外接矩形で足りる形」と混同しない。角を丸めていない `inset()` と、
+  // 参照ボックスだけの `clip-path` は矩形そのもの（ここを一緒くたにして対照12件を落とした）。
+  check('外接矩形で足りる形を、解けない形と区別している',
+    /if \(!shape \|\| !shape\.trim\(\)\) return 'rect';/.test(code) &&
+    /if \(parts\.length !== 2\) return insetRect\(parts\[0\], ref\) \? 'rect' : null;/.test(code),
+    '`inset(0)` や `clip-path: content-box` の中の読める語を落とす');
 
   /* ---------- 第19回で足した不変条件 ---------- */
   // RG-19-01 複数語の用語は、**全部の並び**が読めるときだけ可視

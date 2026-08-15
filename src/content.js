@@ -1486,23 +1486,35 @@
   // キーで1つに絞るのは**見え方で選んだあと**。先に絞ると、「1つ目は隠れていて
   // 2つ目は読める」場合に読めるほうが候補から消える（実測: 2行目の読める語に
   // 説明が付かなかった）。
-  let acceptUnknown = false;      // 2周目だけ true（断定できない候補を引き受ける）
-  let unknownNodes = null;        // 1周目で見送った節点
-
+  // ⚠️ **断定できない候補は、印を作らない**（第20回 RG-20-01）。
+  //
+  // 第18回から、断定できない候補は1周目で見送り、まとめ直しの最後に
+  // 「まだどこも引き受けていない語」を引き受け直していた。しかしその2周目は
+  // 通常の `annotate` を通るので、**0画素の語が辞書のキーを取り、`tabindex="0"` の
+  // 正規の印を作って**いた。実測（v1.8.18）:
+  //   - 透明な `url()` filter の語は0画素・後ろの1,512画素の語は印0
+  //   - 面積0の `polygon()`・ちょうど45°・止まれない吸い寄せでも同じ
+  //   - どれも印は実際の Tab の順路に入っていた
+  // 断定できないものを「たぶん見える」の側へ倒すと、**見えない停止点**が残り、
+  // 後ろの確実に読める語が説明されなくなる。
+  //
+  // いまは 'unknown' を `false` と同じに扱い、**節点は控えへ残す**。ページの状態が
+  // 変わって断定できるようになれば、控えの見直しがそこで拾う。
+  // 代償: 実際には見えているのに断定できない語（解けない filter・45°・
+  // 未対応の `clip-path` の中の語など）は、ページに他の出現が無ければ説明されない。
+  // 「見えない押せる点を作らない」ほうを取る。
   function visibleHits(node, el) {
     const all = matcher.findHits(node.nodeValue, key => usableGloss(key) !== null, { all: true });
     const out = [];
     const seen = new Set();
-    // 「見えるとも見えないとも断定できない」候補で、その語を使い切らない
-    // （第18回 RG-18-04 / RG-18-05）。1周目では見送って節点を控え、まとめ直しの
-    // 最後に**まだどこも引き受けていない語だけ**を、その候補で引き受け直す。
-    // こうすると、ページのどこかに確実に見える同じ語があれば必ずそちらが勝つ。
+    let deferred = false;
     for (const h of all) {
       if (seen.has(h.key)) continue;
       const v = isVisibleOccurrence(el, node, h.end - h.match.length, h.end);
-      if (v === true || (v === 'unknown' && acceptUnknown)) { seen.add(h.key); out.push(h); }
-      else if (v === 'unknown' && unknownNodes) unknownNodes.add(node);
+      if (v === true) { seen.add(h.key); out.push(h); }
+      else if (v === 'unknown') deferred = true;
     }
+    if (deferred) rememberLatent(node);
     return out;
   }
 
@@ -2585,7 +2597,6 @@
     ensureOwnStyle();
 
     withRenderCache(() => {
-      unknownNodes = new Set();
       // ① 記録と DOM の食い違いを片づける。deep なら見え方・到達性・入口の意味まで。
       let released = reconcileGlosses(deep);
 
@@ -2620,17 +2631,8 @@
         if (deep) found += discoverLatent();
       }
       if (hoverTriggered) { hoverTriggered = false; noteHoverFound(found); }
-
-      // ⑤ 2周目。断定できずに見送った節点だけを、いま引き受け直す。
-      //    ここまでで確実に見える候補は全部引き受け済みなので、残っているキーは
-      //    「他に確かな置き場所が無い」ものだけになる。
-      const pending = unknownNodes;
-      unknownNodes = null;                       // 2周目では集めない
-      if (pending && pending.size) {
-        acceptUnknown = true;
-        try { for (const n of pending) if (n.isConnected && isTarget(n)) annotate(n); }
-        finally { acceptUnknown = false; }
-      }
+      // ⚠️ 2周目（断定できない候補の引き受け直し）は**廃止した**（第20回 RG-20-01）。
+      // そこを通ると 0画素の語が辞書のキーを取り、見えない押せる点を残していた。
     });
   }
 

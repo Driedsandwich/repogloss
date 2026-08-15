@@ -509,9 +509,17 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   check('mask の合成が足し合わせ以外なら、断定しない',
     /function maskState/.test(code) && /allAdd/.test(code) && /'unknown'/.test(code),
     '打ち消し合って消えている語を可視と答える');
-  check('断定できない候補で、その語を使い切らない',
-    /let acceptUnknown = false/.test(code) && /unknownNodes/.test(code),
+  // ⚠️ 断定できない候補は、**印そのものを作らない**（第20回 RG-20-01）。
+  // 以前は2周目で引き受け直していたが、そこを通ると 0画素の語が辞書のキーを取り、
+  // `tabindex="0"` の見えない停止点を残していた。
+  check('断定できない候補は、印を作らずに控えへ戻す',
+    /else if \(v === 'unknown'\) deferred = true;/.test(code) &&
+    /if \(deferred\) rememberLatent\(node\);/.test(code),
     '前方の断定できない候補が、後ろの確実に見える語を抑止する');
+  check('断定できない候補を引き受け直す2周目を持っていない',
+    !/acceptUnknown/.test(code) && !/unknownNodes/.test(code),
+    '0画素の語が辞書のキーを取り、見えない押せる点になる');
+
 
   /* ---------- 第19回で足した不変条件 ---------- */
   // RG-19-01 複数語の用語は、**全部の並び**が読めるときだけ可視

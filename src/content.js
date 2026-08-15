@@ -3191,6 +3191,8 @@
     return body + '\n' + off;
   }
 
+  let ownStyleRuleCount = -1;
+
   function scopeOwnStyle() {
     try {
       const st = document.createElement('style');
@@ -3198,19 +3200,30 @@
       st.textContent = ownStyleText;
       (document.head || document.documentElement).appendChild(st);
       ownStyle = st;
+      // 入れた直後の規則の数を控える（→ ensureOwnStyle が生きた規則と突き合わせる）
+      ownStyleRuleCount = liveRuleCount(st);
     } catch (e) {
       // 足せなくても本体の動作は変わらない（複製は sanitizeClones が無力化する）
       console.error('[iiyaku] 見た目を足せません:', e);
     }
   }
 
+  function liveRuleCount(st) {
+    try { return (st.sheet && st.sheet.cssRules) ? st.sheet.cssRules.length : -1; }
+    catch (e) { return -1; }
+  }
+
   // ページ側が消したら足し直す。消されたままだと、複製や同名要素へ自分の見た目が戻る。
   function ensureOwnStyle() {
-    // 「在ること」だけでなく「書いたとおりであること」も見る。中身を書き換えられると、
-    // 外されたのと同じになる（ページ側の同名要素へ自分の見た目が戻る）。
-    if (ownStyle && ownStyle.isConnected && ownStyle.textContent === ownStyleText) return;
+    // 「在ること」「書いたとおりであること」に加えて、**生きた規則の数**も見る。
+    // ⚠️ `sheet.deleteRule()` は `textContent` を変えない（第20回 RG-20-07。実測:
+    // 自分の style の規則を3つとも消しても文字列は 7,943 文字のままで、
+    // 規則0件の style を正常と判定していた。印は装飾を失い幅0になる）。
+    if (ownStyle && ownStyle.isConnected && ownStyle.textContent === ownStyleText
+        && (ownStyleRuleCount < 0 || liveRuleCount(ownStyle) === ownStyleRuleCount)) return;
     if (ownStyle && ownStyle.isConnected) removeOwn(ownStyle);
     ownStyle = null;
+    ownStyleRuleCount = -1;
     scopeOwnStyle();
   }
 

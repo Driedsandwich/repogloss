@@ -564,6 +564,10 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   check('stylesheet の形の指紋を見ている',
     /function styleFingerprint/.test(code) && /hoverCssPrint/.test(code),
     'insertRule で足した hover 規則に気づけない');
+  // RG-20-07 自前 style の生きた規則を見る
+  check('自前 style の生きた規則の数も見ている',
+    /function liveRuleCount/.test(code) && /liveRuleCount\(ownStyle\) === ownStyleRuleCount/.test(code),
+    'deleteRule で規則を消されても直さない');
 
   /* ---------- 第19回で足した不変条件 ---------- */
   // RG-19-01 複数語の用語は、**全部の並び**が読めるときだけ可視

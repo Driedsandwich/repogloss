@@ -643,8 +643,12 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     'host 側に role / tabindex が残ると、複製にも押せる点が移る');
   // ⚠️ `<slot>` が無いと、退役した印をページが本文の入れ物に使い回したとき、
   //    その文字が描かれなくなる（実測で再現した）
+  // ⚠️ **書き方で留めない。** v1.8.20 では `root.append(btn, desc, …slot)` という
+  //    1行そのものを見ていたので、slot を条件付きで足す形へ変えた瞬間に落ちた。
+  //    見たいのは「slot を必ず1つ置くか」という性質のほう。
   check('shadow の中に slot を置いている（第21回 RG-21-06）',
-    /root\.append\(btn, desc, document\.createElement\('slot'\)\);/.test(code),
+    /createElement\('slot'\)/.test(code) &&
+    /if \(!root\.querySelector\('slot'\)\) root\.append/.test(code),
     'ページが使い回した節点の本文が描かれなくなる');
   // ⚠️ shadow 専用の区間には裸の `button {…}` が入る。ページ側の style へ入れると、
   //    ページのボタンまで作り替えてしまう（実測: 切替ボタンの字形指定が落ちた）
@@ -655,6 +659,28 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   check('開閉の状態を、押せる実体へ書いている（第21回 RG-21-06）',
     /function setExpanded/.test(code) && /const btn = iconButton\.get\(icon\);/.test(code),
     'shadow の外の host へ aria-expanded を書いても、読み上げに出ない');
+
+  /* ---------- 第22回で足した不変条件 ---------- */
+  // ⚠️ ここは `css` / `subscribes` が作られるより前に走る。自分の分をここで用意する。
+  const css22 = read('styles.css');
+  const hoverList22 = (/const HOVER_SIGNALS = \[([\s\S]*?)\];/.exec(code) || [, ''])[1];
+  const subscribes22 = t => hoverList22.includes(`'${t}'`);
+  // RG-22-01 退役した印の中身を失効させる
+  check('退役するとき、shadow の中の押せる実体も畳んでいる（第22回 RG-22-01）',
+    /function deactivateShadowIcon/.test(code) &&
+    /deactivateShadowIcon\(rec\.icon\);/.test(code),
+    'ページが使い回した節点の中で、古い押せる点が生き続ける');
+  check('畳むのは、DOM に繋がっているかに関わらず行う（第22回 RG-22-01）',
+    // 所有の取り消しと同じ場所（`isConnected` の判定より前）で畳んでいること
+    /expectedAttrs\.delete\(rec\.icon\);[\s\S]{0,400}deactivateShadowIcon\(rec\.icon\);[\s\S]{0,80}if \(rec\.icon\.isConnected\)/.test(code),
+    'ページが外して持っていた印を戻すと、中の button が生き返る');
+  check('畳むとき、押せなくしてから取り除いている（第22回 RG-22-01）',
+    /btn\.disabled = true;[\s\S]{0,200}btn\.tabIndex = -1;[\s\S]{0,300}btn\.remove\(\);/.test(code),
+    '取り除きに失敗したとき、Tab の停止点だけが残る');
+  check('畳んでも、所有の記録を残さない（第22回 RG-22-01）',
+    /iconButton\.delete\(host\);/.test(code) && /iconDesc\.delete\(host\);/.test(code),
+    '同じ host が「まだ自分の印」として扱われ続ける');
+
 
   /* ---------- 第19回で足した不変条件 ---------- */
   // RG-19-01 複数語の用語は、**全部の並び**が読めるときだけ可視

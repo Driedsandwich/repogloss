@@ -2026,6 +2026,7 @@
   const USE_SHADOW_STANDALONE = true;      // 戻せるようにしておく（監査の助言）
   const iconButton = new WeakMap();        // host → 中の button
   const iconDesc = new WeakMap();          // host → 中の説明文
+  const iconShadow = new WeakMap();        // host → closed shadow root（付け直しを避ける）
   let shadowSheet;                         // 1枚だけ作って全部の shadow root で共有する
 
   // `styles.css` のうち、**shadow root の中だけ**で使う区間。
@@ -2055,9 +2056,13 @@
   function ensureShadowButton(host) {
     let btn = iconButton.get(host);
     if (btn) return btn;
-    let root;
-    try { root = host.attachShadow({ mode: 'closed' }); }
-    catch (e) { return null; }             // 付けられない環境では light DOM のまま
+    // 一度付けた shadow root は外せない。畳んだ相手をもう一度使うことになっても
+    // `attachShadow` をやり直さない（例外になって light DOM の形へ落ちてしまう）。
+    let root = iconShadow.get(host);
+    if (!root) {
+      try { root = host.attachShadow({ mode: 'closed' }); }
+      catch (e) { return null; }           // 付けられない環境では light DOM のまま
+    }
     try {
       const sheet = shadowIconSheet();
       if (sheet) root.adoptedStyleSheets = [sheet];
@@ -2074,10 +2079,43 @@
     // `textContent = 'A squash merge inside.'` を入れて本文へ戻すと、
     // 中の語が走査されず 0 件になった。ページの持ち物を壊している）。
     // ふだんの印は light DOM が空なので、slot は何も描かない。
-    root.append(btn, desc, document.createElement('slot'));
+    // 畳んだ相手を使い直す場合、slot は残してあるので足さない（2枚あると二重に描く）。
+    root.append(btn, desc);
+    if (!root.querySelector('slot')) root.append(document.createElement('slot'));
+    iconShadow.set(host, root);
     iconButton.set(host, btn);
     iconDesc.set(host, desc);
     return btn;
+  }
+
+  // 退役した印の「中身」を失効させる（第22回 RG-22-01）。
+  //
+  // ⚠️ **複製されないことと、退役した元が失効することは別の不変条件**である。
+  // closed shadow root は `cloneNode` で複製されないが、**元の host はそのまま残る**。
+  // ページが退役した印を本文の入れ物として使い回すと（`textContent = 'PAGE CONTENT'`）、
+  // light DOM からは自分の印だと分からなくなるのに、中の button は生きたままだった。
+  // 実測（実際に読み込んだ拡張・アクセシビリティのツリー）: 使い回された後、
+  // 「「branch」の解説」という名前の押せる button が **2個**あり、そのうち1個は
+  // ページの本文の中に居て、**実際に Tab で止まった**（停止点1）。
+  //
+  // light DOM の側（class・data 属性・操作性）は `stripOwnIdentity` が落とすが、
+  // shadow の中はページからも自分の走査からも見えないので、ここで明示的に畳む。
+  // ⚠️ **`<slot>` は残す。** 外すとページが入れた本文が描かれなくなる（第21回の実測）。
+  function deactivateShadowIcon(host) {
+    const btn = iconButton.get(host);
+    const desc = iconDesc.get(host);
+    iconButton.delete(host);
+    iconDesc.delete(host);
+    if (btn) {
+      // 取り除く前に**先に押せなくする**。取り除きに失敗しても、Tab の停止点は残さない。
+      try { btn.disabled = true; } catch (e) { /* 無視できる */ }
+      btn.tabIndex = -1;
+      btn.removeAttribute('aria-label');
+      btn.removeAttribute('aria-describedby');
+      btn.removeAttribute('aria-expanded');
+      btn.remove();
+    }
+    if (desc) { desc.textContent = ''; desc.remove(); }
   }
 
   // その印の「押せる実体」。shadow を使わない場合は host 自身。
@@ -2547,6 +2585,11 @@
     ownedIcons.delete(rec.icon);
     iconTrigger.delete(rec.icon);
     expectedAttrs.delete(rec.icon);
+    // 中の押せる実体も、ここで畳む（第22回 RG-22-01）。
+    // ⚠️ **DOM に繋がっているかを条件にしない。** ページが外して持っていた印を
+    // あとから戻すことがあり、そのとき中の button が生き返る。所有を取り消すのと
+    // 同じ場所で、同じ回数だけ畳む。
+    deactivateShadowIcon(rec.icon);
     if (rec.icon.isConnected) {
       // その印について説明を出している最中なら、先に閉じる
       if (tip && tipIcons.includes(rec.icon)) hideTip();

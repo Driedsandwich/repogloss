@@ -2692,6 +2692,8 @@
       // 同じ世代で既に見た候補は、答えが変わらない（第19回 RG-19-08）。
       // ここから下がレイアウトを起こす部分なので、その手前で飛ばす。
       if (latentEpoch.get(node) === visEpoch) continue;
+      // 範囲を絞った世代（カーソルの合図）では、外の節点はこの世代で変わりえない
+      if (!inEpochScope(node)) { latentEpoch.set(node, visEpoch); continue; }
       latentEpoch.set(node, visEpoch);
       if (!isTarget(node)) continue;
       n += annotate(node);
@@ -2903,7 +2905,35 @@
   // CSS の遷移の終わり・利用者の操作・スクロール。
   let visEpoch = 1;
   const latentEpoch = new WeakMap();
-  const bumpEpoch = () => { visEpoch++; };
+  // ⚠️ **カーソルの合図でも控え全件を測り直していた**（第21回 RG-21-07。実測:
+  // hover 規則のあるページで 500／2,000／5,000候補・10移動＝6,000／24,000／60,000回）。
+  // `:hover` が変わるのは、動く前と動いた後の連なりの差だけで、それは両者の
+  // **いちばん近い共通の祖先**の中に収まる。`:has()` と兄弟結合子が無ければ、
+  // そこから外れた場所の見え方は変わらない——その範囲だけを測り直す。
+  // 範囲を絞った世代では、外の節点は「この世代では見た」ことにして層を降ろさない。
+  // ⚠️ 絞りが外れても取りこぼしにはならない: 2秒ごとの確認は必ず**全体**を進める。
+  let epochScope = null;                 // Element … その中だけ／null … 全体
+  const bumpEpoch = () => { visEpoch++; epochScope = null; };
+  const bumpEpochWithin = root => { visEpoch++; epochScope = root || null; };
+  // ⚠️ **控えに入っているのは文字の節点**で、`asElement` はそれに `null` を返す
+  // （要素だけを通す関数だった）。最初これを使ったため、絞った世代では控えの全件が
+  // 「範囲の外」になり、`:active` の反例が一度も拾えなかった。入れ物の要素で見る。
+  const ownerEl = n => (n ? (n.nodeType === Node.ELEMENT_NODE ? n : n.parentElement) : null);
+  const inEpochScope = node => {
+    if (!epochScope) return true;
+    const e = ownerEl(node);
+    return !!e && (e === epochScope || epochScope.contains(e));
+  };
+  // 2つの節点の、いちばん近い共通の祖先。どちらかが無ければ全体へ倒す。
+  function commonAncestor(a, b) {
+    const ea = ownerEl(a), eb = ownerEl(b);
+    if (!ea || !eb) return null;
+    if (ea === eb) return ea;
+    if (ea.contains(eb)) return ea;
+    if (eb.contains(ea)) return eb;
+    for (let n = ea.parentElement; n; n = n.parentElement) if (n.contains(eb)) return n;
+    return null;
+  }
   // DOM・stylesheet・画面が変わったら、擬似クラスの状態の記録は捨てる
   const dropStates = () => { if (doneStates.size) doneStates.clear(); };
   // stylesheet が変わった回数（`:hover` を使う規則があるかの調べ直しに使う）
@@ -2959,32 +2989,40 @@
     return h;
   }
 
-  let hoverCssSerial = -1, hoverCssPrint = -1, hoverCssHas = true;
+  // `:hover` の効き方が**その連なりの中だけ**に収まるか（第21回 RG-21-07）。
+  // `:has()` は祖先を、兄弟結合子（`~` / `+`）は横を変えるので、そのときは絞れない。
+  const NONLOCAL = /:has\(|[~+]/;
+  let hoverCssSerial = -1, hoverCssPrint = -1, hoverCssHas = true, hoverCssLocal = false;
   function pageUsesHoverRules() {
     const print = styleFingerprint();
     if (hoverCssSerial === styleSerial && hoverCssPrint === print) return hoverCssHas;
-    if (hoverCssPrint !== print) { bumpEpoch(); dropStates(); }   // 規則が増減した
+    if (hoverCssPrint !== print) { bumpEpoch(); dropStates(); cssMoved = true; }   // 規則が変わった
     hoverCssSerial = styleSerial;
     hoverCssPrint = print;
-    let seen = 0;
-    const give = v => { hoverCssHas = v; return v; };
+    let seen = 0, has = false, local = true;
+    const give = (v, l) => { hoverCssHas = v; hoverCssLocal = v ? l : true; return v; };
     try {
       for (const sheet of document.styleSheets) {
         if (ownStyle && sheet.ownerNode === ownStyle) continue;
         let rules;
-        try { rules = sheet.cssRules; } catch (e) { return give(true); }   // 読めない＝あるものとして扱う
+        try { rules = sheet.cssRules; } catch (e) { return give(true, false); }  // 読めない＝あるものとして扱う
         if (!rules) continue;
         const stack = [rules];
         while (stack.length) {
           for (const r of stack.pop()) {
-            if (++seen > RULE_SCAN_MAX) return give(true);                 // 大きすぎる＝あるものとして扱う
-            if (r.selectorText && HOVERISH.test(r.selectorText)) return give(true);
+            if (++seen > RULE_SCAN_MAX) return give(true, false);           // 大きすぎる＝絞らない
+            // ⚠️ ここで最初の1件で切り上げてはいけない。**あるか**だけでなく、
+            // **すべてが連なりの中に収まるか**まで知りたい（絞ってよいかの判断）。
+            if (r.selectorText && HOVERISH.test(r.selectorText)) {
+              has = true;
+              if (NONLOCAL.test(r.selectorText)) local = false;
+            }
             if (r.cssRules) stack.push(r.cssRules);
           }
         }
       }
-    } catch (e) { return give(true); }
-    return give(false);
+    } catch (e) { return give(true, false); }
+    return give(has, local);
   }
 
   // DOM の変更を伴わない合図。CSS の遷移・アニメーションの終わり、画面の大きさの変化。
@@ -3096,6 +3134,26 @@
   // `pseudoStateKey(undefined)` は連なりを持たない別の鍵になるので、実際に見ていた
   // 相手を失い、その状態を「済み」として記録してしまう。鍵のほうを持ち越す。
   let hoverTailKey = null;
+  let lastStateNode = null;        // 直前に合図の来た相手（範囲を絞るための基点）
+  // ---- 測り直す範囲の накопление（第21回 RG-21-07）----
+  // ⚠️ **飲み込んだ合図の範囲を捨ててはいけない**。最初こう書いておらず、
+  // `hoverPending` で見送った `pointerover`（＝新しく入った相手）の範囲が落ち、
+  // 既存の対照が8件落ちた。範囲は合図ごとに**広げて溜め**、実際に走る直前に使う。
+  // `undefined` … まだ何も／`null` … 全体（絞らない）／Element … その中だけ
+  let scopeAcc;
+  let cssMoved = false;            // この間に stylesheet が変わった＝絞らない
+  function widenScope(node) {
+    if (scopeAcc === null) return;                        // すでに全体
+    const e = ownerEl(node);
+    if (!e) { scopeAcc = null; return; }                  // 相手が分からない＝絞らない
+    scopeAcc = (scopeAcc === undefined) ? e : commonAncestor(scopeAcc, e);
+    if (scopeAcc === document.documentElement) scopeAcc = null;
+  }
+  function takeScope() {
+    const s = (cssMoved || !hoverCssLocal || scopeAcc === undefined) ? null : scopeAcc;
+    scopeAcc = undefined; cssMoved = false;
+    return s;
+  }
   const onPointerOrFocus = (e, forcedKey) => {
     notePress(e);                  // 早く返る道でも、押した／離したの記録は落とさない
     if (latent.size === 0) return;
@@ -3105,9 +3163,13 @@
     // 同じ擬似クラスの状態で、既にひと回り終えているなら、答えは変わらない
     const key = forcedKey || pseudoStateKey(e);
     if (doneStates.has(key)) return;
+    // 変わった相手を、飲み込む場合でも必ず範囲へ足す（第21回 RG-21-07）
+    if (e) { widenScope(lastStateNode); widenScope(e.target); }
+    else widenScope(null);                              // 相手が分からない合図＝絞らない
+    const now2 = ownerEl(e && e.target);
+    if (now2) lastStateNode = now2;
     if (hoverPending) { hoverTailKey = key; return; }   // 予約済み。鍵だけ最新にする
     pendingState = key;
-    bumpEpoch();                   // `:hover` の当たる先が変わった＝状態が変わった
     if (overBudget()) return;      // 使いすぎた。2秒ごとの確認に任せる
     const now = performance.now();
     if (now - hoverAt < hoverGap) {
@@ -3129,6 +3191,10 @@
     const fire = () => {
       hoverPending = false;
       if (!observing) return;
+      // ⚠️ 世代を進めるのは**ここ**。合図の時点で進めると、そのあと飲み込んだ
+      // 合図の範囲を取り込めない（第21回 RG-21-07）。
+      const sc = takeScope();
+      if (sc) bumpEpochWithin(sc); else bumpEpoch();
       hoverTriggered = true;
       schedule({ deep: true });
       // 待たせているあいだに状態が進んでいたら、そこから続ける

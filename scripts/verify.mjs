@@ -603,6 +603,30 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     /const dropStates/.test(code),
     'カーソルが同じ場所へ戻るたびに控え全件を測り直す');
 
+  /* ---------- 第21回 RG-21-07 測り直す範囲を絞る ---------- */
+  check('カーソルの合図では、変わった範囲だけを測り直している（第21回 RG-21-07）',
+    /let epochScope = null;/.test(code) && /const bumpEpochWithin/.test(code) &&
+    /function commonAncestor/.test(code) && /if \(!inEpochScope\(node\)\)/.test(code),
+    'hover 規則のあるページで、合図ごとに控え全件を回す');
+  // ⚠️ 控えに入っているのは**文字の節点**。要素だけを通す `asElement` で範囲を見ると
+  // 全件が「範囲の外」になり、絞りが「全部飛ばす」に化ける（実際にそうなった）。
+  check('範囲の判定は、文字の節点を入れ物の要素で見ている（第21回 RG-21-07）',
+    /const ownerEl = n => \(n \? \(n\.nodeType === Node\.ELEMENT_NODE \? n : n\.parentElement\) : null\);/.test(code) &&
+    /const e = ownerEl\(node\);\n    return !!e && \(e === epochScope/.test(code),
+    '絞った世代で控えが1件も評価されず、静かに何も見つからなくなる');
+  // ⚠️ 飲み込んだ合図の範囲を捨てると、新しく入った相手の中を測り直さない
+  check('飲み込んだ合図の範囲も、溜めてから使っている（第21回 RG-21-07）',
+    /function widenScope/.test(code) && /function takeScope/.test(code) &&
+    /if \(e\) \{ widenScope\(lastStateNode\); widenScope\(e\.target\); \}/.test(code) &&
+    /const sc = takeScope\(\);\n      if \(sc\) bumpEpochWithin\(sc\); else bumpEpoch\(\);/.test(code),
+    'hoverPending で見送った pointerover の範囲が落ち、その中の語が見つからない');
+  check('stylesheet が変わった回は、範囲を絞っていない（第21回 RG-21-07）',
+    /cssMoved = true;/.test(code) && /\(cssMoved \|\| !hoverCssLocal \|\| scopeAcc === undefined\) \? null : scopeAcc/.test(code),
+    '規則が変わったのに、直前のカーソル位置の中だけしか測り直さない');
+  check('`:has()` と兄弟結合子があるページでは絞っていない（第21回 RG-21-07）',
+    /const NONLOCAL = \/:has\\\(\|\[~\+\]\//.test(code) && /hoverCssLocal/.test(code),
+    '横や祖先が変わる規則のあるページで、変化を取りこぼす');
+
   /* ---------- 第19回で足した不変条件 ---------- */
   // RG-19-01 複数語の用語は、**全部の並び**が読めるときだけ可視
   check('語の矩形を、並びごとに分けて持っている',

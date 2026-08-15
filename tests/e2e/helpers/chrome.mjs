@@ -1365,3 +1365,107 @@ export const LAYER19_PAGE = `<!doctype html><html lang="en"><head><meta charset=
   <p id="src">A branch here.</p>
 </body></html>`;
 
+
+/* ===== 第20回監査の反例（v1.8.19 で固定する） ===== */
+
+const PX1_20 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGD4DwABBAEAX+XDSwAAAABJRU5ErkJggg==';
+
+/* RG-20-01 / RG-20-02。断定できない候補は、正規の押せる印を作らない。
+   実測（v1.8.18）: 透明な url() filter の語は0画素・後ろの1,512画素の語は印0。
+   面積0の polygon の中の語も、印の5点すべてが BODY なのに Tab の順路に入った。 */
+export const UNKNOWN20_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>unk20</title><style>html,body{background:#fff;color:#000;margin:0;font:16px/1.5 monospace}</style></head><body>
+  <button id="before">before</button>
+  <svg width="0" height="0" aria-hidden="true">
+    <filter id="hidF"><feFlood flood-color="black" flood-opacity="0"/></filter>
+    <filter id="visF"><feFlood flood-color="black" flood-opacity="1"/></filter>
+  </svg>
+  <!-- ⚠️ 後方は**ふつうの文章**にする。監査の受入条件は「透明な url() filter →
+       可視な url() filter の順で、可視側に付く」だが、こちらは SVG filter の中身を
+       解かないので**どちらも断定できない**＝どちらにも付かない（実測で確認）。
+       ここで固定するのは「断定できない候補が、確実に見える語からキーを奪わない」
+       という不変条件のほう。filter を解かないことは既知の限界として書いてある。 -->
+  <div id="h-flt"><p style='filter:url("#hidF")'>A branch first.</p></div>
+  <div id="l-flt"><p>A branch second.</p></div>
+  <div id="h-poly"><p style="clip-path:polygon(0 0,0 0,0 0)">A commit hidden.</p></div>
+  <p id="l-poly">A commit visible later.</p>
+  <!-- ［対照］角を丸めていない inset は外接矩形そのもの＝落とさない -->
+  <div id="h-inset"><p style="clip-path:inset(0)">A merge shown.</p></div>
+  <p id="l-inset">A merge later.</p>
+  <!-- ［対照］参照ボックスだけの clip-path も矩形そのもの -->
+  <div id="h-cbox" style="padding:10px"><p style="clip-path:content-box">A rebase shown.</p></div>
+  <p id="l-cbox">A rebase later.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-20-03。印そのものの不透明度と、上に重なるものを見る。 */
+export const ICONVIS20_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>icv20</title><style>html,body{background:#fff;color:#000;margin:0;font:16px/1.5 monospace}
+ .iiyaku-icon{opacity:0!important}</style></head><body>
+  <button id="before">before</button>
+  <div id="h-op"><p>A branch first.</p></div>
+  <p id="l-op">A branch visible later.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+export const ICONCOVER20_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>icc20</title><style>html,body{background:#fff;color:#000;margin:0;font:16px/1.5 monospace}</style></head><body>
+  <button id="before">before</button>
+  <div id="h-cov"><p>A branch first.</p></div>
+  <p id="l-cov">A branch visible later.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-20-04。mask は語の位置で見る。match-source の SVG mask も。 */
+export const MASK20_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>msk20</title><style>html,body{background:#fff;color:#000;margin:0;font:16px/1.5 monospace}</style></head><body>
+  <button id="before">before</button>
+  <svg width="0" height="0"><mask id="m20" mask-type="luminance"><rect width="100%" height="100%" fill="black"/></mask></svg>
+  <div id="h-alpha"><p style="width:300px;white-space:nowrap;-webkit-mask-image:linear-gradient(to right,transparent 0 55%,black 55% 100%);mask-image:linear-gradient(to right,transparent 0 55%,black 55% 100%);mask-mode:alpha">A branch hidden at left.</p></div>
+  <p id="l-alpha">A branch visible later.</p>
+  <div id="h-lum"><p style="width:300px;white-space:nowrap;-webkit-mask-image:linear-gradient(to right,black 0 55%,white 55% 100%);mask-image:linear-gradient(to right,black 0 55%,white 55% 100%);mask-mode:luminance">A commit hidden at left.</p></div>
+  <p id="l-lum">A commit visible later.</p>
+  <div id="h-svg"><p style="-webkit-mask-image:url(#m20);mask-image:url(#m20)">A merge hidden.</p></div>
+  <p id="l-svg">A merge visible later.</p>
+  <!-- ［対照］一様な黒の alpha mask は残る -->
+  <div id="h-uniA"><p style="-webkit-mask-image:linear-gradient(black,black);mask-image:linear-gradient(black,black);mask-mode:alpha">A rebase shown.</p></div>
+  <p id="l-uniA">A rebase later.</p>
+  <!-- ［対照］一様な白の luminance mask は残る -->
+  <div id="h-uniW"><p style="-webkit-mask-image:linear-gradient(white,white);mask-image:linear-gradient(white,white);mask-mode:luminance">A fetch shown.</p></div>
+  <p id="l-uniW">A fetch later.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-20-05。背景は層ごとに対応付け、明示の寸法は実寸で解く。 */
+export const BG20_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>bg20</title><style>html,body{background:#fff;color:#000;margin:0;font:16px/1.5 monospace}</style></head><body>
+  <button id="before">before</button>
+  <div id="h-1px"><p style="width:300px;color:transparent;-webkit-text-fill-color:transparent;background-image:linear-gradient(black,black);background-size:1px 1px;background-repeat:no-repeat;background-position:0 0;-webkit-background-clip:text;background-clip:text">A branch hidden.</p></div>
+  <p id="l-1px">A branch visible later.</p>
+  <div id="h-1pxr"><p style="width:300px;color:transparent;-webkit-text-fill-color:transparent;background-image:url(data:image/png;base64,${PX1_20});background-size:1px 1px;background-repeat:no-repeat;background-position:0 0;-webkit-background-clip:text;background-clip:text">A commit hidden.</p></div>
+  <p id="l-1pxr">A commit visible later.</p>
+  <div id="h-two"><p style="color:transparent;-webkit-text-fill-color:transparent;background-image:linear-gradient(black,black),linear-gradient(transparent,transparent);-webkit-background-clip:text,border-box;background-clip:text,border-box">A merge visible.</p></div>
+  <p id="l-two">A merge later.</p>
+  <!-- ［対照］領域いっぱいの gradient は届く -->
+  <div id="h-full"><p style="width:300px;color:transparent;-webkit-text-fill-color:transparent;background-image:linear-gradient(black,black);background-repeat:no-repeat;-webkit-background-clip:text;background-clip:text">A rebase visible.</p></div>
+  <p id="l-full">A rebase later.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-20-06。CSSOM で足した hover 規則を拾う。 */
+export const CSSOM20_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>cssom20</title><style id="s20">html,body{background:#fff;color:#000;margin:0;font:16px/1.5 monospace}
+ #host20{padding:20px;display:inline-block;background:#eee}
+ #menu20{display:none}</style></head><body>
+  <button id="before">before</button>
+  <div id="host20">host <span id="menu20">A branch menu.</span></div>
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-20-07。自前 style の規則を消されたら直す。 */
+export const OWNSTYLE20_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>own20</title><style>html,body{background:#fff;color:#000;margin:0;font:16px/1.5 monospace}</style></head><body>
+  <button id="before">before</button>
+  <p id="src20">A branch here.</p>
+  <button id="after">after</button>
+</body></html>`;

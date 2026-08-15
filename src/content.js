@@ -724,8 +724,21 @@
       // ② その層が文字型に抜かれていなければ、文字は描かない
       if (at(clipAll, i, 'border-box') !== 'text') continue;
       if (isFullyTransparentGradient(layers[i])) continue;
-      const r = at(cs.backgroundRepeat, i, 'repeat');
-      if (!/no-repeat/.test(r)) return true;                        // 繰り返せば全面に届く
+      // ⚠️ **画像の画素は見えない**（第21回 RG-21-01）。明示の寸法があることは
+      // 「不透明であること」の証拠にならない。実測: 完全に透明な 1×1 PNG を
+      // `background-size:100% 100%` で敷いた語は0画素なのに印が付いた。
+      // 中身を知るには読み込みが要る（新しい通信になる）ので、**断定しない**。
+      if (!isGradientLayer(layers[i])) { unknown = true; continue; }
+      // ⚠️ **`background-origin` も層ごと**（第21回 RG-21-02）。以前はカンマ区切りの
+      // 値全体を1つの origin として扱っており、`content-box, border-box` の1層目を
+      // padding-box へ落としていた（実測: 語は 320画素描かれているのに印が付かなかった）。
+      const og = at(cs.backgroundOrigin, i, 'padding-box');
+      const area = refBoxRect(cs, border, false,
+                              og === 'content-box' ? 'content-box'
+                            : og === 'border-box' ? 'border-box' : 'padding-box');
+      const aw = area.x2 - area.x1, ah = area.y2 - area.y1;
+      const rep = repeatAxes(at(cs.backgroundRepeat, i, 'repeat'));
+      if (rep === null) { unknown = true; continue; }               // space / round は解かない
       // ① 塗る箱の寸法を出す
       const sz = at(cs.backgroundSize, i, 'auto');
       let bw, bh;
@@ -845,11 +858,16 @@
   // 語は0画素なのに印が付いた。**`url()` はどちらの mode でも断定しない**。
   function maskLayerState(layer, mode) {
     if (isFullyTransparentGradient(layer)) return 'hidden';   // alpha 0 はどちらの解釈でも 0
-    // ⚠️ 断片の URL（`url(#id)`）は SVG の `<mask>` を指しうる。`mask-type` が
+    // 断片の URL（`url(#id)`）は SVG の `<mask>` を指しうる。`mask-type` が
     // luminance なら黒は 0 になるので、中身を見ないと決められない（第20回 RG-20-04）。
-    // 画像の URL は今までどおり（第17回 RG-17-04 の対照＝不透明な画像の層は残る）。
-    if (/^\s*(-webkit-)?(image-set\()?\s*url\(\s*["']?#/.test(layer)) return 'unknown';
-    if (!isGradientLayer(layer)) return mode === 'luminance' ? 'unknown' : 'shown';
+    // → 下の1行が、断片かどうかによらず **URL をすべて**この扱いにする。
+    // ⚠️ **画像の画素は見えない**（第21回 RG-21-01）。以前は「断片でない URL は
+    // `alpha` / `match-source` なら残る」としていたため、**完全に透明な 1×1 PNG を
+    // `mask-image` に置いた語で、語も印も0画素なのに印が Tab の順路へ入って**いた。
+    // 中身を知るには読み込みが要る（新しい通信になる）ので、**どの mode でも断定しない**。
+    // 背景（`bgClipTextPaintsAt`）と同じ契約にそろえた。
+    // ⚠️ 代償: 不透明な画像で覆った語も説明されなくなる（第17回 RG-17-04 の対照）。
+    if (!isGradientLayer(layer)) return 'unknown';
     const colors = layer.match(/rgba?\([^)]*\)/g);
     if (!colors || !colors.length) return 'unknown';
     // 一様（すべての色が同じ）でなければ、場所によって値が変わる＝断定しない

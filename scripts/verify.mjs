@@ -545,13 +545,15 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   check('一様でない mask を、断定できないこととして扱っている',
     /if \(colors\.some\(c => c !== colors\[0\]\)\) return 'unknown';/.test(code),
     '左半分が透明な mask で、語が消えていても可視と答える');
-  // 断片の URL（`url(#id)`）は SVG の `<mask>` を指しうる。`mask-type` が luminance
-  // なら黒は 0 になるので、中身を見ないと決められない。画像の URL は今までどおり
-  // （第17回 RG-17-04 の対照＝不透明な画像の層は残る、を壊さないため）。
-  check('mask の断片 URL は断定していない',
-    code.includes(String.raw`/^\s*(-webkit-)?(image-set\()?\s*url\(\s*["']?#/.test(layer)`) &&
-    code.includes(`return mode === 'luminance' ? 'unknown' : 'shown';`),
-    'match-source の SVG mask（mask-type:luminance）を可視と答える');
+  // ⚠️ v1.8.19 は「断片でない URL は alpha / match-source なら残る」としていた。
+  // **画像の画素は見えない**ので、完全に透明な PNG の mask で0画素の語に印が付いた
+  // （第21回 RG-21-01）。いまは gradient 以外の層はすべて断定しない。
+  // 断片の URL（`url(#id)` ＝ SVG の `<mask>`）も、画像の URL も、まとめてここで
+  // 断定しない側へ落ちる（第20回 RG-20-04 の断片 URL 規則を、第21回で包含した）。
+  check('mask の URL は、断片も画像も断定していない（第21回 RG-21-01）',
+    /if \(!isGradientLayer\(layer\)\) return 'unknown';/.test(code) &&
+    !code.includes(`return mode === 'luminance' ? 'unknown' : 'shown';`),
+    '透明な画像の mask で消えた語を可視と答える');
   // RG-20-05 背景は層ごとに対応付ける
   check('背景の層を、同じ番号どうしで対応付けている',
     /const at = \(v, i, d\) =>/.test(code) &&
@@ -560,6 +562,10 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   check('明示された背景の寸法を、実寸へ解いている',
     /bw = lenToPx\(parts\[0\], aw\);/.test(code) && !/if \(sz !== 'auto'\) return true;/.test(code),
     '1px の背景でも「届く」と答える');
+  // 第21回 RG-21-01 / RG-21-02
+  check('背景の URL 画像は断定していない（第21回 RG-21-01）',
+    /if \(!isGradientLayer\(layers\[i\]\)\) \{ unknown = true; continue; \}/.test(code),
+    '透明な画像を background-clip:text に敷いた0画素の語を可視と答える');
   // RG-20-06 CSSOM の変更を見る
   check('stylesheet の形の指紋を見ている',
     /function styleFingerprint/.test(code) && /hoverCssPrint/.test(code),

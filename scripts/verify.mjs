@@ -517,6 +517,14 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   check('スクロールが落ち着いたら、控えを見直している',
     /const SCROLL_SIGNALS/.test(code) && /scrollend/.test(code) && /function onScrollSignal|const onScrollSignal/.test(code),
     '吸い寄せで止まったあと、読めるようになった語が説明されない');
+  // RG-19-03 変形前へ戻せない角度では断定しない
+  check('変形前へ戻せないときは、広い形で代用していない',
+    /return null;\s*\n\s*\}\s*\n\s*\};\s*\n\s*\}/.test(code.slice(code.indexOf('backPoly'))) &&
+    !/map\(\(\[x, y\]\) => \{ const u = x - tx, v = y - ty;/.test(code),
+    'ちょうど45°などで、形の外の語まで拾う');
+  check('形の判定が三値を返せる',
+    /const p = map\.backPoly\(rect\); return p \? t\(p\) : 'unknown';/.test(code),
+    '断定できない形を、見える側にも見えない側にも倒してしまう');
   check('絶対配置が切り取りから逃げることを見ている',
     /function establishesContainingBlock/.test(code) && /function positionEscape/.test(code),
     '包含ブロックでない祖先の切り取りで、読める語を落とす');

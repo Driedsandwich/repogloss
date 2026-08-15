@@ -327,8 +327,13 @@
       // 元の箱は復元できる。変形前の箱を w×h とすると、外接矩形の寸法は
       //   W = |a|w + |c|h,  H = |b|w + |d|h
       // なので、この2式を解けばよい（中心は、外接矩形の中心を戻した点と一致する）。
-      // ちょうど45°など |a||d| = |b||c| のときだけ解が定まらないので、そのときは
-      // 平行四辺形で広く見積もる。
+      //
+      // ⚠️ ちょうど45°など |a||d| = |b||c| のときは解が定まらない。以前はそこで
+      // **viewport の外接矩形の4隅を逆写像した平行四辺形**へ落としていたが、これは
+      // 実際の文字より大きく、形の外の語まで拾う（第19回 RG-19-03。実測: 45°回した
+      // 楕円の外の語は0画素・5点すべての hit test が BODY なのに印が付いた）。
+      // 広く見積もった形を「見える」の根拠にはできないので、**null を返して
+      // 「断定できない」**にする。後ろに確実に見える同じ語があればそちらへ付く。
       backPoly: r => {
         const u0 = (r.left + r.right) / 2 - tx, v0 = (r.top + r.bottom) / 2 - ty;
         const cx = (L.d * u0 - L.c * v0) / det, cy = (L.a * v0 - L.b * u0) / det;
@@ -342,9 +347,7 @@
                     [cx + w / 2, cy + h / 2], [cx - w / 2, cy + h / 2]];
           }
         }
-        return [[r.left, r.top], [r.right, r.top], [r.right, r.bottom], [r.left, r.bottom]]
-          .map(([x, y]) => { const u = x - tx, v = y - ty;
-            return [(L.d * u - L.c * v) / det, (L.a * v - L.b * u) / det]; });
+        return null;
       }
     };
   }
@@ -972,7 +975,8 @@
                                            x2: Math.max(...xs), y2: Math.max(...ys) });
           }
           const t = shapeHitTest(sh, ref);
-          if (t) tests.push(rect => t(map.backPoly(rect)));
+          // 変形前へ戻せない角度（ちょうど45°など）では断定しない（第19回 RG-19-03）
+          if (t) tests.push(rect => { const p = map.backPoly(rect); return p ? t(p) : 'unknown'; });
         }
       }
       // flat でない（3D・perspective）ときは形を解かない＝制限しない側へ倒す
@@ -1164,7 +1168,9 @@
         if (reach === false) return false;
         let u = reach === 'unknown';
         for (const t of chain.tests) {
-          if (t(r) === false) return false;
+          const v = t(r);
+          if (v === false) return false;
+          if (v === 'unknown') u = true;
         }
         // 文字の塗りは**語の位置**で見る（影のずらし・背景の位置がここに効く）
         if (textIsInvisible(cs, el, r)) return false;

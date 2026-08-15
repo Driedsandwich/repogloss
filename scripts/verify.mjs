@@ -531,6 +531,16 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     /if \(!shape \|\| !shape\.trim\(\)\) return 'rect';/.test(code) &&
     /if \(parts\.length !== 2\) return insetRect\(parts\[0\], ref\) \? 'rect' : null;/.test(code),
     '`inset(0)` や `clip-path: content-box` の中の読める語を落とす');
+  // RG-20-03 印の実測に、不透明度・visibility・重なりを入れる
+  check('印の実測に、不透明度と visibility を入れている',
+    /if \(cs\.visibility !== 'visible' \|\| cs\.display === 'none'\) return false;/.test(code) &&
+    /if \(parseFloat\(cs\.opacity\) === 0\) return false;/.test(code),
+    'ページ側の `opacity:0!important` で消された印が残る');
+  check('印が覆われていないかを、当たり判定で見ている',
+    /const ICON_PROBES/.test(code) && /document\.elementFromPoint\(x, y\)/.test(code) &&
+    /if \(inView > 0 && exposed === 0 && visibleNow\(b, chain\)\) return false;/.test(code) &&
+    /hit\.contains\(icon\)/.test(code) && /function visibleNow/.test(code),
+    '不透明な要素に全面を覆われた印が残る／逆に、スクロールで出せる印を覆いと誤判定する');
 
   /* ---------- 第19回で足した不変条件 ---------- */
   // RG-19-01 複数語の用語は、**全部の並び**が読めるときだけ可視

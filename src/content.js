@@ -1314,6 +1314,17 @@
   // `overflow-clip-margin:100px` の枠で、語は余白の中に見えているのに、
   // その直後に入った印は x=176 で余白の外＝5点すべてが印に当たらず、それでも
   // `tabIndex:0` で Tab の順路に入っていた）。**見えない停止点を残さない。**
+  // ⚠️ **矩形と切り取りだけでは足りない**（第20回 RG-20-03）。以前は clip・到達性・
+  // 形しか見ておらず、次のどちらも「描かれている」と答えていた（実測）:
+  //   - ページ側の CSS が `.iiyaku-icon{opacity:0!important}` にした印
+  //     （不透明度0でも当たり判定には出るので、`elementFromPoint` は印を返す）
+  //   - 不透明な `position:fixed` の要素が印を全面的に覆った状態
+  //     （印の画素は 96 → 0 になったのに、5点すべてが覆いを返しても合格していた）
+  // どちらも `tabIndex:0` のまま Tab の順路に入っていた。
+  // いま見るのは、①自分の描画効果 ②切り取り ③到達性 ④形 ⑤不透明度と visibility
+  // ⑥**実際の当たり判定**（自分か自分の子孫が最前面に出る点があるか）。
+  const ICON_PROBES = [[0.5, 0.5], [0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]];
+
   function iconIsPainted(icon) {
     const chain = paintChain(icon, 'none');
     if (chain.hidden) return false;
@@ -1325,6 +1336,27 @@
                Math.min(b.bottom, c.y2) - Math.max(b.top, c.y1) > 1)) return false;
     if (reachable(b, chain) === false) return false;
     for (const t of chain.tests) if (t(b) === false) return false;
+    // ⑤ 印そのものの見え方。ページ側の `!important` でも消される。
+    const cs = getComputedStyle(icon);
+    if (cs.visibility !== 'visible' || cs.display === 'none') return false;
+    if (parseFloat(cs.opacity) === 0) return false;
+    if (cs.contentVisibility === 'hidden') return false;
+    if (HAS_CHECK_VISIBILITY && !icon.checkVisibility(CHECK_VISIBILITY_OPTS)) return false;
+    // ⑥ 覆われていないか。**画面の中にある点だけ**で見る（画面外は覆いの話ではなく
+    // 到達性の話で、そこは④で見ている）。画面内の点が1つも無ければ判定しない。
+    let inView = 0, exposed = 0;
+    for (const [fx, fy] of ICON_PROBES) {
+      const x = b.left + b.width * fx, y = b.top + b.height * fy;
+      if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) continue;
+      inView++;
+      const hit = document.elementFromPoint(x, y);
+      // ⚠️ **祖先が最前面に出るのは「覆い」ではない**。印がスクロールで送られた先に
+      // あるとき、その点で返るのは入れ物（＝印の祖先）になる。これを覆いと数えると、
+      // 「スクロールすれば読める語」を軒並み落とす（実測: そういう対照が5件落ちた）。
+      // 覆いと呼べるのは、印とも印の祖先とも関係のない要素が前に出ているときだけ。
+      if (hit && (hit === icon || icon.contains(hit) || hit.contains(icon))) exposed++;
+    }
+    if (inView > 0 && exposed === 0 && visibleNow(b, chain)) return false;   // 全面が覆われている
     return true;
   }
 
@@ -1357,6 +1389,15 @@
   // mandatory な吸い寄せがある枠では、**いまの位置でしか断定しない**。いま入って
   // いなければ、連続区間で入れるかを見て、入れるなら 'unknown'（止まり位置は解かない）、
   // 入れないなら false（吸い寄せが無くても届かない）。
+  // いま、スクロールを1つも動かさずにその矩形が見えているか。
+  // 当たり判定（覆われていないか）は、**この場合にだけ**意味がある——
+  // スクロールで送られた先にある印の座標で hit test をすると、そこに描かれている
+  // 別のものが返り、覆いと誤判定する（第20回 RG-20-03 の直しで実際にそうなった）。
+  function visibleNow(r, chain) {
+    const doms = chain.scrolls.concat([rootScroller(chain.fixed)]);
+    return feasible(r, doms, 'x', false, true) && feasible(r, doms, 'y', false, true);
+  }
+
   function reachable(r, chain) {
     const doms = chain.scrolls.concat([rootScroller(chain.fixed)]);
     const anySnap = doms.some(d => d.snapX || d.snapY);
@@ -1368,12 +1409,13 @@
   }
 
   //   pinSnap … true なら、吸い寄せのある枠を「いまの位置から動かせない」として解く
-  function feasible(r, doms, axis, pinSnap) {
+  //   pinAll  … true なら、**すべての枠**を今の位置に固定する（＝いま見えているか）
+  function feasible(r, doms, axis, pinSnap, pinAll) {
     const t1 = axis === 'x' ? r.left : r.top;
     const t2 = axis === 'x' ? r.right : r.bottom;
     let lo = 0, hi = 0;
     for (const d of doms) {
-      const snapped = pinSnap && (axis === 'x' ? d.snapX : d.snapY);
+      const snapped = pinAll || (pinSnap && (axis === 'x' ? d.snapX : d.snapY));
       const sh = snapped ? [0, 0] : (axis === 'x' ? d.dx : d.dy);
       lo += sh[0]; hi += sh[1];
       const b1 = axis === 'x' ? d.box.x1 : d.box.y1;

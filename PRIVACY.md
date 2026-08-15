@@ -89,7 +89,7 @@ Chrome の権限は、`permissions` に書く API の権限と、コンテンツ
 |---|---|---|
 | Chrome API 権限 | `storage` | ON / OFF の設定を端末内に保存するため。これ以外に使いません |
 | サイトアクセス | `content_scripts.matches` = `https://github.com/*` | GitHub のページ上で、表示中の文章を辞書と照合し、用語に ⓘ を表示するため |
-| 同梱ファイルの読み込み | `web_accessible_resources`（`locales/dict.json`） | コンテンツスクリプトが、拡張機能に同梱された辞書を読み込むため。辞書は機密情報ではなく、外部サーバーから取得もしません |
+| 同梱ファイルの読み込み | `web_accessible_resources`（`locales/dict.json`・`styles.css`） | コンテンツスクリプトが、拡張機能に同梱された**辞書**と**見た目の定義**を読み込むため。`styles.css` は雛形で、読み込みごとに変わる合言葉を選択子へ埋めてから使います（v1.8.18 から。ページ側の要素へ自分の見た目が乗らないようにするため）。どちらも `chrome-extension://` の中にあり、**外部サーバーからは取得しません**。機密情報も含みません |
 
 ホスト権限（`host_permissions`）、`tabs`、`activeTab`、`scripting`、常駐処理（background）は要求していません。閲覧履歴も読み取りません。
 
@@ -189,7 +189,7 @@ Chrome separates API permissions from the sites a content script may be injected
 |---|---|---|
 | Chrome API permission | `storage` | To remember the on/off setting. Nothing else |
 | Site access | `content_scripts.matches` = `https://github.com/*` | To match visible text against the dictionary and place ⓘ markers on GitHub pages |
-| Bundled file access | `web_accessible_resources` (`locales/dict.json`) | So the content script can load the dictionary bundled with the extension. The dictionary holds no secrets and is never fetched from a server |
+| Bundled file access | `web_accessible_resources` (`locales/dict.json`, `styles.css`) | So the content script can load the **dictionary** and the **UI stylesheet** bundled with the extension. `styles.css` is a template: a per-load random token is substituted into its selectors before use (since v1.8.18, so the extension's look never lands on the page's own elements). Both live inside `chrome-extension://` and are **never fetched from a server**. Neither holds secrets |
 
 No `host_permissions`, `tabs`, `activeTab`, `scripting`, or background service worker is requested. Browsing history is not read.
 

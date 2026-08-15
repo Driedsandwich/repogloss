@@ -768,6 +768,23 @@ check(`STORE_LISTING が今回の提出版 ${manifest.version} を指してい�
     /Chrome Web Store User Data Policy/.test(privacy) && /Limited Use/.test(privacy));
   check('PRIVACY.md に Limited Use 準拠の明言がある（英語）',
     /adhere to the Chrome Web Store User Data Policy/.test(privacy));
+  // ⚠️ manifest の `web_accessible_resources` と、PRIVACY.md の日英の記載を**機械で**
+  // 突き合わせる（第20回 RG-20-10）。`styles.css` を足したときに文書だけ古いままに
+  // なっていた。文章で気をつけるのではなく、ずれたら落ちるようにする。
+  {
+    const war = (JSON.parse(read('manifest.json')).web_accessible_resources || [])
+      .flatMap(r => r.resources || []);
+    const rows = [...privacy.matchAll(/^\|\s*(?:同梱ファイルの読み込み|Bundled file access)\s*\|([^|]*)\|/gm)]
+      .map(m => m[1]);
+    check('PRIVACY.md の同梱資源の欄が、日英の2行そろっている',
+      rows.length === 2, `見つかった行数: ${rows.length}`);
+    for (let i = 0; i < rows.length; i++) {
+      const miss = war.filter(f => !rows[i].includes(f));
+      check(`PRIVACY.md の同梱資源が manifest と一致している（${i === 0 ? '日本語' : '英語'}）`,
+        war.length > 0 && miss.length === 0,
+        `manifest にあって記載に無い: ${miss.join(', ') || 'なし'}（manifest: ${war.join(', ')}）`);
+    }
+  }
   check('PRIVACY.md が公式ポリシーへのリンクを持つ',
     privacy.includes('developer.chrome.com/docs/webstore/program-policies/limited-use'));
   // 走査は広いので、「個人情報を読み取らない」という言い切りは事実と合わない

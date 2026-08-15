@@ -541,6 +541,17 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     /if \(inView > 0 && exposed === 0 && visibleNow\(b, chain\)\) return false;/.test(code) &&
     /hit\.contains\(icon\)/.test(code) && /function visibleNow/.test(code),
     '不透明な要素に全面を覆われた印が残る／逆に、スクロールで出せる印を覆いと誤判定する');
+  // RG-20-04 mask は一様でなければ断定しない
+  check('一様でない mask を、断定できないこととして扱っている',
+    /if \(colors\.some\(c => c !== colors\[0\]\)\) return 'unknown';/.test(code),
+    '左半分が透明な mask で、語が消えていても可視と答える');
+  // 断片の URL（`url(#id)`）は SVG の `<mask>` を指しうる。`mask-type` が luminance
+  // なら黒は 0 になるので、中身を見ないと決められない。画像の URL は今までどおり
+  // （第17回 RG-17-04 の対照＝不透明な画像の層は残る、を壊さないため）。
+  check('mask の断片 URL は断定していない',
+    code.includes(String.raw`/^\s*(-webkit-)?(image-set\()?\s*url\(\s*["']?#/.test(layer)`) &&
+    code.includes(`return mode === 'luminance' ? 'unknown' : 'shown';`),
+    'match-source の SVG mask（mask-type:luminance）を可視と答える');
 
   /* ---------- 第19回で足した不変条件 ---------- */
   // RG-19-01 複数語の用語は、**全部の並び**が読めるときだけ可視

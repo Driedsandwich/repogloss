@@ -803,19 +803,29 @@
   // ⚠️ `mask-mode` を見ていなかった（第19回 RG-19-05）。`luminance` では色の明るさが
   // 覆いの値になるので、**黒は 0＝完全に消える**。alpha では黒も不透明なので残る。
   // 既定の `match-source` は、画像・gradient に対しては alpha として働く。
+  // ⚠️ **「どこかに明るい色がある」は「その語の場所が残る」ではない**（第20回 RG-20-04）。
+  // gradient の中に1つでも不透明／明るい色があれば層全体を残る側にしていたため、
+  // 左55%が透明な alpha mask・左55%が黒の luminance mask で、**語は0画素なのに
+  // 印が付いて**いた。gradient の値は場所で変わるので、**一様でないものは断定しない**。
+  //
+  // ⚠️ `match-source` が SVG の `<mask>` を指す場合、参照先の `mask-type` が
+  // luminance なら黒は 0 になる。実測: `mask-type="luminance"` の黒い mask で
+  // 語は0画素なのに印が付いた。**`url()` はどちらの mode でも断定しない**。
   function maskLayerState(layer, mode) {
     if (isFullyTransparentGradient(layer)) return 'hidden';   // alpha 0 はどちらの解釈でも 0
-    if (mode !== 'luminance') return 'shown';
-    if (!isGradientLayer(layer)) return 'unknown';            // 画像の明るさは解けない
+    // ⚠️ 断片の URL（`url(#id)`）は SVG の `<mask>` を指しうる。`mask-type` が
+    // luminance なら黒は 0 になるので、中身を見ないと決められない（第20回 RG-20-04）。
+    // 画像の URL は今までどおり（第17回 RG-17-04 の対照＝不透明な画像の層は残る）。
+    if (/^\s*(-webkit-)?(image-set\()?\s*url\(\s*["']?#/.test(layer)) return 'unknown';
+    if (!isGradientLayer(layer)) return mode === 'luminance' ? 'unknown' : 'shown';
     const colors = layer.match(/rgba?\([^)]*\)/g);
     if (!colors || !colors.length) return 'unknown';
-    let best = 0;
-    for (const c of colors) {
-      const l = luminanceOf(c);
-      if (l === null) return 'unknown';
-      if (l > best) best = l;
-    }
-    return best > 0 ? 'shown' : 'hidden';
+    // 一様（すべての色が同じ）でなければ、場所によって値が変わる＝断定しない
+    if (colors.some(c => c !== colors[0])) return 'unknown';
+    if (mode !== 'luminance') return 'shown';                 // alpha / match-source の gradient
+    const l = luminanceOf(colors[0]);
+    if (l === null) return 'unknown';
+    return l > 0 ? 'shown' : 'hidden';
   }
 
   // `mask-image` は**層の並び**で、カンマ区切りの各層を合成した結果が最終の覆いになる。

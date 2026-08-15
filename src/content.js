@@ -3076,43 +3076,76 @@
     }
     return out.join('.');
   }
+  // ⚠️ `:active` は**押している相手の連なり**で決まる。カーソルの位置と入力先だけでは、
+  // 「同じ場所を押した／離した」が hover と同じ鍵になり、`doneStates` に阻まれて
+  // 一度も測り直されない（第21回 RG-21-05）。押している相手も鍵に入れる。
+  let pressedNode = null;
+  function notePress(e) {
+    if (!e || !e.type) return;
+    if (e.type === 'pointerdown') pressedNode = e.target;
+    else if (e.type === 'pointerup' || e.type === 'pointercancel') pressedNode = null;
+  }
   function pseudoStateKey(e) {
-    return chainKey(e && e.target) + '|' + chainKey(document.activeElement);
+    return chainKey(e && e.target) + '|' + chainKey(document.activeElement)
+         + '|' + (pressedNode ? chainKey(pressedNode) : '-');
   }
   let pendingState = null;
 
-  const onPointerOrFocus = e => {
-    if (latent.size === 0 || hoverPending) return;
+  // 間引きの窓で待たせた合図の、**そのときの状態**。⚠️ 以前は待ち時間のあとに
+  // `onPointerOrFocus()` を**引数なしで**呼び直していた（第21回 RG-21-05）。
+  // `pseudoStateKey(undefined)` は連なりを持たない別の鍵になるので、実際に見ていた
+  // 相手を失い、その状態を「済み」として記録してしまう。鍵のほうを持ち越す。
+  let hoverTailKey = null;
+  const onPointerOrFocus = (e, forcedKey) => {
+    notePress(e);                  // 早く返る道でも、押した／離したの記録は落とさない
+    if (latent.size === 0) return;
     // カーソルで見え方が変わりうる規則がページに無いなら、見直す意味が無い
     // （第19回 RG-19-08）。JS で開くメニューは DOM の変更として別経路で届く。
     if (!pageUsesHoverRules()) return;
     // 同じ擬似クラスの状態で、既にひと回り終えているなら、答えは変わらない
-    const key = pseudoStateKey(e);
+    const key = forcedKey || pseudoStateKey(e);
     if (doneStates.has(key)) return;
+    if (hoverPending) { hoverTailKey = key; return; }   // 予約済み。鍵だけ最新にする
     pendingState = key;
     bumpEpoch();                   // `:hover` の当たる先が変わった＝状態が変わった
     if (overBudget()) return;      // 使いすぎた。2秒ごとの確認に任せる
     const now = performance.now();
     if (now - hoverAt < hoverGap) {
       // 最後の1回は、間引きの窓が明けたあとに必ず処理する
+      hoverTailKey = key;
       if (hoverTail === null) {
-        hoverTail = setTimeout(() => { hoverTail = null; onPointerOrFocus(); },
-                               hoverGap - (now - hoverAt));
+        hoverTail = setTimeout(() => {
+          hoverTail = null;
+          const k = hoverTailKey; hoverTailKey = null;
+          onPointerOrFocus(null, k);
+        }, hoverGap - (now - hoverAt));
       }
       return;
     }
     hoverAt = now;
+    // ⚠️ `hoverPending` は宣言だけで**一度も true にならず**、入口の門が効いていなかった
+    // （第21回 RG-21-05）。予約した時点で立てる。
+    hoverPending = true;
     const fire = () => {
       hoverPending = false;
       if (!observing) return;
       hoverTriggered = true;
       schedule({ deep: true });
+      // 待たせているあいだに状態が進んでいたら、そこから続ける
+      if (hoverTailKey !== null && !doneStates.has(hoverTailKey)) {
+        const k = hoverTailKey; hoverTailKey = null;
+        onPointerOrFocus(null, k);
+      }
     };
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(fire);
     else setTimeout(fire, 16);
   };
   let hoverTriggered = false;
-  const HOVER_SIGNALS = ['pointerover', 'pointerout', 'focusin', 'focusout'];
+  // ⚠️ `:active` は規則の走査（HOVERISH）では見ているのに、**購読していなかった**
+  // （第21回 RG-21-05。実測: `:active` だけで開くメニューは、押しているあいだ印0で、
+  // 2秒ごとの確認まで説明されなかった。対照の `:hover` は即1）。
+  const HOVER_SIGNALS = ['pointerover', 'pointerout', 'focusin', 'focusout',
+                         'pointerdown', 'pointerup', 'pointercancel'];
   // `scrollend` はブラウザが「止まった」と決めた瞬間に1回だけ来る。無い版のために
   // `scroll` も取り、そこから遅らせて1回にまとめる（→ onScrollSignal）。
   const SCROLL_SIGNALS = ('onscrollend' in window) ? ['scrollend'] : ['scroll'];

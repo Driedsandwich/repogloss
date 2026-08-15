@@ -1149,11 +1149,25 @@ check('content.js が保存キー iiyakuEnabled を変えていない', content.
 
   // カーソルとフォーカスも合図にする（CSS だけで開くメニューは他の合図に乗らない）
   check('カーソルとフォーカスを、控えの見直しの合図にしている',
-    /const HOVER_SIGNALS = \['pointerover', 'pointerout', 'focusin', 'focusout'\]/.test(code) &&
+    /const HOVER_SIGNALS = \['pointerover', 'pointerout', 'focusin', 'focusout',/.test(code) &&
     /addEventListener\(t, onPointerOrFocus, true\)/.test(code));
+  // ⚠️ `:active` は規則の走査では見ているのに購読していなかった（第21回 RG-21-05）
+  check('`:active` の合図も購読している（第21回 RG-21-05）',
+    /'pointerdown', 'pointerup', 'pointercancel'\]/.test(code) &&
+    /if \(e\.type === 'pointerdown'\) pressedNode = e\.target;/.test(code) &&
+    /\+ '\|' \+ \(pressedNode \? chainKey\(pressedNode\) : '-'\)/.test(code),
+    '押しているあいだだけ開くメニューが、2秒ごとの確認まで説明されない');
   check('見直す先が無いときは、その合図で何もしない',
-    /if \(latent\.size === 0 \|\| hoverPending\) return/.test(code),
+    /if \(latent\.size === 0\) return;/.test(code),
     'カーソルを動かすたびにまとめ直しが走る');
+  // ⚠️ `hoverPending` は宣言だけで一度も true にならず、門が効いていなかった
+  check('予約したら、その旗を立てている（第21回 RG-21-05）',
+    /hoverPending = true;/.test(code) &&
+    /if \(hoverPending\) \{ hoverTailKey = key; return; \}/.test(code),
+    '同じフレームへ何重にも予約が積まれる');
+  check('待たせた合図は、そのときの状態のまま処理している（第21回 RG-21-05）',
+    /onPointerOrFocus\(null, k\);/.test(code) && !/onPointerOrFocus\(\); \}/.test(code),
+    '間引きの窓が明けたあと、相手を持たない別の状態を「済み」にしてしまう');
   check('カーソルの合図を、1フレームに1回へまとめている',
     /requestAnimationFrame\(fire\)/.test(code));
   check('切り替えのときに、その合図も外している',

@@ -698,6 +698,18 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     /const target = focusTargetOf\(icon\);/.test(code) &&
     /TRANSPARENT\.test\(ts\.color\) && TRANSPARENT\.test\(ts\.borderTopColor\) &&/.test(code),
     'host だけ見ても、shadow の中が 0 画素かは分からない');
+  // ⚠️ v1.8.20 は light DOM 側の絵をそのまま残していたので、輪が二重になり
+  //    "i" が箱の外へはみ出していた（v1.8.21 で実測・撮影して直した）
+  check('shadow のある印は、light DOM 側で絵を描かない（v1.8.21）',
+    /:not\(\[data-iiyaku-for\]\):not\(\[role\]\)[\s\S]{0,400}?border-width: 0;/.test(css22) &&
+    /:not\(\[data-iiyaku-for\]\):not\(\[role\]\)::after\s*\{\s*\n?\s*content: none;/.test(css22) &&
+    /button::after\s*\{\s*\n?\s*content: "i";/.test(css22),
+    '輪が二重になり、"i" が印の箱の外へはみ出す');
+  check('shadow の中の button は、host いっぱいに広げている（v1.8.21）',
+    /width: 100%;\n\s*height: 100%;/.test(css22) &&
+    /font: 700 1em\/1 Georgia/.test(css22),
+    '`.78em` が二重に掛かり、印の中に小さい輪が入れ子で描かれる');
+
   // RG-22-03 当たり判定に映らない覆い
   check('当たり判定に映らない覆いも見ている（第22回 RG-22-03）',
     /function ghostCovers/.test(code) && /function ghostBlocks/.test(code) &&

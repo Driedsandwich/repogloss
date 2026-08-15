@@ -748,6 +748,37 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     /\+ '\|' \+ focusVisibleNow\(\)/.test(code),
     '同じ相手にフォーカスしたまま `:focus-visible` が付いても、測り直されない');
 
+  // ⚠️ §7 の番号は、版を上げるたびに新しい行を**途中へ**差し込むので衝突しやすい。
+  //    v1.8.20 では 22/23/24 が2組ずつあった（第21回の3行を既存の並びの前へ入れたため）。
+  //    値を見比べるのではなく、**いくつあるか**を数える。
+  {
+    const audit = read('AUDIT.md');
+    const sec = audit.slice(audit.indexOf('## 7. 意図的に直していない既知の制約'),
+                            audit.indexOf('## 8. これまでの監査の履歴'));
+    const nums = [...sec.matchAll(/^\| ([\d-]+b?) \| /gm)].map(m => m[1]);
+    const dup = [...new Set(nums.filter(n => nums.filter(x => x === n).length > 1))];
+    check('AUDIT.md §7 の番号が重複していない',
+      nums.length > 0 && dup.length === 0,
+      dup.length ? `重複: ${dup.join(', ')}` : '§7 の行を1つも読めていない');
+  }
+
+  // ⚠️ **内訳を書いたら、その場で合計と足し合わせる。** §8 は第21回まで8行しか無く、
+  //    第9回以降が抜けていた（合計 69件のまま）。行が増えても誰も足し算をしていなかった。
+  {
+    const audit = read('AUDIT.md');
+    const sec = audit.slice(audit.indexOf('## 8. これまでの監査の履歴'),
+                            audit.indexOf('## 9. 監査で特に見てほしいところ'));
+    const rows = [...sec.matchAll(/^\| (\d+) \| (\d+)件 \|/gm)];
+    const total = /^\| \*\*合計\*\* \| \*\*(\d+)件\*\* \|/m.exec(sec);
+    const sum = rows.reduce((a, m) => a + Number(m[2]), 0);
+    const rounds = rows.map(m => Number(m[1]));
+    const gaps = rounds.filter((n, i) => i > 0 && n !== rounds[i - 1] + 1);
+    check('AUDIT.md §8 の合計が、各行の和と一致する',
+      !!total && rows.length > 0 && sum === Number(total[1]) && gaps.length === 0,
+      total ? `行の和 ${sum} / 名乗る合計 ${total[1]}${gaps.length ? ` / 抜けている回: ${gaps.join(', ')}` : ''}`
+            : '§8 の合計行を読めていない');
+  }
+
   // RG-22-06 恒久の設定を変えるのは、利用者が押したときだけ
   check('合成された click では設定を変えない（第22回 RG-22-06）',
     /btn\.addEventListener\('click', async event => \{/.test(code) &&

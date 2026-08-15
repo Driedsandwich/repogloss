@@ -23,13 +23,12 @@
   "content_scripts": [
     {
       "matches": ["https://github.com/*"],
-      "js": ["src/matcher.js", "src/content.js"],
-      "css": ["styles.css"]
+      "js": ["src/matcher.js", "src/content.js"]
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["locales/dict.json"],
+      "resources": ["locales/dict.json", "styles.css"],
       "matches": ["https://github.com/*"]
     }
   ]

@@ -15,8 +15,14 @@
   // （消す側だけ直しても、書く側で壊れる）。名前が毎回変われば、そもそも重ならない。
   const OFF_ATTR = 'data-' + UID + '-off';
   const TIP_ID = UID + '-tip';
-  // カスケードレイヤーの名前。styles.css の宣言と揃える（verify.mjs が突き合わせる）。
-  const SCOPE_LAYER = 'repogloss-e7b41d-scope';
+  // カスケードレイヤーの名前も、**読み込みごとに変える**（第19回 RG-19-06）。
+  // 固定名だったため、ページが同じ名前のレイヤーを先に宣言して順序を握れた。
+  // 実測: ページが `@layer repogloss-e7b41d-scope, repogloss-e7b41d;` を先に宣言し、
+  // 自分の規則をその中へ書くと、**ページ自身の指定が UA 既定へ差し戻されて**いた
+  // （display:grid → inline、赤 → 黒、140×30px → auto）。名前が毎回変われば、
+  // そもそも同じレイヤーへ入れない。
+  const MAIN_LAYER = UID + '-look';
+  const SCOPE_LAYER = UID + '-scope';
 
   let enabled = true;
   try {
@@ -28,11 +34,27 @@
 
   /* ---------- 1. 辞書読み込み ---------- */
   const DICT_URL = chrome.runtime.getURL('locales/dict.json');
-  let DICT = {};
+  // 見た目も、辞書と同じ経路で走り出しに読み込む（第19回 RG-19-06）。
+  // 以前は `content_scripts.css` として静的に入れていたが、静的なファイルには
+  // 読み込みごとに変わる合言葉を書けないので、レイヤー名も選択子も固定になる。
+  // ここで読み込み、**選択子へ合言葉を埋めてから**入れる。ページ側の同名要素は
+  // そもそも一致しなくなるので、打ち消す規則（revert）が要らなくなった。
+  const CSS_URL = chrome.runtime.getURL('styles.css');
+  let DICT = {}, CSS_TEXT = '';
   try {
-    DICT = await fetch(DICT_URL).then(r => r.json());
+    const [d, c] = await Promise.all([
+      fetch(DICT_URL).then(r => r.json()),
+      fetch(CSS_URL).then(r => r.text())
+    ]);
+    DICT = d; CSS_TEXT = c;
   } catch (e) {
-    console.error('[iiyaku] dict.json 読み込み失敗:', e);
+    console.error('[iiyaku] dict.json / styles.css 読み込み失敗:', e);
+    return;
+  }
+  // 印の見た目は CSS が作る（`::after` の丸と "i"）。読めていないのに走ると、
+  // **見えない押せる点**を並べることになる。失敗したら何もしない。
+  if (!CSS_TEXT.trim()) {
+    console.error('[iiyaku] styles.css が空です。何もしません');
     return;
   }
   const matcher = globalThis.RepoGlossMatcher && globalThis.RepoGlossMatcher.createMatcher(DICT);
@@ -2954,33 +2976,27 @@
   // なので、自分の見た目は確実に打ち消せて、**ページ自身の指定には必ず負ける**。
   // 以前はレイヤー無しで書いていたため、ページの指定まで打ち消していた（実測:
   // ページの `display:grid`・赤・140×30px が block・黒・740×24px になった）。
-  const OWN_STYLE_PROPS = [
-    'align-items', 'background', 'background-color', 'border', 'border-radius', 'border-top',
-    'bottom', 'box-shadow', 'box-sizing', 'color', 'content', 'cursor', 'display',
-    'font-family', 'font-size', 'font-style', 'font-weight', 'height', 'justify-content',
-    'line-height', 'margin-left', 'margin-top', 'max-height', 'max-width', 'opacity',
-    'outline', 'outline-offset', 'overflow', 'overflow-wrap', 'padding', 'padding-top',
-    'pointer-events', 'position', 'right', 'text-align', 'text-decoration', 'transition',
-    'user-select', 'vertical-align', 'white-space', 'width', 'word-break', 'z-index'
-  ];
-
   let ownStyle = null;
   let ownStyleText = '';
 
+  // `styles.css` は**雛形**で、そのままでは使わない。合言葉を埋めてから入れる。
+  //   `@layer RG_LOOK, RG_SCOPE;`  … レイアウト名を読み込みごとの名前へ
+  //   `[data-iiyaku-owner]`        … 値まで自分のものに限る
+  // 値まで見るので、ページが同じ class と属性を持つ要素を作っても**一致しない**。
+  // 打ち消す規則（revert）はもう要らない——与えなければ、打ち消す必要も無い。
+  // 以前は打ち消す側で、ページ自身の指定まで巻き込んでいた（第14回・第19回）。
   function ownStyleRules() {
     const mine = `[data-iiyaku-owner="${CSS.escape(UID)}"]`;
-    const sels = OWN_CLASSES.map(c => `.${c}[data-iiyaku-owner]:not(${mine})`);
-    const inner = ['iiyaku-tooltip-item', 'iiyaku-tooltip-term']
-      .map(c => `.iiyaku-tooltip[data-iiyaku-owner]:not(${mine}) .${c}`);
-    const revert = OWN_STYLE_PROPS.map(p => `${p}:revert`).join(';');
+    const body = CSS_TEXT
+      .replace(/\bRG_LOOK\b/g, MAIN_LAYER)
+      .replace(/\bRG_SCOPE\b/g, SCOPE_LAYER)
+      .replace(/\[data-iiyaku-owner\]/g, mine);
     // OFF のとき、**自分の印だけ**を隠す。目印はページと共有しない合言葉つきの属性
     // （以前は `<html>` の class を使い、ページの同名 class を消していた）。
-    const off = `${document.documentElement.tagName.toLowerCase()}[${CSS.escape(OFF_ATTR)}] ` +
-                `.${OWN_CLASSES[0]}${mine}{display:none}`;
-    return `@layer ${SCOPE_LAYER}{` +
-           `${sels.concat(inner).join(',')}{${revert}}` +
-           `${sels.map(s => `${s}::after`).join(',')}{content:none}` +
-           off + `}`;
+    const off = `@layer ${SCOPE_LAYER}{` +
+                `${document.documentElement.tagName.toLowerCase()}[${CSS.escape(OFF_ATTR)}] ` +
+                `.${OWN_CLASSES[0]}${mine}{display:none}}`;
+    return body + '\n' + off;
   }
 
   function scopeOwnStyle() {
@@ -2992,7 +3008,7 @@
       ownStyle = st;
     } catch (e) {
       // 足せなくても本体の動作は変わらない（複製は sanitizeClones が無力化する）
-      console.error('[iiyaku] 見た目の絞り込みを足せません:', e);
+      console.error('[iiyaku] 見た目を足せません:', e);
     }
   }
 

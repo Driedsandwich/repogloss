@@ -536,43 +536,125 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     /if \(cs\.visibility !== 'visible' \|\| cs\.display === 'none'\) return false;/.test(code) &&
     /if \(parseFloat\(cs\.opacity\) === 0\) return false;/.test(code),
     'ページ側の `opacity:0!important` で消された印が残る');
+  // ⚠️ v1.8.19 はここで `hit.contains(icon)`（＝祖先が最前面）も露出に数えていた。
+  // 祖先の `::after` が印を覆うと `elementFromPoint` はその祖先を返すので、
+  // 0画素の印が合格していた（第21回 RG-21-03）。**その書き方が戻っていないこと**を
+  // 検査する。スクロールで出せる印を守るのは `visibleNow` の門のほう。
   check('印が覆われていないかを、当たり判定で見ている',
     /const ICON_PROBES/.test(code) && /document\.elementFromPoint\(x, y\)/.test(code) &&
     /if \(inView > 0 && exposed === 0 && visibleNow\(b, chain\)\) return false;/.test(code) &&
-    /hit\.contains\(icon\)/.test(code) && /function visibleNow/.test(code),
+    /if \(hit && \(hit === icon \|\| icon\.contains\(hit\)\)\) exposed\+\+;/.test(code) &&
+    /function visibleNow/.test(code),
     '不透明な要素に全面を覆われた印が残る／逆に、スクロールで出せる印を覆いと誤判定する');
+  check('祖先が最前面に出ることを、露出の証拠にしていない（第21回 RG-21-03）',
+    !/hit\.contains\(icon\)/.test(code),
+    '祖先の ::after で覆われた0画素の印が、Tab の順路に残る');
+  check('当たり判定で決められない場合は、覆いを主張していない（第21回 RG-21-03）',
+    /if \(cs\.pointerEvents === 'none'\) return true;/.test(code),
+    'pointer-events:none の印を、覆われたものとして落としてしまう');
   // RG-20-04 mask は一様でなければ断定しない
   check('一様でない mask を、断定できないこととして扱っている',
     /if \(colors\.some\(c => c !== colors\[0\]\)\) return 'unknown';/.test(code),
     '左半分が透明な mask で、語が消えていても可視と答える');
-  // 断片の URL（`url(#id)`）は SVG の `<mask>` を指しうる。`mask-type` が luminance
-  // なら黒は 0 になるので、中身を見ないと決められない。画像の URL は今までどおり
-  // （第17回 RG-17-04 の対照＝不透明な画像の層は残る、を壊さないため）。
-  check('mask の断片 URL は断定していない',
-    code.includes(String.raw`/^\s*(-webkit-)?(image-set\()?\s*url\(\s*["']?#/.test(layer)`) &&
-    code.includes(`return mode === 'luminance' ? 'unknown' : 'shown';`),
-    'match-source の SVG mask（mask-type:luminance）を可視と答える');
+  // ⚠️ v1.8.19 は「断片でない URL は alpha / match-source なら残る」としていた。
+  // **画像の画素は見えない**ので、完全に透明な PNG の mask で0画素の語に印が付いた
+  // （第21回 RG-21-01）。いまは gradient 以外の層はすべて断定しない。
+  // 断片の URL（`url(#id)` ＝ SVG の `<mask>`）も、画像の URL も、まとめてここで
+  // 断定しない側へ落ちる（第20回 RG-20-04 の断片 URL 規則を、第21回で包含した）。
+  check('mask の URL は、断片も画像も断定していない（第21回 RG-21-01）',
+    /if \(!isGradientLayer\(layer\)\) return 'unknown';/.test(code) &&
+    !code.includes(`return mode === 'luminance' ? 'unknown' : 'shown';`),
+    '透明な画像の mask で消えた語を可視と答える');
   // RG-20-05 背景は層ごとに対応付ける
   check('背景の層を、同じ番号どうしで対応付けている',
     /const at = \(v, i, d\) =>/.test(code) &&
     /if \(at\(clipAll, i, 'border-box'\) !== 'text'\) continue;/.test(code),
     '複数層のうち1層だけが文字型に抜く場合を取り違える');
   check('明示された背景の寸法を、実寸へ解いている',
-    /bw = lenToPx\(parts\[0\], aw\);/.test(code) && !/if \(sz !== 'auto'\) return true;/.test(code),
+    /bw = parts\[0\] === 'auto' \? aw : lenToPx\(parts\[0\], aw\);/.test(code) &&
+    !/if \(sz !== 'auto'\) return true;/.test(code),
     '1px の背景でも「届く」と答える');
+  // 第21回 RG-21-01 / RG-21-02
+  check('背景の URL 画像は断定していない（第21回 RG-21-01）',
+    /if \(!isGradientLayer\(layers\[i\]\)\) \{ unknown = true; continue; \}/.test(code),
+    '透明な画像を background-clip:text に敷いた0画素の語を可視と答える');
+  check('background-repeat を軸ごとに解いている（第21回 RG-21-02）',
+    /function repeatAxes/.test(code) && /'repeat-x' \? \[true, false\]/.test(code) &&
+    !/if \(!\/no-repeat\/\.test\(r\)\) return true;/.test(code),
+    'repeat-x の背景が届かない語を可視と答える');
+  check('background-origin を層ごとに取り出している（第21回 RG-21-02）',
+    /const og = at\(cs\.backgroundOrigin, i, 'padding-box'\);/.test(code),
+    '複数層の origin をひとつに潰し、描かれている語を落とす');
   // RG-20-06 CSSOM の変更を見る
   check('stylesheet の形の指紋を見ている',
     /function styleFingerprint/.test(code) && /hoverCssPrint/.test(code),
     'insertRule で足した hover 規則に気づけない');
   // RG-20-07 自前 style の生きた規則を見る
-  check('自前 style の生きた規則の数も見ている',
-    /function liveRuleCount/.test(code) && /liveRuleCount\(ownStyle\) === ownStyleRuleCount/.test(code),
-    'deleteRule で規則を消されても直さない');
+  // ⚠️ v1.8.19 は**規則の数**しか見ていなかった。数も `textContent` も変えずに
+  // `opacity:0!important` を1つ足されると直せず、印は消えたままだった
+  // （第21回 RG-21-04）。中身をたどった値で突き合わせる。
+  check('自前 style の生きた規則の中身も見ている（第21回 RG-21-04）',
+    /function ruleDigest/.test(code) && /ruleDigest\(ownStyle\) === ownStyleDigest/.test(code) &&
+    /h = hashStr\(h, r\.cssText \|\| ''\);/.test(code),
+    'deleteRule や宣言の書き換えで印が消えても直さない');
   // RG-20-09 擬似クラスの状態
   check('擬似クラスの状態を覚えて、同じ状態では測り直さない',
     /function pseudoStateKey/.test(code) && /if \(doneStates\.has\(key\)\) return;/.test(code) &&
     /const dropStates/.test(code),
     'カーソルが同じ場所へ戻るたびに控え全件を測り直す');
+
+  /* ---------- 第21回 RG-21-07 測り直す範囲を絞る ---------- */
+  check('カーソルの合図では、変わった範囲だけを測り直している（第21回 RG-21-07）',
+    /let epochScope = null;/.test(code) && /const bumpEpochWithin/.test(code) &&
+    /function commonAncestor/.test(code) && /if \(!inEpochScope\(node\)\)/.test(code),
+    'hover 規則のあるページで、合図ごとに控え全件を回す');
+  // ⚠️ 控えに入っているのは**文字の節点**。要素だけを通す `asElement` で範囲を見ると
+  // 全件が「範囲の外」になり、絞りが「全部飛ばす」に化ける（実際にそうなった）。
+  check('範囲の判定は、文字の節点を入れ物の要素で見ている（第21回 RG-21-07）',
+    /const ownerEl = n => \(n \? \(n\.nodeType === Node\.ELEMENT_NODE \? n : n\.parentElement\) : null\);/.test(code) &&
+    /const e = ownerEl\(node\);\n    return !!e && \(e === epochScope/.test(code),
+    '絞った世代で控えが1件も評価されず、静かに何も見つからなくなる');
+  // ⚠️ 飲み込んだ合図の範囲を捨てると、新しく入った相手の中を測り直さない
+  check('飲み込んだ合図の範囲も、溜めてから使っている（第21回 RG-21-07）',
+    /function widenScope/.test(code) && /function takeScope/.test(code) &&
+    /if \(e\) \{ widenScope\(lastStateNode\); widenScope\(e\.target\); \}/.test(code) &&
+    /const sc = takeScope\(\);\n      if \(sc\) bumpEpochWithin\(sc\); else bumpEpoch\(\);/.test(code),
+    'hoverPending で見送った pointerover の範囲が落ち、その中の語が見つからない');
+  check('stylesheet が変わった回は、範囲を絞っていない（第21回 RG-21-07）',
+    /cssMoved = true;/.test(code) && /\(cssMoved \|\| !hoverCssLocal \|\| scopeAcc === undefined\) \? null : scopeAcc/.test(code),
+    '規則が変わったのに、直前のカーソル位置の中だけしか測り直さない');
+  check('`:has()` と兄弟結合子があるページでは絞っていない（第21回 RG-21-07）',
+    /const NONLOCAL = \/:has\\\(\|\[~\+\]\//.test(code) && /hoverCssLocal/.test(code),
+    '横や祖先が変わる規則のあるページで、変化を取りこぼす');
+
+  /* ---------- 第21回 RG-21-06 単独の印を closed shadow root へ ---------- */
+  check('単独の印を、closed shadow root の中へ入れている（第21回 RG-21-06）',
+    /host\.attachShadow\(\{ mode: 'closed' \}\)/.test(code) &&
+    /const iconButton = new WeakMap\(\)/.test(code) &&
+    /function ensureShadowButton/.test(code),
+    '全署名を消された複製が、幅0の押せる点として残る');
+  // ⚠️ `<sup>` に `attachShadow` すると NotSupportedError になる（実測）
+  check('印の host を、shadow を付けられる要素にしている（第21回 RG-21-06）',
+    /const icon = document\.createElement\('span'\);/.test(code) &&
+    /if \(rec\.icon\.tagName !== 'SPAN'\) return false;/.test(code),
+    'sup では attachShadow が NotSupportedError になる');
+  check('light DOM の host に、意味づけを残していない（第21回 RG-21-06）',
+    /setOwnAttr\(icon, 'role', null\);\n      setOwnAttr\(icon, 'tabindex', null\);/.test(code),
+    'host 側に role / tabindex が残ると、複製にも押せる点が移る');
+  // ⚠️ `<slot>` が無いと、退役した印をページが本文の入れ物に使い回したとき、
+  //    その文字が描かれなくなる（実測で再現した）
+  check('shadow の中に slot を置いている（第21回 RG-21-06）',
+    /root\.append\(btn, desc, document\.createElement\('slot'\)\);/.test(code),
+    'ページが使い回した節点の本文が描かれなくなる');
+  // ⚠️ shadow 専用の区間には裸の `button {…}` が入る。ページ側の style へ入れると、
+  //    ページのボタンまで作り替えてしまう（実測: 切替ボタンの字形指定が落ちた）
+  check('shadow 専用の CSS を、ページ側の style から外している（第21回 RG-21-06）',
+    /const SHADOW_SECTION = /.test(code) &&
+    /\.replace\(SHADOW_SECTION, ''\)/.test(code),
+    'ページのボタンまで、こちらの見た目で作り替えてしまう');
+  check('開閉の状態を、押せる実体へ書いている（第21回 RG-21-06）',
+    /function setExpanded/.test(code) && /const btn = iconButton\.get\(icon\);/.test(code),
+    'shadow の外の host へ aria-expanded を書いても、読み上げに出ない');
 
   /* ---------- 第19回で足した不変条件 ---------- */
   // RG-19-01 複数語の用語は、**全部の並び**が読めるときだけ可視
@@ -1067,6 +1149,45 @@ check('content.js が保存キー iiyakuEnabled を変えていない', content.
   check('監査回を探す検査が、実際に捕まえる（陽性対照）',
     ROUND.test('監査のための資料（第15回監査用）'));
 
+  /* ---------- 変わった／変わらないの一覧を、実測と突き合わせる（第21回 RG-21-08） ----------
+     ⚠️ v1.8.19 の同じ説明が `styles.css` を**両方の一覧に**載せていた。版を上げるとき、
+     「無変更」へ足して「変更」から消し忘れたためで、文章だけでは誰も気づかない。
+     いまは `git diff` の実測を正本にし、**交差があれば落とす**。 */
+  {
+    const pick = re => { const m = re.exec(audit); return m ? m[1].trim().split(/\s+/).filter(Boolean) : null; };
+    const changed = pick(/^#\s*CHANGED:\s*(.*)$/m);
+    const unchanged = pick(/^#\s*UNCHANGED:\s*(.*)$/m);
+    check('AUDIT.md が、変わった／変わらないの一覧を機械可読で書いている',
+      !!changed && !!unchanged, '`# CHANGED:` と `# UNCHANGED:` の2行が要る');
+    if (changed && unchanged) {
+      const both = changed.filter(f => unchanged.includes(f));
+      check('同じファイルが、変わった側と変わらない側の両方に載っていない',
+        both.length === 0, `両方に載っている: ${both.join(', ')}`);
+      check('2つの一覧を合わせると、配布13ファイルちょうどになる',
+        new Set([...changed, ...unchanged]).size === PACKAGE_FILES.length &&
+        [...changed, ...unchanged].every(f => PACKAGE_FILES.includes(f)),
+        `合計 ${new Set([...changed, ...unchanged]).size} / 配布 ${PACKAGE_FILES.length}`);
+      const base = (/^base_commit:\s*(\S+)/m.exec(audit) || [])[1];
+      let real = null;
+      if (base && base !== 'null') {
+        try {
+          real = execFileSync('git', ['-C', ROOT, 'diff', '--name-only', base, '--', ...PACKAGE_FILES],
+                              { encoding: 'utf8' }).split('\n').filter(Boolean);
+        } catch (e) { real = null; }
+      }
+      // 測れなかったときに「0 件だから一致」としない（測定の失敗を合格にしない）
+      check('変わったファイルの一覧を、実測できている', real !== null,
+        '基点コミットを引けない環境では、この突き合わせを合格にしない');
+      if (real !== null) {
+        const miss = real.filter(f => !changed.includes(f));
+        const extra = changed.filter(f => !real.includes(f));
+        check('変わったと書いた一覧が、`git diff` の実測と一致する',
+          miss.length === 0 && extra.length === 0,
+          `書き漏らし: ${miss.join(', ') || 'なし'} / 余分: ${extra.join(', ') || 'なし'}`);
+      }
+    }
+  }
+
   const st = (/^state:\s*(\S+)/m.exec(audit) || [])[1];
   const tag = (/^tag:\s*(\S+)/m.exec(audit) || [])[1];
   if (st && st !== 'uncommitted' && tag && tag !== 'null') {
@@ -1120,11 +1241,25 @@ check('content.js が保存キー iiyakuEnabled を変えていない', content.
 
   // カーソルとフォーカスも合図にする（CSS だけで開くメニューは他の合図に乗らない）
   check('カーソルとフォーカスを、控えの見直しの合図にしている',
-    /const HOVER_SIGNALS = \['pointerover', 'pointerout', 'focusin', 'focusout'\]/.test(code) &&
+    /const HOVER_SIGNALS = \['pointerover', 'pointerout', 'focusin', 'focusout',/.test(code) &&
     /addEventListener\(t, onPointerOrFocus, true\)/.test(code));
+  // ⚠️ `:active` は規則の走査では見ているのに購読していなかった（第21回 RG-21-05）
+  check('`:active` の合図も購読している（第21回 RG-21-05）',
+    /'pointerdown', 'pointerup', 'pointercancel'\]/.test(code) &&
+    /if \(e\.type === 'pointerdown'\) pressedNode = e\.target;/.test(code) &&
+    /\+ '\|' \+ \(pressedNode \? chainKey\(pressedNode\) : '-'\)/.test(code),
+    '押しているあいだだけ開くメニューが、2秒ごとの確認まで説明されない');
   check('見直す先が無いときは、その合図で何もしない',
-    /if \(latent\.size === 0 \|\| hoverPending\) return/.test(code),
+    /if \(latent\.size === 0\) return;/.test(code),
     'カーソルを動かすたびにまとめ直しが走る');
+  // ⚠️ `hoverPending` は宣言だけで一度も true にならず、門が効いていなかった
+  check('予約したら、その旗を立てている（第21回 RG-21-05）',
+    /hoverPending = true;/.test(code) &&
+    /if \(hoverPending\) \{ hoverTailKey = key; return; \}/.test(code),
+    '同じフレームへ何重にも予約が積まれる');
+  check('待たせた合図は、そのときの状態のまま処理している（第21回 RG-21-05）',
+    /onPointerOrFocus\(null, k\);/.test(code) && !/onPointerOrFocus\(\); \}/.test(code),
+    '間引きの窓が明けたあと、相手を持たない別の状態を「済み」にしてしまう');
   check('カーソルの合図を、1フレームに1回へまとめている',
     /requestAnimationFrame\(fire\)/.test(code));
   check('切り替えのときに、その合図も外している',

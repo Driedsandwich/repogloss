@@ -25,9 +25,11 @@ import { launchChrome, startTestServer, stageExtension, stageExtensionWith,
          PHRASE19_PAGE, SNAP19_PAGE, TRANS19_PAGE, PAINT19_PAGE, LAYER19_PAGE,
          UNKNOWN20_PAGE, ICONVIS20_PAGE, ICONCOVER20_PAGE, MASK20_PAGE, BG20_PAGE,
          CSSOM20_PAGE, OWNSTYLE20_PAGE,
+         PAINT21_PAGE, ICONCOVER21_PAGE, CSSOM21_PAGE, ACTIVE21_PAGE, SHADOW21_PAGE,
          retryStartup, startupDiagText, STARTUP_METHODS,
          openPage, sleep, waitFor,
-         pressKey, collectTabOrder, tabUntil } from './helpers/chrome.mjs';
+         pressKey, collectTabOrder, tabUntil,
+         HOST_SEL, hostInfo, glossButtons, shadowShape, countTabStops } from './helpers/chrome.mjs';
 
 const PAGE = 'https://github.com/octocat/Hello-World';
 
@@ -142,22 +144,28 @@ test('拡張として読み込んだ状態で動く', async t => {
   });
 
   await t.test('フォーカスできるだけの容器は入口にしない（印自体を入口にする）', async () => {
+    // ⚠️ 意味づけは closed shadow root の中へ移った（第21回 RG-21-06）。
+    //    light DOM の host は「装飾扱いへ落ちていないこと」だけを見る。
     const r = await tab.evaluate(`(() => {
       const icons = [...document.querySelectorAll('#scroll-region .iiyaku-icon')];
-      return { n: icons.length, roles: icons.map(i => i.getAttribute('role')),
+      return { n: icons.length,
                grouped: icons.filter(i => i.dataset.iiyakuFor).length,
+               hidden: icons.filter(i => i.hasAttribute('aria-hidden')).length,
                containerIsTrigger: document.getElementById('scroll-region').hasAttribute('data-iiyaku-entrance') };
     })()`);
     assert.equal(r.n, 2);
-    assert.deepEqual(r.roles, ['button', 'button']);
-    assert.equal(r.grouped, 0);
+    assert.equal(r.grouped, 0, '装飾扱い（入口に紐づく印）になっている');
+    assert.equal(r.hidden, 0, '読み上げから隠されている');
     assert.equal(r.containerIsTrigger, false);
   });
 
   await t.test('フォーカスできない容器の中でも、印自体を入口にする', async () => {
-    assert.equal(
-      await tab.evaluate(`document.getElementById('ti-minus1').querySelector('.iiyaku-icon')?.getAttribute('role')`),
-      'button');
+    const r = await tab.evaluate(`(() => {
+      const i = document.getElementById('ti-minus1').querySelector('.iiyaku-icon');
+      return i ? { has: true, forTrigger: i.dataset.iiyakuFor ?? null,
+                   hidden: i.hasAttribute('aria-hidden') } : { has: false };
+    })()`);
+    assert.deepEqual(r, { has: true, forTrigger: null, hidden: false });
   });
 
   /* ---------- 到達可能性は、ブラウザに実キーを送って確かめる ---------- */
@@ -313,39 +321,58 @@ test('拡張として読み込んだ状態で動く', async t => {
   });
 
   await t.test('文章の中の印は、短い名前のボタンとして扱う', async () => {
-    assert.deepEqual(
-      await tab.evaluate(`(() => { const i = document.querySelector('#prose .iiyaku-icon');
-        return [i.getAttribute('role'), i.getAttribute('tabindex'), i.getAttribute('aria-label'),
-                i.getAttribute('aria-label').length < 20]; })()`),
-      ['button', '0', '「branch」の解説', true]
-    );
+    // ⚠️ role / tabindex / aria-label は closed shadow root の中の button が持つ。
+    //    ページの世界からは取れないので、アクセシビリティのツリーから読む。
+    const btns = await glossButtons(cdp, tab);
+    const b = btns.find(x => x.name === '「branch」の解説');
+    assert.ok(b, `解説ボタンが AX に無い: ${JSON.stringify(btns.map(x => x.name))}`);
+    assert.ok(b.name.length < 20, `名前が長すぎる: ${b.name}`);
+    assert.equal(b.focusable, true, '押せる点になっていない');
+    assert.equal(b.ignored, false, '読み上げから外れている');
+    // light DOM の host 側には、意味づけが**残っていない**こと（何個あっても全部）
+    const hosts = await hostInfo(tab, '#prose .iiyaku-icon');
+    assert.ok(hosts.length > 0, '印が無い');
+    assert.deepEqual(hosts.filter(h => h.role || h.tabindex || h.ariaLabel), [],
+      'host 側に意味づけが残っている');
+    assert.deepEqual(hosts.filter(h => h.tabIndex !== -1), [],
+      'host が単独で Tab の停止点になっている');
+    assert.deepEqual(hosts.filter(h => h.shadowRootVisible), [],
+      'shadow root がページから見えている（closed になっていない）');
   });
 
   await t.test('名前と説明が同じ全文にならない（二重読みを避ける）', async () => {
+    // ⚠️ host は単独では focus できないので、カーソルで開く。
+    //    名前・説明・開閉はアクセシビリティのツリーから読む（第21回 RG-21-06）。
     const r = await tab.evaluate(`(() => {
-      // 位置に依存しないよう、単独の印ならどれでもよい
-      const i = document.querySelector('.iiyaku-icon[role="button"]');
+      const i = document.querySelector('#prose .iiyaku-icon');
       if (!i) return { error: '単独の印が無い' };
-      i.focus();
+      i.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
       const tip = document.querySelector('.iiyaku-tooltip');
-      if (!tip) return { error: '説明が出ない' };
-      return { name: i.getAttribute('aria-label'), desc: tip ? tip.textContent : null,
-               expanded: i.getAttribute('aria-expanded') };
+      return tip ? { tip: tip.textContent } : { error: '説明が出ない' };
     })()`);
-    assert.notEqual(r.name, r.desc);
-    assert.ok(r.desc.length > r.name.length * 2, '説明が名前より十分に長くない');
-    assert.equal(r.expanded, 'true');
+    assert.ok(!r.error, r.error);
+    const b = (await glossButtons(cdp, tab)).find(x => x.name === '「branch」の解説');
+    assert.ok(b, '解説ボタンが AX に無い');
+    assert.notEqual(b.name, b.description, '名前と説明が同じ全文になっている');
+    assert.ok(b.description && b.description.length > b.name.length * 2,
+      `説明が名前より十分に長くない: ${JSON.stringify(b)}`);
+    assert.equal(b.expanded, true, '開いているのに expanded が立っていない');
+    await tab.evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); true`);
   });
 
   await t.test('Escape で閉じ、開閉の状態も戻る', async () => {
-    assert.deepEqual(
-      await tab.evaluate(`(() => {
-        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-        const i = document.querySelector('#prose .iiyaku-icon');
-        return [document.querySelector('.iiyaku-tooltip') === null, i.getAttribute('aria-expanded'),
-                i.hasAttribute('aria-describedby')]; })()`),
-      [true, 'false', false]
-    );
+    await tab.evaluate(`(() => { document.querySelector('#prose .iiyaku-icon')
+      .dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); })(); true`);
+    assert.ok((await glossButtons(cdp, tab)).some(b => b.expanded === true), '開いていない（前提）');
+    const closed = await tab.evaluate(`(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      const i = document.querySelector('#prose .iiyaku-icon');
+      return [document.querySelector('.iiyaku-tooltip') === null,
+              i.hasAttribute('aria-describedby'), i.hasAttribute('aria-expanded')]; })()`);
+    assert.deepEqual(closed, [true, false, false]);
+    // 開閉の状態は shadow の中の button が持つ
+    assert.ok((await glossButtons(cdp, tab)).every(b => b.expanded === false),
+      '閉じたのに expanded が戻っていない');
   });
 
   /* ---------- aria-describedby の共存 ---------- */
@@ -367,7 +394,8 @@ test('拡張として読み込んだ状態で動く', async t => {
 
   await t.test('ツールチップの ID がページ側の要素と衝突しない', async () => {
     const r = await tab.evaluate(`(() => {
-      document.querySelector('#prose .iiyaku-icon').focus();
+      document.querySelector('#prose .iiyaku-icon')
+        .dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
       const tip = document.querySelector('.iiyaku-tooltip');
       const dupes = document.querySelectorAll('[id="' + tip.id + '"]').length;
       const legacy = document.getElementById('iiyaku-tooltip');
@@ -405,11 +433,14 @@ test('拡張として読み込んだ状態で動く', async t => {
 
   await t.test('環境が変わっても字形と形が崩れない（Windows 想定）', async () => {
     const r = await tab.evaluate(`(() => {
-      const i = document.querySelector('.iiyaku-icon[role="button"]');
+      // 単独の印は role=button を host に持たない（第21回 RG-21-06）。
+      // 装飾扱いの印は data-iiyaku-for を持つので、それが無いものを取る。
+      const i = [...document.querySelectorAll('.iiyaku-icon[data-iiyaku-owner]')]
+        .find(x => !x.dataset.iiyakuFor);
       const tb = document.querySelector('.iiyaku-toggle');
       if (!i) return { error: '単独の印が無い' };
       if (!tb) return { error: '切替ボタンが無い' };
-      i.focus();
+      i.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
       const tip = document.querySelector('.iiyaku-tooltip');
       if (!tip) return { error: '説明が出ない' };
       const ib = i.getBoundingClientRect();
@@ -2200,11 +2231,10 @@ test('自分の署名を持つものだけを片づけ、ページの持ち物�
   await t.test('RG-11-02 取り除いた複製は、Tab の停止点を増やさない', async () => {
     // このページには正規の印が複数ある。総数で判定すると何を測っているか分からない
     // ので、**複製を足す前後の差**で見る（増えなければ、複製は停止点になっていない）。
-    const stops = async () => {
-      const order = await collectTabOrder(cdp, tab, 16, 'before');
-      const wrap = order.indexOf('before');            // 一周して戻ってきた位置
-      return (wrap === -1 ? order : order.slice(0, wrap)).filter(x => x === 'SUP').length;
-    };
+    // ⚠️ 第21回で host が `<sup>` → `<span>` になったので、タグ名では数えられない。
+    //    印そのものかどうかで数える（`countTabStops`）。
+    const stops = () => countTabStops(cdp, tab,
+      `el.classList && el.classList.contains('iiyaku-icon')`, { steps: 16 });
     const before = await stops();
     assert.ok(before > 0, `前提が崩れている（印の停止点が ${before} 個）`);
     await tab.evaluate(`(() => { const c = document.getElementById('clone-src').cloneNode(true);
@@ -2609,12 +2639,16 @@ test('生成した印の生命周期を、記録どおりに保つ', async t => 
   });
 
   await t.test('RG-13-04 説明文・用語・role を書き換えられたら、正しい印へ作り直す', async () => {
+    // ⚠️ 第21回以降、単独の印の host には role を持たせない。ページが role を
+    //    **足した**場合も整合が崩れたものとして作り直し、host は無属性へ戻る。
     await tab.evaluate(`(() => { const ic = document.querySelector('.iiyaku-icon[data-iiyaku-key="webhook"]');
       ic.dataset.iiyaku = 'WRONG'; ic.dataset.iiyakuTerm = 'wrong'; ic.setAttribute('role', 'img'); })(); true`);
     await waitFor('正しい印へ戻る', async () => await tab.evaluate(
       `(() => { const ic = document.querySelector('.iiyaku-icon[data-iiyaku-key="webhook"]');
-        return !!ic && ic.dataset.iiyaku !== 'WRONG' && ic.getAttribute('role') === 'button'; })()`));
+        return !!ic && ic.dataset.iiyaku !== 'WRONG' && !ic.hasAttribute('role'); })()`));
     assert.equal(await nKey('webhook'), 1, '印が増減している');
+    const b = (await glossButtons(chrome.cdp, tab)).find(x => x.name === '「webhook」の解説');
+    assert.ok(b, '作り直した印の意味づけが AX に出ていない');
   });
 
   await tab.close();
@@ -3092,7 +3126,10 @@ test('形と塗りの判定（第17回）', async t => {
     ['shd0', 'RG-17-04 完全に透明な影', [0, 1]],
     ['shdb', 'RG-17-04【対照】黒い影', [1, 0]],
     ['bgc0', 'RG-17-04 塗りの無い `background-clip:text`', [0, 1]],
-    ['mask2', 'RG-17-04 透明な層の後ろに不透明な層がある mask', [1, 0]],
+    // ⚠️ v1.8.19 まではここが [1, 0] だった（不透明な画像の層は残る）。
+    // 第21回 RG-21-01 で **画像の画素は見えない**ことを認めたため、URL の層は
+    // どちらの向きにも断定しない → 印を付けない。**説明できる語がひとつ減る代償**。
+    ['mask2', 'RG-17-04 透明な層の後ろに画像の層がある mask（第21回で断定しない側へ）', [0, 1]],
     ['mask1', 'RG-17-04【対照】透明な層だけの mask', [0, 1]]
   ]) {
     await t.test(why, async () => {
@@ -3198,20 +3235,33 @@ test('ページの持ち物に触れない（第17回）', async t => {
 
   // ⚠️ v1.8.16 では、この形の要素から操作性を外していた。しかし**それはページの
   // 持ち物を壊す**ことが分かった（第18回 RG-18-06）。いま保証するのは「自分のものと
-  // 断定できない要素には触れない」ことで、見分けられない複製が押せる点として残るのは
-  // **既知の限界**（構造として断つには印を closed shadow root へ入れる作り直しが要る）。
-  await t.test('RG-17-06/RG-18-06 見分けられない複製には触れない（既知の限界を固定する）', async () => {
-    await tab.evaluate(`(() => {
-      const c = document.querySelector('#src .iiyaku-icon').cloneNode(true);
+  // 断定できない要素には触れない」ことで、**そのうえで押せる点が生まれない**ように
+  // 印を closed shadow root の中へ入れた（第21回 RG-21-06。`cloneNode` は shadow root を
+  // 複製しないので、複製された host は空になる）。
+  await t.test('RG-17-06/RG-18-06/RG-21-06 複製に触れず、しかも押せる点を残さない', async () => {
+    const ghost = await tab.evaluate(`(() => {
+      const src = document.querySelector('#src .iiyaku-icon');
+      const c = src.cloneNode(true);
       for (const a of [...c.attributes])
         if (!['role', 'tabindex', 'aria-expanded'].includes(a.name)) c.removeAttribute(a.name);
-      c.className = 'iiyaku-icon'; c.textContent = ''; c.id = 'ghost';
-      document.getElementById('sink').appendChild(c); })(); true`);
+      c.className = 'iiyaku-icon'; c.id = 'ghost';
+      document.getElementById('sink').appendChild(c);
+      return { srcHadRole: src.hasAttribute('role'), srcHadTabindex: src.hasAttribute('tabindex') };
+    })()`);
+    // 前提: 正規の印は host 側に意味づけを持たない（持っていたら複製にも移る）
+    assert.deepEqual(ghost, { srcHadRole: false, srcHadTabindex: false },
+      '正規の印の host に意味づけが残っている（複製へ移ってしまう）');
     await sleep(900);
-    assert.deepEqual(await tab.evaluate(`(() => { const d = document.getElementById('ghost');
-      return [d.className, d.getAttribute('role'), d.getAttribute('tabindex')]; })()`),
-      ['iiyaku-icon', 'button', '0'],
-      '自分のものと断定できない要素を書き換えている');
+    const d = await tab.evaluate(`(() => { const d = document.getElementById('ghost');
+      return { className: d.className, role: d.getAttribute('role'),
+               tabindex: d.getAttribute('tabindex'),
+               focusable: d.querySelectorAll('button,[tabindex],[role="button"]').length,
+               shadow: String(d.shadowRoot) }; })()`);
+    // ページの持ち物には触れない（class も属性も、こちらからは変えない）
+    assert.equal(d.className, 'iiyaku-icon', '自分のものと断定できない要素を書き換えている');
+    // そのうえで、押せる点が生まれない
+    assert.equal(d.focusable, 0, `複製の中に押せる要素が残っている: ${JSON.stringify(d)}`);
+    assert.equal(d.shadow, 'null', '複製に shadow root が付いている');
   });
 
   await t.test('RG-17-06【対照】別の持ち主を名乗るページの要素は、そのまま', async () => {
@@ -3452,7 +3502,10 @@ test('塗りの判定（第19回）', async t => {
 
   for (const [id, why, want] of [
     ['bgauto',   'RG-19-04 1×1 の画像を `background-size:auto` で置いただけ', [0, 1]],
-    ['bgrep',    'RG-19-04【対照】同じ画像を繰り返して覆う',                  [1, 0]],
+    // ⚠️ v1.8.19 まではここが [1, 0] だった（繰り返せば全面に届く）。第21回 RG-21-01 で
+    // **画像の画素は見えない**ことを認めたため、URL の層は断定しない。gradient の
+    // 対照（次の行）は変わらないので、繰り返しの判定そのものは生きている。
+    ['bgrep',    'RG-19-04 同じ画像を繰り返して覆う（第21回で断定しない側へ）',  [0, 1]],
     ['bggrad',   'RG-19-04【対照】gradient の auto は領域いっぱい',           [1, 0]],
     ['fltnone',  'RG-19-05 透明な出力を作る filter の `url()`',              [0, 1]],
     ['msklum',   'RG-19-05 `mask-mode:luminance` の黒',                      [0, 1]],
@@ -3781,6 +3834,272 @@ test('自前 style の規則を消されたら直す（第20回 RG-20-07）', as
     assert.ok(got.rules > 0, `規則が入れ直されていない: ${JSON.stringify(got)}`);
     assert.equal(got.display, 'inline-flex', `印の見た目が戻っていない: ${JSON.stringify(got)}`);
     assert.ok(got.width > 0, `印の幅が0のまま: ${JSON.stringify(got)}`);
+  });
+
+  await tab.close();
+});
+
+/* ===================== 第21回監査（v1.8.19）の反例 ===================== */
+
+test('背景と mask は、語の位置で判定する（第21回）', async t => {
+  const { tab } = await openWith(t, PAINT21_PAGE);
+  const nIn = sel => tab.evaluate(`document.querySelectorAll(${JSON.stringify(sel)} + ' .iiyaku-icon').length`);
+
+  for (const [id, why, want] of [
+    // ⚠️ 画像の画素は読み込まないと分からない。**明示の寸法は不透明の証拠にならない**
+    ['imgbg',   'RG-21-01 透明な画像を background-clip:text へ（断定しない）', [0, 1]],
+    ['gradbg',  'RG-21-01【対照】gradient は解ける（領域いっぱいなら届く）',   [1, 0]],
+    ['repx',    'RG-21-02 repeat-x は下方の語へ届かない',                      [0, 1]],
+    ['repb',    'RG-21-02【対照】repeat は両軸へ届く',                         [1, 0]],
+    ['repy',    'RG-21-02 repeat-y は右方の語へ届かない',                      [0, 1]],
+    ['org',     'RG-21-02 層ごとの background-origin（読める語を落とさない）',  [1, 0]],
+    ['imgmask', 'RG-21-01 透明な画像の mask（断定しない）',                     [0, 1]]
+  ]) {
+    await t.test(why, async () => {
+      assert.deepEqual([await nIn(`#h-${id}`), await nIn(`#l-${id}`)], want, why);
+    });
+  }
+
+  await t.test('RG-21-01 描かれていない印が、1つも残らない', async () => {
+    assert.deepEqual(await tab.evaluate(`(() => {
+      const bad = [];
+      for (const ic of document.querySelectorAll('.iiyaku-icon')) {
+        const b = ic.getBoundingClientRect();
+        if (b.width <= 0 || b.height <= 0) { bad.push(['size', ic.dataset.iiyakuKey]); continue; }
+        // ⚠️ 画面の外の点では elementFromPoint は null を返す。**画面内の印だけ**を見る
+        //    （そうしないと、下へ流れた正常な印まで「描かれていない」と数える）
+        const pts = [[b.x+b.width/2,b.y+b.height/2],[b.x+1,b.y+1],[b.right-1,b.bottom-1]]
+          .filter(([x,y]) => x >= 0 && y >= 0 && x < innerWidth && y < innerHeight);
+        if (pts.length === 0) continue;
+        const ok = pts.some(([x,y]) => { const e = document.elementFromPoint(x,y);
+          return e && (e === ic || ic.contains(e)); });
+        if (!ok) bad.push(['unpainted', ic.dataset.iiyakuKey]);
+      }
+      return bad;
+    })()`), []);
+  });
+
+  await tab.close();
+});
+
+test('祖先が最前面に出ることを、露出の証拠にしない（第21回 RG-21-03）', async t => {
+  const { tab } = await openWith(t, ICONCOVER21_PAGE);
+  const nIn = sel => tab.evaluate(`document.querySelectorAll(${JSON.stringify(sel)} + ' .iiyaku-icon').length`);
+
+  await t.test('見本が狙いどおり（祖先の ::after が5点すべてを取る）', async () => {
+    // ⚠️ この前提が崩れると、以下の判定は「たまたま通った」になる
+    assert.equal(await tab.evaluate(`(() => {
+      const p = document.querySelector('#h-anc p');
+      const b = p.getBoundingClientRect();
+      const e = document.elementFromPoint(b.left + 2, b.top + b.height / 2);
+      return e ? e.id : null;
+    })()`), 'h-anc');
+  });
+
+  for (const [sel, why, want] of [
+    ['#h-anc',  'RG-21-03 祖先の ::after に覆われた印は残さない', 0],
+    ['#l-anc',  'RG-21-03 後方の読める語へ引き継ぐ',              1],
+    ['#h-plain', 'RG-21-03【対照】覆いが無ければ残る',            1],
+    ['#l-plain', 'RG-21-03【対照】そのとき後方には付かない',      0]
+  ]) {
+    await t.test(why, async () => { assert.equal(await nIn(sel), want, why); });
+  }
+
+  await t.test('RG-21-03【対照】スクロールで出せる語は落とさない', async () => {
+    // 入れ物の中でまだ画面に出ていない語。当たり判定は入れ物を返すが、覆いではない
+    assert.deepEqual([await nIn('#box21'), await nIn('#l-scr')], [1, 0]);
+  });
+
+  await tab.close();
+});
+
+test('CSSOM の書き換えに気づく（第21回 RG-21-04）', async t => {
+  const { chrome, tab } = await openWith(t, CSSOM21_PAGE);
+  // ⚠️ ページ全体で数えると `#own21` の語が混ざって差が見えない。中だけを数える
+  const n = () => tab.evaluate(`document.querySelectorAll('#host21 .iiyaku-icon').length`);
+
+  // 先に判定を作らせる（あとから判定させると、その場で作り直されて再現しない）
+  await moveMouse(chrome, tab, 5, 5);   await sleep(160);
+  await moveMouse(chrome, tab, 60, 5);  await sleep(400);
+  const before = await n();
+
+  await t.test('見本が狙いどおり（規則の数は変わらない）', async () => {
+    const [a, b] = await tab.evaluate(`(() => {
+      const s = document.getElementById('s21').sheet;
+      const a = s.cssRules.length;
+      s.cssRules[0].selectorText = '#host21:hover #menu21';
+      return [a, s.cssRules.length];
+    })()`);
+    assert.deepEqual([a, b], [1, 1]);
+  });
+
+  await t.test('RG-21-04 同数のまま足された hover 規則を、2秒を待たずに拾う', async () => {
+    await moveMouse(chrome, tab, 100, 30);
+    await sleep(320);
+    assert.ok(await n() > before,
+      `2秒ごとの確認まで待たされている（前 ${before} / 320ms 後 ${await n()}）`);
+  });
+
+  await t.test('RG-21-04 自前 style の宣言を書き換えられたら、入れ直す', async () => {
+    const got = await tab.evaluate(`(() => {
+      for (const st of document.querySelectorAll('style')) {
+        let rules; try { rules = st.sheet && st.sheet.cssRules; } catch (e) { continue; }
+        if (!rules) continue;
+        const walk = rs => { for (const x of rs) {
+          if (x.style && x.selectorText && /iiyaku-icon/.test(x.selectorText)) {
+            x.style.setProperty('opacity', '0', 'important'); return true; }
+          if (x.cssRules && walk(x.cssRules)) return true; } return false; };
+        if (walk(rules)) return { ok: true, len: st.textContent.length, count: rules.length };
+      }
+      return { ok: false };
+    })()`);
+    assert.equal(got.ok, true, '自前 style の規則を見つけられなかった＝見本が効いていない');
+    await sleep(2600);
+    const back = await tab.evaluate(`(() => {
+      const ic = document.querySelector('.iiyaku-icon');
+      if (!ic) return { n: 0 };
+      return { n: 1, opacity: getComputedStyle(ic).opacity,
+               w: +ic.getBoundingClientRect().width.toFixed(1) };
+    })()`);
+    assert.equal(back.n, 1, `印が戻っていない: ${JSON.stringify(back)}`);
+    assert.ok(parseFloat(back.opacity) > 0, `不透明度が戻っていない: ${JSON.stringify(back)}`);
+    assert.ok(back.w > 0, `幅が戻っていない: ${JSON.stringify(back)}`);
+  });
+
+  await tab.close();
+});
+
+test('`:active` の合図も拾う（第21回 RG-21-05）', async t => {
+  const { chrome, tab } = await openWith(t, ACTIVE21_PAGE);
+  const nIn = sel => tab.evaluate(`document.querySelectorAll(${JSON.stringify(sel)} + ' .iiyaku-icon').length`);
+  const rect = async id => await tab.evaluate(`(() => { const r =
+    document.getElementById(${JSON.stringify(id)}).getBoundingClientRect();
+    return { x: r.left + 10, y: r.top + 10 }; })()`);
+
+  const hov = await rect('hov21');
+  await t.test('【対照】:hover は拾える（物差しが動いている）', async () => {
+    await moveMouse(chrome, tab, hov.x, hov.y);
+    await sleep(320);
+    assert.equal(await nIn('#hov21'), 1);
+  });
+
+  const act = await rect('act21');
+  await t.test('RG-21-05 :active だけで開くメニューを、2秒を待たずに拾う', async () => {
+    // ⚠️ 先にカーソルを置いて pointerover の合図を使い切る。そうしないと
+    //    :active ではなく pointerover が拾ってしまい、切り分けにならない
+    await moveMouse(chrome, tab, act.x, act.y);
+    await sleep(700);
+    assert.equal(await nIn('#act21'), 0, 'カーソルを置いただけで開いている＝見本が効いていない');
+    await chrome.cdp.send('Input.dispatchMouseEvent',
+      { type: 'mousePressed', x: act.x, y: act.y, button: 'left', buttons: 1, clickCount: 1 }, tab.sessionId);
+    await sleep(320);
+    const got = await nIn('#act21');
+    await chrome.cdp.send('Input.dispatchMouseEvent',
+      { type: 'mouseReleased', x: act.x, y: act.y, button: 'left', buttons: 0, clickCount: 1 }, tab.sessionId);
+    assert.equal(got, 1, '押しているあいだに説明が付いていない');
+  });
+
+  await tab.close();
+});
+
+/* ===== 第21回 RG-21-06 単独の印を closed shadow root の中へ入れる ===== */
+
+test('単独の印は、closed shadow root の中の button が持つ（第21回 RG-21-06）', async t => {
+  const { chrome, tab } = await openWith(t, SHADOW21_PAGE);
+  const { cdp } = chrome;
+
+  await t.test('light DOM の host は、単独では Tab の停止点にならない', async () => {
+    const hosts = (await hostInfo(tab)).filter(h => h.key);   // 自分の印だけ
+    assert.ok(hosts.length >= 2, `印が足りない: ${hosts.length}`);
+    assert.deepEqual(hosts.filter(h => h.tag !== 'SPAN'), [], 'host が span でない');
+    assert.deepEqual(hosts.filter(h => h.role || h.tabindex || h.ariaLabel || h.ariaExpanded), [],
+      'host 側に意味づけが残っている');
+    assert.deepEqual(hosts.filter(h => h.tabIndex !== -1), [], 'host が Tab の停止点になっている');
+    assert.deepEqual(hosts.filter(h => h.shadowRootVisible), [],
+      'ページから shadowRoot が取れている（closed になっていない）');
+    assert.deepEqual(hosts.filter(h => h.width < 6 || h.height < 6), [],
+      `印が描かれていない: ${JSON.stringify(hosts)}`);
+  });
+
+  await t.test('shadow の中に button と slot がある', async () => {
+    const shape = await shadowShape(cdp, tab);
+    const hosts = (await hostInfo(tab)).filter(h => h.key);
+    assert.equal(shape.roots, hosts.length, `shadow root の数が印の数と違う: ${JSON.stringify(shape)}`);
+    assert.equal(shape.buttonsInShadow, hosts.length, 'shadow の中に button が無い');
+    // ⚠️ slot が無いと、退役した印をページが本文の入れ物に使い回したとき、
+    //    その文字が描かれなくなる（実測で再現した）
+    assert.equal(shape.slots, hosts.length, 'shadow の中に slot が無い');
+  });
+
+  await t.test('意味づけ（role / 名前 / 説明 / 開閉）が、AX ツリーに正しく出る', async () => {
+    const b = (await glossButtons(cdp, tab)).find(x => x.name === '「branch」の解説');
+    assert.ok(b, '解説ボタンが AX に無い');
+    assert.equal(b.focusable, true);
+    assert.equal(b.ignored, false);
+    assert.equal(b.expanded, false);
+    assert.ok(b.description && b.description.length > 20,
+      `説明が AX に出ていない: ${JSON.stringify(b)}`);
+  });
+
+  await t.test('Tab で印に止まると開き、Enter で開閉し、Escape で閉じる（実キー送信）', async () => {
+    // ⚠️ 実測すると、**Tab で止まった時点で開く**（focusin で出す仕様）。
+    //    Enter はそこからの開閉の切り替えで、`preventDefault` が button の
+    //    既定の活性化（click）を止めるので、二重に切り替わることはない。
+    const n = () => tab.evaluate(`document.querySelectorAll('.iiyaku-tooltip').length`);
+    const hit = await tabUntil(cdp, tab, `el.classList && el.classList.contains('iiyaku-icon')`);
+    assert.ok(hit, 'Tab で印に止まれない');
+    await sleep(200);
+    assert.equal(await n(), 1, 'Tab で止まっても説明が出ない');
+    assert.ok((await glossButtons(cdp, tab)).some(b => b.expanded === true),
+      '開いているのに expanded が立っていない');
+
+    await pressKey(cdp, tab.sessionId, 'Enter'); await sleep(200);
+    assert.equal(await n(), 0, 'Enter で閉じない');
+    assert.ok((await glossButtons(cdp, tab)).every(b => b.expanded === false),
+      '閉じたのに expanded が戻っていない');
+
+    await pressKey(cdp, tab.sessionId, 'Enter'); await sleep(200);
+    assert.equal(await n(), 1, 'Enter で開き直せない');
+
+    await pressKey(cdp, tab.sessionId, 'Escape'); await sleep(200);
+    assert.equal(await n(), 0, 'Escape で閉じない');
+  });
+
+  await t.test('複製に全署名を消しても、押せる点は 0・Tab の停止点も増えない', async () => {
+    const stops = () => countTabStops(cdp, tab,
+      `el.classList && el.classList.contains('iiyaku-icon')`, { steps: 20 });
+    const before = await stops();
+    assert.ok(before > 0, `前提が崩れている（印の停止点が ${before} 個）`);
+
+    const pre = await tab.evaluate(`(() => {
+      const src = document.querySelector('#src .iiyaku-icon');
+      const c = src.cloneNode(true);
+      // 名札も合言葉も、全部消す（＝こちらからは自分のものだと断定できない形）
+      for (const a of [...c.attributes]) c.removeAttribute(a.name);
+      c.className = 'iiyaku-icon'; c.id = 'ghost';
+      document.getElementById('sink').appendChild(c);
+      return { srcRole: src.getAttribute('role'), srcTabindex: src.getAttribute('tabindex') };
+    })()`);
+    assert.deepEqual(pre, { srcRole: null, srcTabindex: null },
+      '正規の印の host に意味づけが残っている（複製へ移ってしまう）');
+    await sleep(900);
+
+    const g = await tab.evaluate(`(() => { const d = document.getElementById('ghost');
+      return { shadow: String(d.shadowRoot),
+               focusable: d.querySelectorAll('button,[tabindex],[role]').length,
+               tabIndex: d.tabIndex, className: d.className }; })()`);
+    assert.equal(g.shadow, 'null', '複製に shadow root が付いている');
+    assert.equal(g.focusable, 0, `複製の中に押せる要素がある: ${JSON.stringify(g)}`);
+    assert.equal(g.tabIndex, -1, '複製そのものが Tab の停止点になっている');
+    assert.equal(g.className, 'iiyaku-icon', 'ページの持ち物を書き換えている');
+    assert.equal(await stops(), before, '複製が Tab の停止点として残っている');
+  });
+
+  await t.test('【対照】ページが最初から持っている同じ形の要素は、そのまま', async () => {
+    assert.deepEqual(await tab.evaluate(`(() => { const e = document.getElementById('pageown');
+      return [e.tagName, e.className, e.getAttribute('role'), e.getAttribute('tabindex'),
+              e.getAttribute('data-iiyaku-owner'), e.textContent]; })()`),
+      ['SUP', 'iiyaku-icon', 'button', '0', 'page', 'P']);
   });
 
   await tab.close();

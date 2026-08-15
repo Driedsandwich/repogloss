@@ -778,7 +778,10 @@ const KEYS = {
   Tab: { key: 'Tab', code: 'Tab', vk: 9 },
   ArrowDown: { key: 'ArrowDown', code: 'ArrowDown', vk: 40 },
   ArrowUp: { key: 'ArrowUp', code: 'ArrowUp', vk: 38 },
-  Escape: { key: 'Escape', code: 'Escape', vk: 27 }
+  Escape: { key: 'Escape', code: 'Escape', vk: 27 },
+  // 印を押す経路（第21回 RG-21-06。shadow の中の button まで届くかを実キーで見る）
+  Enter: { key: 'Enter', code: 'Enter', vk: 13 },
+  Space: { key: ' ', code: 'Space', vk: 32 }
 };
 
 export async function pressKey(cdp, sessionId, name, { shift = false } = {}) {
@@ -1467,5 +1470,191 @@ export const OWNSTYLE20_PAGE = `<!doctype html><html lang="en"><head><meta chars
 <title>own20</title><style>html,body{background:#fff;color:#000;margin:0;font:16px/1.5 monospace}</style></head><body>
   <button id="before">before</button>
   <p id="src20">A branch here.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* ===================== 第21回監査（v1.8.19）の反例 ===================== */
+
+/* 完全に透明な 1×1 PNG と、不透明な 1×1 PNG。**中身は読み込まないと分からない**——
+   どちらも「明示の寸法を持つ画像」で、指定からは区別できない（RG-21-01）。 */
+const PNG_CLEAR = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNgYGBgAAAABQABpfZFQAAAAABJRU5ErkJggg==';
+
+/* RG-21-01 / RG-21-02。背景と mask を、語の位置で正しく判定する。
+   前方（読めないはず）と後方（読めるはず）に同じ語を置く。落としすぎの対照も並べる。 */
+export const PAINT21_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>paint21</title><style>html,body{background:#fff;color:#000;margin:0;font:16px/1.5 monospace}
+ .t{color:transparent;-webkit-text-fill-color:transparent;background-clip:text;-webkit-background-clip:text}</style>
+</head><body>
+  <button id="before">before</button>
+
+  <!-- ① 完全に透明な画像を background-clip:text へ。明示サイズでも中身は分からない -->
+  <div id="h-imgbg"><p class="t" style="background-image:url(${PNG_CLEAR});background-size:100% 100%;background-repeat:no-repeat">A branch imgbg.</p></div>
+  <p id="l-imgbg">A branch imgbg later.</p>
+
+  <!-- ①対照 gradient は解ける。領域いっぱいなら届く -->
+  <div id="h-gradbg"><p class="t" style="background-image:linear-gradient(#000,#000);background-size:100% 100%;background-repeat:no-repeat">A commit gradbg.</p></div>
+  <p id="l-gradbg">A commit gradbg later.</p>
+
+  <!-- ② repeat-x は横だけ。下方の語へは届かない -->
+  <div id="h-repx"><p class="t" style="height:110px;padding-top:70px;box-sizing:border-box;background-image:linear-gradient(#000,#000);background-size:12px 8px;background-repeat:repeat-x;background-position:0 0">A fetch repx.</p></div>
+  <p id="l-repx">A fetch repx later.</p>
+
+  <!-- ②対照 repeat は両軸。届く -->
+  <div id="h-repb"><p class="t" style="height:110px;padding-top:70px;box-sizing:border-box;background-image:linear-gradient(#000,#000);background-size:12px 8px;background-repeat:repeat;background-position:0 0">A merge repb.</p></div>
+  <p id="l-repb">A merge repb later.</p>
+
+  <!-- ②対照 repeat-y は縦だけ。左端に置けば右の語へは届かない -->
+  <div id="h-repy"><p class="t" style="width:400px;background-image:linear-gradient(#000,#000);background-size:8px 100%;background-repeat:repeat-y;background-position:0 0">XXXXXXXXXXXXXXXXXXXXXXXXXXXXXX A rebase repy.</p></div>
+  <p id="l-repy">A rebase repy later.</p>
+
+  <!-- ③ 層ごとの origin。1層目は content-box。読める語を落とさないこと -->
+  <div id="h-org"><p class="t" style="padding:20px;border:10px solid transparent;background-image:linear-gradient(#000,#000),linear-gradient(transparent,transparent);background-size:60px 20px,1px 1px;background-position:0 0,0 0;background-repeat:no-repeat,no-repeat;background-origin:content-box,border-box;-webkit-background-clip:text,border-box;background-clip:text,border-box">A milestone org.</p></div>
+  <p id="l-org">A milestone org later.</p>
+
+  <!-- ④ 完全に透明な画像の mask -->
+  <div id="h-imgmask"><p style="-webkit-mask-image:url(${PNG_CLEAR});mask-image:url(${PNG_CLEAR});-webkit-mask-size:100% 100%;mask-size:100% 100%;-webkit-mask-repeat:no-repeat;mask-repeat:no-repeat">A remote imgmask.</p></div>
+  <p id="l-imgmask">A remote imgmask later.</p>
+
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-21-03。祖先の擬似要素で印を覆う。「覆いなし」と「スクロールで出せる」の対照つき。 */
+export const ICONCOVER21_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>iconcover21</title><style>html,body{background:#fff;color:#000;margin:0;font:16px/1.5 monospace}
+ #h-anc{position:relative;display:inline-block}
+ #h-anc::after{content:"";position:absolute;inset:0;background:#fff;z-index:999999}
+ #box21{width:200px;height:40px;overflow:auto;border:1px solid #ccc}
+ #box21 .pad{height:200px}</style></head><body>
+  <button id="before">before</button>
+
+  <!-- ① 祖先の ::after が印を覆う。elementFromPoint は祖先を返す -->
+  <div id="h-anc"><p>A branch anc.</p></div>
+  <p id="l-anc">A branch anc later.</p>
+
+  <!-- ①対照 覆いなし -->
+  <div id="h-plain"><p>A commit plain.</p></div>
+  <p id="l-plain">A commit plain later.</p>
+
+  <!-- ①対照 スクロールすれば出せる語。覆いと数えてはいけない -->
+  <div id="box21"><div class="pad"></div><p id="h-scr">A fetch scrolled.</p></div>
+  <p id="l-scr">A fetch scrolled later.</p>
+
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-21-04。CSSOM の「同数のまま」の差し替えと、自前 style の宣言の書き換え。 */
+export const CSSOM21_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>cssom21</title><style id="s21">#nope21 .m21{display:inline}</style>
+<style>html,body{background:#fff;color:#000;margin:0;font:16px/1.5 monospace}
+ #host21{padding:20px;display:inline-block;background:#eee}
+ #menu21{display:none}</style></head><body>
+  <button id="before">before</button>
+  <div id="host21">host <span id="menu21" class="m21">A branch menu21.</span></div>
+  <p id="own21">A commit own21.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-21-05。`:active` だけで開くメニュー。`:hover` の対照つき。 */
+export const ACTIVE21_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>active21</title><style>html,body{background:#fff;color:#000;margin:0;font:16px/1.5 monospace}
+ #act21{padding:20px;display:block;width:200px;background:#eee}
+ #hov21{padding:20px;display:block;width:200px;background:#ddd}
+ #amenu21,#hmenu21{display:none}
+ #act21:active #amenu21{display:inline}
+ #hov21:hover #hmenu21{display:inline}</style></head><body>
+  <button id="before">before</button>
+  <div id="act21">press <span id="amenu21">A branch pressed.</span></div>
+  <div id="hov21">hover <span id="hmenu21">A commit hovered.</span></div>
+  <button id="after">after</button>
+</body></html>`;
+
+/* ===================== 単独の印を、外側から検査する（第21回 RG-21-06） =====================
+   単独で押せる印は **closed shadow root** の中にある。ページの世界からは
+   `host.shadowRoot` が `null` を返すので、`.iiyaku-icon` の属性を直接読む形の
+   検査はもう使えない。かわりに次の2つで見る。
+
+   ① **light DOM の host** … ページから見える範囲。「単独では Tab の停止点に
+      ならないこと」「複製に押せる点が無いこと」はここで確かめる。
+   ② **CDP の側から見る** … 意味づけ（role / name / description / expanded）は
+      アクセシビリティのツリーから、構造は `pierce` した DOM から読む。
+      **製品側に検査用の入口を足さない**ため、ページの世界からは覗かない。 */
+
+export const HOST_SEL = '.iiyaku-icon[data-iiyaku-owner]';
+
+/* light DOM の host の姿。ページから見えるものだけを返す。 */
+export async function hostInfo(tab, sel = HOST_SEL) {
+  return await tab.evaluate(`[...document.querySelectorAll(${JSON.stringify(sel)})].map(h => ({
+    tag: h.tagName,
+    role: h.getAttribute('role'),
+    tabindex: h.getAttribute('tabindex'),
+    tabIndex: h.tabIndex,
+    ariaLabel: h.getAttribute('aria-label'),
+    ariaExpanded: h.getAttribute('aria-expanded'),
+    ariaHidden: h.getAttribute('aria-hidden'),
+    key: h.dataset.iiyakuKey || null,
+    forTrigger: h.dataset.iiyakuFor || null,
+    shadowRootVisible: h.shadowRoot !== null,
+    width: Math.round(h.getBoundingClientRect().width),
+    height: Math.round(h.getBoundingClientRect().height)
+  }))`);
+}
+
+/* アクセシビリティのツリーから、解説ボタンだけを取り出す。 */
+export async function glossButtons(cdp, tab) {
+  await cdp.send('Accessibility.enable', {}, tab.sessionId);
+  const { nodes } = await cdp.send('Accessibility.getFullAXTree', {}, tab.sessionId);
+  const prop = (n, name) => (n.properties || []).find(p => p.name === name)?.value?.value ?? null;
+  return nodes
+    .filter(n => n.role?.value === 'button' && /^「.+」の解説$/.test(n.name?.value || ''))
+    .map(n => ({ name: n.name.value, description: n.description?.value ?? null,
+                 expanded: prop(n, 'expanded'), focusable: prop(n, 'focusable'),
+                 ignored: !!n.ignored }));
+}
+
+/* `pierce` した DOM から、shadow の構造を数える。 */
+export async function shadowShape(cdp, tab) {
+  await cdp.send('DOM.enable', {}, tab.sessionId);
+  const { root } = await cdp.send('DOM.getDocument', { depth: -1, pierce: true }, tab.sessionId);
+  let roots = 0, buttonsInShadow = 0, slots = 0;
+  const walk = (n, inShadow) => {
+    if (n.localName === 'button' && inShadow) buttonsInShadow++;
+    if (n.localName === 'slot' && inShadow) slots++;
+    for (const r of n.shadowRoots || []) { roots++; walk(r, true); }
+    for (const c of n.children || []) walk(c, inShadow);
+  };
+  walk(root, false);
+  return { roots, buttonsInShadow, slots };
+}
+
+/* Tab を押し続けて、**条件に当てはまる停止点の数**を数える。
+   一周して開始位置へ戻ったら止める。`collectTabOrder` は id か tagName しか
+   返さないので、host が `<span>` になった第21回以降はこちらで見る。 */
+export async function countTabStops(cdp, page, testExpr, { steps = 40, startId = 'before' } = {}) {
+  await page.evaluate(`(() => { const s = document.getElementById(${JSON.stringify(startId)});
+    if (s) s.focus(); else document.body.focus(); })(); true`);
+  let n = 0;
+  for (let i = 0; i < steps; i++) {
+    await pressKey(cdp, page.sessionId, 'Tab');
+    const r = await page.evaluate(`(() => { const el = document.activeElement;
+      if (!el) return 'none';
+      if (el.id === ${JSON.stringify(startId)}) return 'wrap';
+      return (${testExpr}) ? 'hit' : 'other'; })()`);
+    if (r === 'wrap') break;
+    if (r === 'hit') n++;
+  }
+  return n;
+}
+
+/* RG-21-06。単独の印を closed shadow root へ入れたことの受入。
+   ページ側が同じ形（class・role・tabindex）の要素を持っている場面も並べる。 */
+export const SHADOW21_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>shadow21</title><style>html,body{background:#fff;color:#000;margin:0;font:16px/1.6 monospace}</style>
+</head><body>
+  <button id="before">before</button>
+  <p id="src">A branch here.</p>
+  <p id="second">A commit here.</p>
+  <!-- ページが最初から持っている、同じ形の要素。触ってはいけない -->
+  <sup id="pageown" class="iiyaku-icon" role="button" tabindex="0" data-iiyaku-owner="page">P</sup>
+  <div id="sink"></div>
   <button id="after">after</button>
 </body></html>`;

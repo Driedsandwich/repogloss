@@ -222,3 +222,61 @@
 }
 
 }
+
+/* ===== RG_SHADOW_BEGIN =====
+   単独で押せる印の中身。**closed shadow root の中だけ**で使う（第21回 RG-21-06）。
+   `content.js` がこの区間だけを切り出し、`CSSStyleSheet` を1枚だけ作って
+   すべての shadow root へ `adoptedStyleSheets` で配る（印ごとに `<style>` を
+   入れると、印の数だけ規則が増える）。
+
+   ⚠️ ここはレイヤーへ入れない。shadow root の中はページの規則が届かないので、
+   譲る相手がいない。ページから見えるのは host だけで、`host.shadowRoot` は
+   `null` を返す（実測）。
+
+   ⚠️ 見た目を host ではなく**中の button** に載せる。host に載せると、ページが
+   `.iiyaku-icon{opacity:0!important}` のような規則で消せてしまう（第20回 RG-20-03）。
+   host に残すのは、行の中で場所を取るための箱だけ。 */
+:host {
+  display: inline-flex;
+  vertical-align: middle;
+  margin-left: 0.25em;
+  line-height: 1;
+}
+
+button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 1.15em;
+  height: 1.15em;
+  padding: 0;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--fgColor-accent, var(--color-accent-fg, #2563eb));
+  font: 700 0.78em/1 Georgia, "Times New Roman", "Liberation Serif", "Hiragino Mincho ProN", serif;
+  font-style: normal;
+  text-decoration: none;
+  cursor: help;
+  user-select: none;
+  opacity: 0.8;
+  transition: opacity 0.15s ease, background-color 0.15s ease;
+}
+
+button:hover,
+button:focus-visible {
+  opacity: 1;
+  background-color: currentColor;
+  color: var(--bgColor-default, var(--color-canvas-default, #ffffff));
+}
+
+/* キーボードで止まったことが分かるようにする。マウス操作では出さない。 */
+button:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+/* 説明文は読み上げ用。shadow の外の ID を指せないので、同じ中に置く。 */
+span[hidden] { display: none; }
+/* ===== RG_SHADOW_END ===== */

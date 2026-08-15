@@ -702,6 +702,23 @@
   // `image / size / position / repeat / origin / clip` を同じ層番号で対応付け、
   // 明示の寸法は実寸へ解いて語の矩形と交わるかを見る。
   //   true … 届く／false … 届かない／'unknown' … 断定できない
+  // ⚠️ **`background-repeat` は軸ごとに違う**（第21回 RG-21-02）。「`no-repeat` を
+  // 含まなければ全面に届く」としていたため、`repeat-x` の背景が下方の語へ届かないのに
+  // 可視としていた（実測: 語は0画素なのに印が付いた）。x と y へ正規化する。
+  // `space` / `round` は隙間や縮尺が絡むので解かない。
+  //   [x が繰り返すか, y が繰り返すか]／null … 解けない
+  function repeatAxes(v) {
+    const parts = (v || 'repeat').trim().split(/\s+/);
+    const one = w => w === 'repeat' ? [true, true]
+                   : w === 'no-repeat' ? [false, false]
+                   : w === 'repeat-x' ? [true, false]
+                   : w === 'repeat-y' ? [false, true] : null;
+    if (parts.length === 1) return one(parts[0]);
+    const ax = parts[0] === 'repeat' ? true : parts[0] === 'no-repeat' ? false : null;
+    const ay = parts[1] === 'repeat' ? true : parts[1] === 'no-repeat' ? false : null;
+    return (ax === null || ay === null) ? null : [ax, ay];
+  }
+
   function bgClipTextPaintsAt(el, cs, rect) {
     const at = (v, i, d) => { const a = splitTopLevel(v || d).map(x => x.trim());
                               return a[i % a.length] || d; };
@@ -713,43 +730,47 @@
     const img = cs.backgroundImage;
     if (!img || img === 'none') return false;
     const layers = splitTopLevel(img).map(x => x.trim());
-    const origin = cs.backgroundOrigin || 'padding-box';
-    const area = refBoxRect(cs, el.getBoundingClientRect(), false,
-                            origin === 'content-box' ? 'content-box'
-                          : origin === 'border-box' ? 'border-box' : 'padding-box');
-    const aw = area.x2 - area.x1, ah = area.y2 - area.y1;
+    const border = el.getBoundingClientRect();
     const clipAll = clipAll0;
     let unknown = false;
     for (let i = 0; i < layers.length; i++) {
       // ② その層が文字型に抜かれていなければ、文字は描かない
       if (at(clipAll, i, 'border-box') !== 'text') continue;
       if (isFullyTransparentGradient(layers[i])) continue;
-      const r = at(cs.backgroundRepeat, i, 'repeat');
-      if (!/no-repeat/.test(r)) return true;                        // 繰り返せば全面に届く
+      // ⚠️ **画像の画素は見えない**（第21回 RG-21-01）。明示の寸法があることは
+      // 「不透明であること」の証拠にならない。実測: 完全に透明な 1×1 PNG を
+      // `background-size:100% 100%` で敷いた語は0画素なのに印が付いた。
+      // 中身を知るには読み込みが要る（新しい通信になる）ので、**断定しない**。
+      if (!isGradientLayer(layers[i])) { unknown = true; continue; }
+      // ⚠️ **`background-origin` も層ごと**（第21回 RG-21-02）。以前はカンマ区切りの
+      // 値全体を1つの origin として扱っており、`content-box, border-box` の1層目を
+      // padding-box へ落としていた（実測: 語は 320画素描かれているのに印が付かなかった）。
+      const og = at(cs.backgroundOrigin, i, 'padding-box');
+      const area = refBoxRect(cs, border, false,
+                              og === 'content-box' ? 'content-box'
+                            : og === 'border-box' ? 'border-box' : 'padding-box');
+      const aw = area.x2 - area.x1, ah = area.y2 - area.y1;
+      const rep = repeatAxes(at(cs.backgroundRepeat, i, 'repeat'));
+      if (rep === null) { unknown = true; continue; }               // space / round は解かない
       // ① 塗る箱の寸法を出す
       const sz = at(cs.backgroundSize, i, 'auto');
       let bw, bh;
-      if (sz === 'auto' || sz === 'auto auto') {
-        if (!isGradientLayer(layers[i])) { unknown = true; continue; }  // 画像の自然寸法は解けない
-        bw = aw; bh = ah;                                           // gradient の auto は領域いっぱい
-      } else if (/^(cover|contain)$/.test(sz)) {
-        if (!isGradientLayer(layers[i])) { unknown = true; continue; }  // 自然比が要る
-        bw = aw; bh = ah;
+      if (sz === 'auto' || sz === 'auto auto' || /^(cover|contain)$/.test(sz)) {
+        bw = aw; bh = ah;                                           // gradient は領域いっぱい
       } else {
         const parts = sz.split(/\s+/);
-        bw = lenToPx(parts[0], aw);
-        bh = parts[1] === undefined || parts[1] === 'auto'
-          ? (isGradientLayer(layers[i]) ? ah : null) : lenToPx(parts[1], ah);
-        if (parts[0] === 'auto') bw = isGradientLayer(layers[i]) ? aw : null;
+        bw = parts[0] === 'auto' ? aw : lenToPx(parts[0], aw);
+        bh = parts[1] === undefined || parts[1] === 'auto' ? ah : lenToPx(parts[1], ah);
         if (bw === null || bh === null) { unknown = true; continue; }
       }
-      // 置く場所
+      // 置く場所。繰り返す軸は領域いっぱいへ広がる
       const pv = at(cs.backgroundPosition, i, '0% 0%').split(/\s+/);
-      const px0 = lenToPx(pv[0], aw - bw);
-      const py0 = lenToPx(pv[1] !== undefined ? pv[1] : '50%', ah - bh);
+      const px0 = rep[0] ? 0 : lenToPx(pv[0], aw - bw);
+      const py0 = rep[1] ? 0 : lenToPx(pv[1] !== undefined ? pv[1] : '50%', ah - bh);
       if (px0 === null || py0 === null) { unknown = true; continue; }
       const box = { x1: area.x1 + px0, y1: area.y1 + py0,
-                    x2: area.x1 + px0 + bw, y2: area.y1 + py0 + bh };
+                    x2: area.x1 + (rep[0] ? aw : px0 + bw),
+                    y2: area.y1 + (rep[1] ? ah : py0 + bh) };
       if (rect.right > box.x1 && rect.left < box.x2 && rect.bottom > box.y1 && rect.top < box.y2) return true;
     }
     return unknown ? 'unknown' : false;
@@ -845,11 +866,16 @@
   // 語は0画素なのに印が付いた。**`url()` はどちらの mode でも断定しない**。
   function maskLayerState(layer, mode) {
     if (isFullyTransparentGradient(layer)) return 'hidden';   // alpha 0 はどちらの解釈でも 0
-    // ⚠️ 断片の URL（`url(#id)`）は SVG の `<mask>` を指しうる。`mask-type` が
+    // 断片の URL（`url(#id)`）は SVG の `<mask>` を指しうる。`mask-type` が
     // luminance なら黒は 0 になるので、中身を見ないと決められない（第20回 RG-20-04）。
-    // 画像の URL は今までどおり（第17回 RG-17-04 の対照＝不透明な画像の層は残る）。
-    if (/^\s*(-webkit-)?(image-set\()?\s*url\(\s*["']?#/.test(layer)) return 'unknown';
-    if (!isGradientLayer(layer)) return mode === 'luminance' ? 'unknown' : 'shown';
+    // → 下の1行が、断片かどうかによらず **URL をすべて**この扱いにする。
+    // ⚠️ **画像の画素は見えない**（第21回 RG-21-01）。以前は「断片でない URL は
+    // `alpha` / `match-source` なら残る」としていたため、**完全に透明な 1×1 PNG を
+    // `mask-image` に置いた語で、語も印も0画素なのに印が Tab の順路へ入って**いた。
+    // 中身を知るには読み込みが要る（新しい通信になる）ので、**どの mode でも断定しない**。
+    // 背景（`bgClipTextPaintsAt`）と同じ契約にそろえた。
+    // ⚠️ 代償: 不透明な画像で覆った語も説明されなくなる（第17回 RG-17-04 の対照）。
+    if (!isGradientLayer(layer)) return 'unknown';
     const colors = layer.match(/rgba?\([^)]*\)/g);
     if (!colors || !colors.length) return 'unknown';
     // 一様（すべての色が同じ）でなければ、場所によって値が変わる＝断定しない
@@ -1386,17 +1412,32 @@
     if (HAS_CHECK_VISIBILITY && !icon.checkVisibility(CHECK_VISIBILITY_OPTS)) return false;
     // ⑥ 覆われていないか。**画面の中にある点だけ**で見る（画面外は覆いの話ではなく
     // 到達性の話で、そこは④で見ている）。画面内の点が1つも無ければ判定しない。
+    //
+    // ⚠️ **「祖先が最前面」を露出の証拠にしてはいけない**（第21回 RG-21-03）。
+    // v1.8.19 は `hit.contains(icon)` を露出に数えていた。祖先の `::before` /
+    // `::after` が印を覆うと `elementFromPoint` はその**祖先**を返すので、
+    // 印が0画素でも合格していた（実測: 5点すべてが祖先を返し、`tabIndex:0` のまま
+    // Tab の順路に入った）。
+    // いまは**最前面が印そのものか印の子孫のときだけ**露出と数える。
+    // 「スクロールすれば読める語」の対照（v1.8.19 で5件落とした分）を守るのは
+    // `hit.contains(icon)` ではなく **`visibleNow` の門**のほうで、
+    // 覆いの判定は**いま動かさずに見えている印**にだけ当てる。
+    // （`elementsFromPoint` の重なり順も見たが、先頭要素は `elementFromPoint` と
+    //   同じもので、この判定に足すものが無かった。実測の重なりは
+    //   `[first(::after), 印, first, BODY, HTML]` で、先頭を見れば足りる。）
+    //
+    // ⚠️ **`pointer-events: none` の覆いは、当たり判定では見えない**（既知の限界）。
+    // 印自身が `pointer-events: none` にされた場合も、当たり判定では何も言えない。
+    // どちらも「覆いを判定しない」側へ倒す（→ AUDIT.md §7）。
+    if (cs.pointerEvents === 'none') return true;
     let inView = 0, exposed = 0;
     for (const [fx, fy] of ICON_PROBES) {
       const x = b.left + b.width * fx, y = b.top + b.height * fy;
       if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) continue;
       inView++;
+      // 最前面が印そのものか、印の子孫のときだけ「その点で見えている」と数える。
       const hit = document.elementFromPoint(x, y);
-      // ⚠️ **祖先が最前面に出るのは「覆い」ではない**。印がスクロールで送られた先に
-      // あるとき、その点で返るのは入れ物（＝印の祖先）になる。これを覆いと数えると、
-      // 「スクロールすれば読める語」を軒並み落とす（実測: そういう対照が5件落ちた）。
-      // 覆いと呼べるのは、印とも印の祖先とも関係のない要素が前に出ているときだけ。
-      if (hit && (hit === icon || icon.contains(hit) || hit.contains(icon))) exposed++;
+      if (hit && (hit === icon || icon.contains(hit))) exposed++;
     }
     if (inView > 0 && exposed === 0 && visibleNow(b, chain)) return false;   // 全面が覆われている
     return true;
@@ -1967,8 +2008,83 @@
   // 印は文字コードの記号を使わない。U+1F6C8（🛈）は Windows の Segoe UI Symbol には
   // あるが macOS の標準フォントには無く、豆腐（□）になる。要素は空にして
   // styles.css の ::after で丸と "i" を描くので、フォントに左右されない。
+  // ---- 単独で押せる印を、closed shadow root の中へ入れる（第21回 RG-21-06）----
+  // ページが正規の印を `cloneNode` し、`data-*`・`aria-label`・合言葉の class を
+  // **全部**消したうえで `role="button" tabindex="0"` を残すと、こちらからは
+  // 内部所有物だと証明できず、幅0の押せる点として残っていた（第19回から3巡持ち越し）。
+  //
+  // 実測（Chrome 151）:
+  //   - `cloneNode(true)` は shadow root を**複製しない** → 複製された host は空で、
+  //     中に focusable な要素は 0 個
+  //   - `host.shadowRoot` は closed なら `null`（ページから中身を取れない）
+  //   - `document.querySelectorAll('button')` は shadow の中を**見つけない**
+  //   - `elementFromPoint` は host へ retarget される（＝印の実測はそのまま効く）
+  //
+  // ⚠️ **host は `<span>` でなければならない。** `<sup>` に `attachShadow` すると
+  // `NotSupportedError` になる（実測）。見た目は CSS で作っているので、`sup` の
+  // 上付き（`vertical-align: super` / `font-size: smaller`）には依存していない。
+  const USE_SHADOW_STANDALONE = true;      // 戻せるようにしておく（監査の助言）
+  const iconButton = new WeakMap();        // host → 中の button
+  const iconDesc = new WeakMap();          // host → 中の説明文
+  let shadowSheet;                         // 1枚だけ作って全部の shadow root で共有する
+
+  // `styles.css` のうち、**shadow root の中だけ**で使う区間。
+  // ⚠️ この区間はページ側の `<style>` へ入れてはいけない。`button { … }` のような
+  // 裸の選択子を含むので、入れるとページのボタンまで作り替えてしまう
+  // （実測: 追記した直後、こちらの切替ボタンの字形指定が上書きされて落ちた）。
+  const SHADOW_SECTION = /\/\* ===== RG_SHADOW_BEGIN =====[\s\S]*?\/\* ===== RG_SHADOW_END ===== \*\//;
+
+  function shadowIconSheet() {
+    if (shadowSheet !== undefined) return shadowSheet;
+    shadowSheet = null;
+    try {
+      const m = SHADOW_SECTION.exec(CSS_TEXT);
+      // 区間が見つからないときは**入れない**（見た目が無いほうが、間違った見た目より良い）
+      if (!m) return shadowSheet;
+      // 冒頭の注記（BEGIN のコメント）を落として、規則だけにする
+      const body = m[0].replace(/^\/\*[\s\S]*?\*\//, '').replace(/\/\* ===== RG_SHADOW_END ===== \*\/$/, '');
+      const sheet = new CSSStyleSheet();
+      sheet.replaceSync(body);
+      shadowSheet = sheet;
+    } catch (e) { shadowSheet = null; }
+    return shadowSheet;
+  }
+
+  // shadow の中は document の MutationObserver に映らないので、ここでの属性書き込みは
+  // `setOwnAttr` を通さない（ページからは触れないため、予定を控える相手がいない）。
+  function ensureShadowButton(host) {
+    let btn = iconButton.get(host);
+    if (btn) return btn;
+    let root;
+    try { root = host.attachShadow({ mode: 'closed' }); }
+    catch (e) { return null; }             // 付けられない環境では light DOM のまま
+    try {
+      const sheet = shadowIconSheet();
+      if (sheet) root.adoptedStyleSheets = [sheet];
+    } catch (e) { /* 見た目が無くても、押せることと読み上げは変わらない */ }
+    btn = document.createElement('button');
+    btn.type = 'button';
+    const desc = document.createElement('span');
+    desc.hidden = true;
+    desc.id = 'iiyaku-desc';
+    btn.setAttribute('aria-describedby', desc.id);
+    // ⚠️ **`<slot>` を必ず置く。** shadow root を付けた要素は、`<slot>` が無いと
+    // light DOM の子を**描かなくなる**。退役した印をページが本文の入れ物として
+    // 使い回したとき、その文字が消えてしまう（実測: 退役した印へ
+    // `textContent = 'A squash merge inside.'` を入れて本文へ戻すと、
+    // 中の語が走査されず 0 件になった。ページの持ち物を壊している）。
+    // ふだんの印は light DOM が空なので、slot は何も描かない。
+    root.append(btn, desc, document.createElement('slot'));
+    iconButton.set(host, btn);
+    iconDesc.set(host, desc);
+    return btn;
+  }
+
+  // その印の「押せる実体」。shadow を使わない場合は host 自身。
+  const focusTargetOf = icon => iconButton.get(icon) || icon;
+
   function makeIcon(key, term, ja) {
-    const icon = document.createElement('sup');
+    const icon = document.createElement('span');
     icon.className = 'iiyaku-icon ' + UID;
     // title 属性は使わない。ブラウザ標準のツールチップは表示までに
     // 1秒前後の待ちがあり、こちらからは短くできないため。
@@ -1995,11 +2111,26 @@
       // 持っていても影響を受けないようにするため）。
       setOwnAttr(icon, 'data-iiyaku-for', triggerKey(placement.trigger));
       iconTrigger.set(icon, placement.trigger);
-    } else {
-      // 押して開閉するので、role は img ではなく button にする。
+    } else if (USE_SHADOW_STANDALONE && ensureShadowButton(icon)) {
+      // light DOM の host は、**単独では Tab の停止点にならない**（第21回 RG-21-06）。
+      // 意味づけもフォーカスも、closed shadow root の中の button が持つ。
+      setOwnAttr(icon, 'role', null);
+      setOwnAttr(icon, 'tabindex', null);
+      setOwnAttr(icon, 'aria-label', null);
+      setOwnAttr(icon, 'aria-expanded', null);
+      setOwnAttr(icon, 'aria-hidden', null);
+      setOwnAttr(icon, 'data-iiyaku-for', null);
+      const btn = iconButton.get(icon);
+      const desc = iconDesc.get(icon);
       // 名前は「どの語の解説か」だけの短いものにし、説明文そのものは
-      // ツールチップ側（aria-describedby）に置く。名前と説明が同じ全文だと、
-      // 読み上げで同じ内容が二度読まれる。
+      // 説明用の要素へ置く。名前と説明が同じ全文だと、読み上げで二度読まれる。
+      // ⚠️ 説明は**同じ shadow root の中**に置く。境界をまたぐ IDREF は解決されない。
+      btn.setAttribute('aria-label', `「${icon.dataset.iiyakuTerm}」の解説`);
+      btn.setAttribute('aria-expanded', 'false');
+      if (desc) desc.textContent = icon.dataset.iiyaku;
+    } else {
+      // shadow を付けられなかった場合の従来どおりの形（Chrome 105 未満など）。
+      // 押して開閉するので、role は img ではなく button にする。
       setOwnAttr(icon, 'role', 'button');
       setOwnAttr(icon, 'aria-label', `「${icon.dataset.iiyakuTerm}」の解説`);
       setOwnAttr(icon, 'aria-expanded', 'false');
@@ -2058,11 +2189,17 @@
     return c && ownedTriggers.has(c) ? c : null;
   }
 
+  // 開閉の状態は、**押せる実体**へ書く（第21回 RG-21-06）。単独の印では
+  // それは closed shadow root の中の button で、host には意味づけを持たせない。
+  function setExpanded(icon, v) {
+    const btn = iconButton.get(icon);
+    if (btn) { btn.setAttribute('aria-expanded', v); return; }
+    if (icon.getAttribute('role') === 'button') setOwnAttr(icon, 'aria-expanded', v);
+  }
+
   function hideTip() {
     if (tipDescribed) { removeDescribedBy(tipDescribed, TIP_ID); tipDescribed = null; }
-    for (const ic of tipIcons) {
-      if (ic.getAttribute('role') === 'button') setOwnAttr(ic, 'aria-expanded', 'false');
-    }
+    for (const ic of tipIcons) setExpanded(ic, 'false');
     if (tip) { removeOwn(tip); tip = null; }
     tipAnchor = null;
     tipIcons = [];
@@ -2132,9 +2269,7 @@
     tipIcons = icons;
     tipDescribed = describe || anchor;
     addDescribedBy(tipDescribed, TIP_ID);
-    for (const ic of icons) {
-      if (ic.getAttribute('role') === 'button') setOwnAttr(ic, 'aria-expanded', 'true');
-    }
+    for (const ic of icons) setExpanded(ic, 'true');
     placeTip(anchor);
   }
 
@@ -2268,7 +2403,7 @@
     // 誤った説明を出し続ける（実測: `data-iiyaku` を書き換えると、3秒後も
     // その文言が吹き出しに出た。role を img へ変えても押せる印として残った）。
     // 食い違ったら退役させ、正しい印を付け直す（本文には触れない）。
-    if (rec.icon.tagName !== 'SUP') return false;
+    if (rec.icon.tagName !== 'SPAN') return false;
     if (!rec.icon.classList.contains('iiyaku-icon')) return false;
     if (rec.icon.dataset.iiyakuKey !== rec.key) return false;
     if (rec.icon.dataset.iiyaku !== DICT[rec.key]) return false;
@@ -2280,6 +2415,21 @@
       // 装飾扱い。読み上げに出さず、Tab の順路にも入れない
       if (rec.icon.getAttribute('aria-hidden') !== 'true') return false;
       if (rec.icon.hasAttribute('role') || rec.icon.hasAttribute('tabindex')) return false;
+    } else if (iconButton.has(rec.icon)) {
+      // 単独の印。意味づけは closed shadow root の中の button が持ち、
+      // light DOM の host は**単独では Tab の停止点にならない**（第21回 RG-21-06）。
+      // ⚠️ host 側に role / tabindex が戻っていないことも見る。戻っていれば、
+      // 複製されたときに押せる点が復活する（これを閉じるための作り直しなので）。
+      if (rec.icon.hasAttribute('role') || rec.icon.hasAttribute('tabindex')) return false;
+      if (rec.icon.hasAttribute('aria-label') || rec.icon.hasAttribute('aria-expanded')) return false;
+      if (rec.icon.hasAttribute('aria-hidden')) return false;
+      const btn = iconButton.get(rec.icon);
+      // shadow の中はページから触れないが、**触れないことを前提にしない**——
+      // 参照の同一性と意味づけを、ここで毎回確かめる。
+      if (!btn || btn.tagName !== 'BUTTON') return false;
+      if (btn.getAttribute('aria-label') !== `「${rec.term}」の解説`) return false;
+      const ex = btn.getAttribute('aria-expanded');
+      if (ex !== 'true' && ex !== 'false') return false;
     } else {
       if (rec.icon.getAttribute('role') !== 'button') return false;
       if (rec.icon.getAttribute('tabindex') !== '0') return false;
@@ -2361,7 +2511,8 @@
     }
     // 印そのものが切り取りの外なら、見えない停止点になる（第19回 RG-19-01）
     if (!iconIsPainted(rec.icon)) return false;
-    return tabbable(rec.icon);
+    // 単独の印では、Tab の停止点は shadow の中の button（第21回 RG-21-06）
+    return tabbable(focusTargetOf(rec.icon));
   }
 
   function usableGloss(key) {
@@ -2651,6 +2802,8 @@
       // 同じ世代で既に見た候補は、答えが変わらない（第19回 RG-19-08）。
       // ここから下がレイアウトを起こす部分なので、その手前で飛ばす。
       if (latentEpoch.get(node) === visEpoch) continue;
+      // 範囲を絞った世代（カーソルの合図）では、外の節点はこの世代で変わりえない
+      if (!inEpochScope(node)) { latentEpoch.set(node, visEpoch); continue; }
       latentEpoch.set(node, visEpoch);
       if (!isTarget(node)) continue;
       n += annotate(node);
@@ -2862,7 +3015,35 @@
   // CSS の遷移の終わり・利用者の操作・スクロール。
   let visEpoch = 1;
   const latentEpoch = new WeakMap();
-  const bumpEpoch = () => { visEpoch++; };
+  // ⚠️ **カーソルの合図でも控え全件を測り直していた**（第21回 RG-21-07。実測:
+  // hover 規則のあるページで 500／2,000／5,000候補・10移動＝6,000／24,000／60,000回）。
+  // `:hover` が変わるのは、動く前と動いた後の連なりの差だけで、それは両者の
+  // **いちばん近い共通の祖先**の中に収まる。`:has()` と兄弟結合子が無ければ、
+  // そこから外れた場所の見え方は変わらない——その範囲だけを測り直す。
+  // 範囲を絞った世代では、外の節点は「この世代では見た」ことにして層を降ろさない。
+  // ⚠️ 絞りが外れても取りこぼしにはならない: 2秒ごとの確認は必ず**全体**を進める。
+  let epochScope = null;                 // Element … その中だけ／null … 全体
+  const bumpEpoch = () => { visEpoch++; epochScope = null; };
+  const bumpEpochWithin = root => { visEpoch++; epochScope = root || null; };
+  // ⚠️ **控えに入っているのは文字の節点**で、`asElement` はそれに `null` を返す
+  // （要素だけを通す関数だった）。最初これを使ったため、絞った世代では控えの全件が
+  // 「範囲の外」になり、`:active` の反例が一度も拾えなかった。入れ物の要素で見る。
+  const ownerEl = n => (n ? (n.nodeType === Node.ELEMENT_NODE ? n : n.parentElement) : null);
+  const inEpochScope = node => {
+    if (!epochScope) return true;
+    const e = ownerEl(node);
+    return !!e && (e === epochScope || epochScope.contains(e));
+  };
+  // 2つの節点の、いちばん近い共通の祖先。どちらかが無ければ全体へ倒す。
+  function commonAncestor(a, b) {
+    const ea = ownerEl(a), eb = ownerEl(b);
+    if (!ea || !eb) return null;
+    if (ea === eb) return ea;
+    if (ea.contains(eb)) return ea;
+    if (eb.contains(ea)) return eb;
+    for (let n = ea.parentElement; n; n = n.parentElement) if (n.contains(eb)) return n;
+    return null;
+  }
   // DOM・stylesheet・画面が変わったら、擬似クラスの状態の記録は捨てる
   const dropStates = () => { if (doneStates.size) doneStates.clear(); };
   // stylesheet が変わった回数（`:hover` を使う規則があるかの調べ直しに使う）
@@ -2879,42 +3060,79 @@
   // 見張りでは気づけない（第20回 RG-20-06。実測: 起動後に `insertRule` で足した
   // `:hover` メニューが、2秒ごとの確認まで説明されなかった）。
   // 枚数と規則の数だけを読む（各 stylesheet の `cssRules.length` は走査を伴わない）。
+  // ⚠️ **件数の和だけでは、同数の差し替えを見逃す**（第21回 RG-21-04）。実測:
+  // 1つの規則の `selectorText` を `:hover` の規則へ差し替えると、枚数も規則数も
+  // 変わらないので気づけず、その語は**2秒ごとの確認まで説明されなかった**
+  // （300ms・600ms で印0、2,400ms でようやく1）。
+  // 選択子・条件・入れ子の数まで混ぜた**構造の指紋**にする。
+  // ⚠️ 走査は費用がかかるので、**直前の指紋を短い窓のあいだ使い回す**
+  // （カーソルの間引きが 150〜300ms なので、それより短い窓に留める）。
+  const PRINT_GAP = 120;
+  const PRINT_SCAN_MAX = 20000;
+  let printAt = -1, printVal = -1;
+  function hashStr(h, s) {
+    for (let i = 0; i < s.length; i++) h = (h * 33 ^ s.charCodeAt(i)) >>> 0;
+    return h;
+  }
   function styleFingerprint() {
-    let n = 0, sum = 0;
+    const now = performance.now();
+    if (printVal !== -1 && now - printAt < PRINT_GAP) return printVal;
+    let h = 2166136261, seen = 0;
     for (const sheet of document.styleSheets) {
-      n++;
-      try { sum += sheet.cssRules ? sheet.cssRules.length : 0; }
-      catch (e) { sum += 1; }                 // 読めない sheet は定数として数える
+      h = (h * 33 ^ 0x9e37) >>> 0;                       // 枚の区切り
+      let rules;
+      try { rules = sheet.cssRules; } catch (e) { h = hashStr(h, 'opaque'); continue; }
+      if (!rules) continue;
+      const stack = [rules];
+      while (stack.length) {
+        const rs = stack.pop();
+        h = (h * 33 ^ rs.length) >>> 0;
+        for (const r of rs) {
+          if (++seen > PRINT_SCAN_MAX) { stack.length = 0; break; }
+          if (r.selectorText) h = hashStr(h, r.selectorText);
+          else if (r.conditionText) h = hashStr(h, r.conditionText);
+          if (r.cssRules) stack.push(r.cssRules);
+        }
+      }
     }
-    return n * 1000003 + sum;
+    printAt = now; printVal = h;
+    return h;
   }
 
-  let hoverCssSerial = -1, hoverCssPrint = -1, hoverCssHas = true;
+  // `:hover` の効き方が**その連なりの中だけ**に収まるか（第21回 RG-21-07）。
+  // `:has()` は祖先を、兄弟結合子（`~` / `+`）は横を変えるので、そのときは絞れない。
+  const NONLOCAL = /:has\(|[~+]/;
+  let hoverCssSerial = -1, hoverCssPrint = -1, hoverCssHas = true, hoverCssLocal = false;
   function pageUsesHoverRules() {
     const print = styleFingerprint();
     if (hoverCssSerial === styleSerial && hoverCssPrint === print) return hoverCssHas;
-    if (hoverCssPrint !== print) { bumpEpoch(); dropStates(); }   // 規則が増減した
+    if (hoverCssPrint !== print) { bumpEpoch(); dropStates(); cssMoved = true; }   // 規則が変わった
     hoverCssSerial = styleSerial;
     hoverCssPrint = print;
-    let seen = 0;
-    const give = v => { hoverCssHas = v; return v; };
+    let seen = 0, has = false, local = true;
+    const give = (v, l) => { hoverCssHas = v; hoverCssLocal = v ? l : true; return v; };
     try {
       for (const sheet of document.styleSheets) {
         if (ownStyle && sheet.ownerNode === ownStyle) continue;
         let rules;
-        try { rules = sheet.cssRules; } catch (e) { return give(true); }   // 読めない＝あるものとして扱う
+        try { rules = sheet.cssRules; } catch (e) { return give(true, false); }  // 読めない＝あるものとして扱う
         if (!rules) continue;
         const stack = [rules];
         while (stack.length) {
           for (const r of stack.pop()) {
-            if (++seen > RULE_SCAN_MAX) return give(true);                 // 大きすぎる＝あるものとして扱う
-            if (r.selectorText && HOVERISH.test(r.selectorText)) return give(true);
+            if (++seen > RULE_SCAN_MAX) return give(true, false);           // 大きすぎる＝絞らない
+            // ⚠️ ここで最初の1件で切り上げてはいけない。**あるか**だけでなく、
+            // **すべてが連なりの中に収まるか**まで知りたい（絞ってよいかの判断）。
+            if (r.selectorText && HOVERISH.test(r.selectorText)) {
+              has = true;
+              if (NONLOCAL.test(r.selectorText)) local = false;
+            }
             if (r.cssRules) stack.push(r.cssRules);
           }
         }
       }
-    } catch (e) { return give(true); }
-    return give(false);
+    } catch (e) { return give(true, false); }
+    return give(has, local);
   }
 
   // DOM の変更を伴わない合図。CSS の遷移・アニメーションの終わり、画面の大きさの変化。
@@ -3006,43 +3224,104 @@
     }
     return out.join('.');
   }
+  // ⚠️ `:active` は**押している相手の連なり**で決まる。カーソルの位置と入力先だけでは、
+  // 「同じ場所を押した／離した」が hover と同じ鍵になり、`doneStates` に阻まれて
+  // 一度も測り直されない（第21回 RG-21-05）。押している相手も鍵に入れる。
+  let pressedNode = null;
+  function notePress(e) {
+    if (!e || !e.type) return;
+    if (e.type === 'pointerdown') pressedNode = e.target;
+    else if (e.type === 'pointerup' || e.type === 'pointercancel') pressedNode = null;
+  }
   function pseudoStateKey(e) {
-    return chainKey(e && e.target) + '|' + chainKey(document.activeElement);
+    return chainKey(e && e.target) + '|' + chainKey(document.activeElement)
+         + '|' + (pressedNode ? chainKey(pressedNode) : '-');
   }
   let pendingState = null;
 
-  const onPointerOrFocus = e => {
-    if (latent.size === 0 || hoverPending) return;
+  // 間引きの窓で待たせた合図の、**そのときの状態**。⚠️ 以前は待ち時間のあとに
+  // `onPointerOrFocus()` を**引数なしで**呼び直していた（第21回 RG-21-05）。
+  // `pseudoStateKey(undefined)` は連なりを持たない別の鍵になるので、実際に見ていた
+  // 相手を失い、その状態を「済み」として記録してしまう。鍵のほうを持ち越す。
+  let hoverTailKey = null;
+  let lastStateNode = null;        // 直前に合図の来た相手（範囲を絞るための基点）
+  // ---- 測り直す範囲の накопление（第21回 RG-21-07）----
+  // ⚠️ **飲み込んだ合図の範囲を捨ててはいけない**。最初こう書いておらず、
+  // `hoverPending` で見送った `pointerover`（＝新しく入った相手）の範囲が落ち、
+  // 既存の対照が8件落ちた。範囲は合図ごとに**広げて溜め**、実際に走る直前に使う。
+  // `undefined` … まだ何も／`null` … 全体（絞らない）／Element … その中だけ
+  let scopeAcc;
+  let cssMoved = false;            // この間に stylesheet が変わった＝絞らない
+  function widenScope(node) {
+    if (scopeAcc === null) return;                        // すでに全体
+    const e = ownerEl(node);
+    if (!e) { scopeAcc = null; return; }                  // 相手が分からない＝絞らない
+    scopeAcc = (scopeAcc === undefined) ? e : commonAncestor(scopeAcc, e);
+    if (scopeAcc === document.documentElement) scopeAcc = null;
+  }
+  function takeScope() {
+    const s = (cssMoved || !hoverCssLocal || scopeAcc === undefined) ? null : scopeAcc;
+    scopeAcc = undefined; cssMoved = false;
+    return s;
+  }
+  const onPointerOrFocus = (e, forcedKey) => {
+    notePress(e);                  // 早く返る道でも、押した／離したの記録は落とさない
+    if (latent.size === 0) return;
     // カーソルで見え方が変わりうる規則がページに無いなら、見直す意味が無い
     // （第19回 RG-19-08）。JS で開くメニューは DOM の変更として別経路で届く。
     if (!pageUsesHoverRules()) return;
     // 同じ擬似クラスの状態で、既にひと回り終えているなら、答えは変わらない
-    const key = pseudoStateKey(e);
+    const key = forcedKey || pseudoStateKey(e);
     if (doneStates.has(key)) return;
+    // 変わった相手を、飲み込む場合でも必ず範囲へ足す（第21回 RG-21-07）
+    if (e) { widenScope(lastStateNode); widenScope(e.target); }
+    else widenScope(null);                              // 相手が分からない合図＝絞らない
+    const now2 = ownerEl(e && e.target);
+    if (now2) lastStateNode = now2;
+    if (hoverPending) { hoverTailKey = key; return; }   // 予約済み。鍵だけ最新にする
     pendingState = key;
-    bumpEpoch();                   // `:hover` の当たる先が変わった＝状態が変わった
     if (overBudget()) return;      // 使いすぎた。2秒ごとの確認に任せる
     const now = performance.now();
     if (now - hoverAt < hoverGap) {
       // 最後の1回は、間引きの窓が明けたあとに必ず処理する
+      hoverTailKey = key;
       if (hoverTail === null) {
-        hoverTail = setTimeout(() => { hoverTail = null; onPointerOrFocus(); },
-                               hoverGap - (now - hoverAt));
+        hoverTail = setTimeout(() => {
+          hoverTail = null;
+          const k = hoverTailKey; hoverTailKey = null;
+          onPointerOrFocus(null, k);
+        }, hoverGap - (now - hoverAt));
       }
       return;
     }
     hoverAt = now;
+    // ⚠️ `hoverPending` は宣言だけで**一度も true にならず**、入口の門が効いていなかった
+    // （第21回 RG-21-05）。予約した時点で立てる。
+    hoverPending = true;
     const fire = () => {
       hoverPending = false;
       if (!observing) return;
+      // ⚠️ 世代を進めるのは**ここ**。合図の時点で進めると、そのあと飲み込んだ
+      // 合図の範囲を取り込めない（第21回 RG-21-07）。
+      const sc = takeScope();
+      if (sc) bumpEpochWithin(sc); else bumpEpoch();
       hoverTriggered = true;
       schedule({ deep: true });
+      // 待たせているあいだに状態が進んでいたら、そこから続ける
+      if (hoverTailKey !== null && !doneStates.has(hoverTailKey)) {
+        const k = hoverTailKey; hoverTailKey = null;
+        onPointerOrFocus(null, k);
+      }
     };
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(fire);
     else setTimeout(fire, 16);
   };
   let hoverTriggered = false;
-  const HOVER_SIGNALS = ['pointerover', 'pointerout', 'focusin', 'focusout'];
+  // ⚠️ `:active` は規則の走査（HOVERISH）では見ているのに、**購読していなかった**
+  // （第21回 RG-21-05。実測: `:active` だけで開くメニューは、押しているあいだ印0で、
+  // 2秒ごとの確認まで説明されなかった。対照の `:hover` は即1）。
+  const HOVER_SIGNALS = ['pointerover', 'pointerout', 'focusin', 'focusout',
+                         'pointerdown', 'pointerup', 'pointercancel'];
   // `scrollend` はブラウザが「止まった」と決めた瞬間に1回だけ来る。無い版のために
   // `scroll` も取り、そこから遅らせて1回にまとめる（→ onScrollSignal）。
   const SCROLL_SIGNALS = ('onscrollend' in window) ? ['scrollend'] : ['scroll'];
@@ -3219,6 +3498,7 @@
   function ownStyleRules() {
     const mine = `[data-iiyaku-owner="${CSS.escape(UID)}"]`;
     const body = CSS_TEXT
+      .replace(SHADOW_SECTION, '')       // shadow 専用の区間はページへ入れない
       .replace(/\bRG_LOOK\b/g, MAIN_LAYER)
       .replace(/\bRG_SCOPE\b/g, SCOPE_LAYER)
       .replace(/\[data-iiyaku-owner\]/g, mine);
@@ -3230,7 +3510,7 @@
     return body + '\n' + off;
   }
 
-  let ownStyleRuleCount = -1;
+  let ownStyleDigest = -1;
 
   function scopeOwnStyle() {
     try {
@@ -3239,17 +3519,30 @@
       st.textContent = ownStyleText;
       (document.head || document.documentElement).appendChild(st);
       ownStyle = st;
-      // 入れた直後の規則の数を控える（→ ensureOwnStyle が生きた規則と突き合わせる）
-      ownStyleRuleCount = liveRuleCount(st);
+      // 入れた直後の**規則の中身**を控える（→ ensureOwnStyle が生きた規則と突き合わせる）
+      ownStyleDigest = ruleDigest(st);
     } catch (e) {
       // 足せなくても本体の動作は変わらない（複製は sanitizeClones が無力化する）
       console.error('[iiyaku] 見た目を足せません:', e);
     }
   }
 
-  function liveRuleCount(st) {
-    try { return (st.sheet && st.sheet.cssRules) ? st.sheet.cssRules.length : -1; }
-    catch (e) { return -1; }
+  // 生きている規則の**中身**をたどって1つの値にする。自分の style は3規則しかないので
+  // 全量で構わない。⚠️ 規則の数だけでは足りない（第21回 RG-21-04。実測: 規則数も
+  // `textContent` も変えずに `opacity:0!important` を1つ足されると、印は退役して
+  // 消えたのに style は直されなかった）。
+  function ruleDigest(st) {
+    try {
+      const sheet = st.sheet;
+      if (!sheet || !sheet.cssRules) return -1;
+      let h = 2166136261;
+      const walk = rs => {
+        h = (h * 33 ^ rs.length) >>> 0;
+        for (const r of rs) { h = hashStr(h, r.cssText || ''); if (r.cssRules) walk(r.cssRules); }
+      };
+      walk(sheet.cssRules);
+      return h;
+    } catch (e) { return -1; }
   }
 
   // ページ側が消したら足し直す。消されたままだと、複製や同名要素へ自分の見た目が戻る。
@@ -3259,10 +3552,10 @@
     // 自分の style の規則を3つとも消しても文字列は 7,943 文字のままで、
     // 規則0件の style を正常と判定していた。印は装飾を失い幅0になる）。
     if (ownStyle && ownStyle.isConnected && ownStyle.textContent === ownStyleText
-        && (ownStyleRuleCount < 0 || liveRuleCount(ownStyle) === ownStyleRuleCount)) return;
+        && (ownStyleDigest < 0 || ruleDigest(ownStyle) === ownStyleDigest)) return;
     if (ownStyle && ownStyle.isConnected) removeOwn(ownStyle);
     ownStyle = null;
-    ownStyleRuleCount = -1;
+    ownStyleDigest = -1;
     scopeOwnStyle();
   }
 

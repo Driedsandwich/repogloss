@@ -627,6 +627,35 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     /const NONLOCAL = \/:has\\\(\|\[~\+\]\//.test(code) && /hoverCssLocal/.test(code),
     '横や祖先が変わる規則のあるページで、変化を取りこぼす');
 
+  /* ---------- 第21回 RG-21-06 単独の印を closed shadow root へ ---------- */
+  check('単独の印を、closed shadow root の中へ入れている（第21回 RG-21-06）',
+    /host\.attachShadow\(\{ mode: 'closed' \}\)/.test(code) &&
+    /const iconButton = new WeakMap\(\)/.test(code) &&
+    /function ensureShadowButton/.test(code),
+    '全署名を消された複製が、幅0の押せる点として残る');
+  // ⚠️ `<sup>` に `attachShadow` すると NotSupportedError になる（実測）
+  check('印の host を、shadow を付けられる要素にしている（第21回 RG-21-06）',
+    /const icon = document\.createElement\('span'\);/.test(code) &&
+    /if \(rec\.icon\.tagName !== 'SPAN'\) return false;/.test(code),
+    'sup では attachShadow が NotSupportedError になる');
+  check('light DOM の host に、意味づけを残していない（第21回 RG-21-06）',
+    /setOwnAttr\(icon, 'role', null\);\n      setOwnAttr\(icon, 'tabindex', null\);/.test(code),
+    'host 側に role / tabindex が残ると、複製にも押せる点が移る');
+  // ⚠️ `<slot>` が無いと、退役した印をページが本文の入れ物に使い回したとき、
+  //    その文字が描かれなくなる（実測で再現した）
+  check('shadow の中に slot を置いている（第21回 RG-21-06）',
+    /root\.append\(btn, desc, document\.createElement\('slot'\)\);/.test(code),
+    'ページが使い回した節点の本文が描かれなくなる');
+  // ⚠️ shadow 専用の区間には裸の `button {…}` が入る。ページ側の style へ入れると、
+  //    ページのボタンまで作り替えてしまう（実測: 切替ボタンの字形指定が落ちた）
+  check('shadow 専用の CSS を、ページ側の style から外している（第21回 RG-21-06）',
+    /const SHADOW_SECTION = /.test(code) &&
+    /\.replace\(SHADOW_SECTION, ''\)/.test(code),
+    'ページのボタンまで、こちらの見た目で作り替えてしまう');
+  check('開閉の状態を、押せる実体へ書いている（第21回 RG-21-06）',
+    /function setExpanded/.test(code) && /const btn = iconButton\.get\(icon\);/.test(code),
+    'shadow の外の host へ aria-expanded を書いても、読み上げに出ない');
+
   /* ---------- 第19回で足した不変条件 ---------- */
   // RG-19-01 複数語の用語は、**全部の並び**が読めるときだけ可視
   check('語の矩形を、並びごとに分けて持っている',

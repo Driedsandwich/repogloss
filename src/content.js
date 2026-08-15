@@ -2008,8 +2008,83 @@
   // 印は文字コードの記号を使わない。U+1F6C8（🛈）は Windows の Segoe UI Symbol には
   // あるが macOS の標準フォントには無く、豆腐（□）になる。要素は空にして
   // styles.css の ::after で丸と "i" を描くので、フォントに左右されない。
+  // ---- 単独で押せる印を、closed shadow root の中へ入れる（第21回 RG-21-06）----
+  // ページが正規の印を `cloneNode` し、`data-*`・`aria-label`・合言葉の class を
+  // **全部**消したうえで `role="button" tabindex="0"` を残すと、こちらからは
+  // 内部所有物だと証明できず、幅0の押せる点として残っていた（第19回から3巡持ち越し）。
+  //
+  // 実測（Chrome 151）:
+  //   - `cloneNode(true)` は shadow root を**複製しない** → 複製された host は空で、
+  //     中に focusable な要素は 0 個
+  //   - `host.shadowRoot` は closed なら `null`（ページから中身を取れない）
+  //   - `document.querySelectorAll('button')` は shadow の中を**見つけない**
+  //   - `elementFromPoint` は host へ retarget される（＝印の実測はそのまま効く）
+  //
+  // ⚠️ **host は `<span>` でなければならない。** `<sup>` に `attachShadow` すると
+  // `NotSupportedError` になる（実測）。見た目は CSS で作っているので、`sup` の
+  // 上付き（`vertical-align: super` / `font-size: smaller`）には依存していない。
+  const USE_SHADOW_STANDALONE = true;      // 戻せるようにしておく（監査の助言）
+  const iconButton = new WeakMap();        // host → 中の button
+  const iconDesc = new WeakMap();          // host → 中の説明文
+  let shadowSheet;                         // 1枚だけ作って全部の shadow root で共有する
+
+  // `styles.css` のうち、**shadow root の中だけ**で使う区間。
+  // ⚠️ この区間はページ側の `<style>` へ入れてはいけない。`button { … }` のような
+  // 裸の選択子を含むので、入れるとページのボタンまで作り替えてしまう
+  // （実測: 追記した直後、こちらの切替ボタンの字形指定が上書きされて落ちた）。
+  const SHADOW_SECTION = /\/\* ===== RG_SHADOW_BEGIN =====[\s\S]*?\/\* ===== RG_SHADOW_END ===== \*\//;
+
+  function shadowIconSheet() {
+    if (shadowSheet !== undefined) return shadowSheet;
+    shadowSheet = null;
+    try {
+      const m = SHADOW_SECTION.exec(CSS_TEXT);
+      // 区間が見つからないときは**入れない**（見た目が無いほうが、間違った見た目より良い）
+      if (!m) return shadowSheet;
+      // 冒頭の注記（BEGIN のコメント）を落として、規則だけにする
+      const body = m[0].replace(/^\/\*[\s\S]*?\*\//, '').replace(/\/\* ===== RG_SHADOW_END ===== \*\/$/, '');
+      const sheet = new CSSStyleSheet();
+      sheet.replaceSync(body);
+      shadowSheet = sheet;
+    } catch (e) { shadowSheet = null; }
+    return shadowSheet;
+  }
+
+  // shadow の中は document の MutationObserver に映らないので、ここでの属性書き込みは
+  // `setOwnAttr` を通さない（ページからは触れないため、予定を控える相手がいない）。
+  function ensureShadowButton(host) {
+    let btn = iconButton.get(host);
+    if (btn) return btn;
+    let root;
+    try { root = host.attachShadow({ mode: 'closed' }); }
+    catch (e) { return null; }             // 付けられない環境では light DOM のまま
+    try {
+      const sheet = shadowIconSheet();
+      if (sheet) root.adoptedStyleSheets = [sheet];
+    } catch (e) { /* 見た目が無くても、押せることと読み上げは変わらない */ }
+    btn = document.createElement('button');
+    btn.type = 'button';
+    const desc = document.createElement('span');
+    desc.hidden = true;
+    desc.id = 'iiyaku-desc';
+    btn.setAttribute('aria-describedby', desc.id);
+    // ⚠️ **`<slot>` を必ず置く。** shadow root を付けた要素は、`<slot>` が無いと
+    // light DOM の子を**描かなくなる**。退役した印をページが本文の入れ物として
+    // 使い回したとき、その文字が消えてしまう（実測: 退役した印へ
+    // `textContent = 'A squash merge inside.'` を入れて本文へ戻すと、
+    // 中の語が走査されず 0 件になった。ページの持ち物を壊している）。
+    // ふだんの印は light DOM が空なので、slot は何も描かない。
+    root.append(btn, desc, document.createElement('slot'));
+    iconButton.set(host, btn);
+    iconDesc.set(host, desc);
+    return btn;
+  }
+
+  // その印の「押せる実体」。shadow を使わない場合は host 自身。
+  const focusTargetOf = icon => iconButton.get(icon) || icon;
+
   function makeIcon(key, term, ja) {
-    const icon = document.createElement('sup');
+    const icon = document.createElement('span');
     icon.className = 'iiyaku-icon ' + UID;
     // title 属性は使わない。ブラウザ標準のツールチップは表示までに
     // 1秒前後の待ちがあり、こちらからは短くできないため。
@@ -2036,11 +2111,26 @@
       // 持っていても影響を受けないようにするため）。
       setOwnAttr(icon, 'data-iiyaku-for', triggerKey(placement.trigger));
       iconTrigger.set(icon, placement.trigger);
-    } else {
-      // 押して開閉するので、role は img ではなく button にする。
+    } else if (USE_SHADOW_STANDALONE && ensureShadowButton(icon)) {
+      // light DOM の host は、**単独では Tab の停止点にならない**（第21回 RG-21-06）。
+      // 意味づけもフォーカスも、closed shadow root の中の button が持つ。
+      setOwnAttr(icon, 'role', null);
+      setOwnAttr(icon, 'tabindex', null);
+      setOwnAttr(icon, 'aria-label', null);
+      setOwnAttr(icon, 'aria-expanded', null);
+      setOwnAttr(icon, 'aria-hidden', null);
+      setOwnAttr(icon, 'data-iiyaku-for', null);
+      const btn = iconButton.get(icon);
+      const desc = iconDesc.get(icon);
       // 名前は「どの語の解説か」だけの短いものにし、説明文そのものは
-      // ツールチップ側（aria-describedby）に置く。名前と説明が同じ全文だと、
-      // 読み上げで同じ内容が二度読まれる。
+      // 説明用の要素へ置く。名前と説明が同じ全文だと、読み上げで二度読まれる。
+      // ⚠️ 説明は**同じ shadow root の中**に置く。境界をまたぐ IDREF は解決されない。
+      btn.setAttribute('aria-label', `「${icon.dataset.iiyakuTerm}」の解説`);
+      btn.setAttribute('aria-expanded', 'false');
+      if (desc) desc.textContent = icon.dataset.iiyaku;
+    } else {
+      // shadow を付けられなかった場合の従来どおりの形（Chrome 105 未満など）。
+      // 押して開閉するので、role は img ではなく button にする。
       setOwnAttr(icon, 'role', 'button');
       setOwnAttr(icon, 'aria-label', `「${icon.dataset.iiyakuTerm}」の解説`);
       setOwnAttr(icon, 'aria-expanded', 'false');
@@ -2099,11 +2189,17 @@
     return c && ownedTriggers.has(c) ? c : null;
   }
 
+  // 開閉の状態は、**押せる実体**へ書く（第21回 RG-21-06）。単独の印では
+  // それは closed shadow root の中の button で、host には意味づけを持たせない。
+  function setExpanded(icon, v) {
+    const btn = iconButton.get(icon);
+    if (btn) { btn.setAttribute('aria-expanded', v); return; }
+    if (icon.getAttribute('role') === 'button') setOwnAttr(icon, 'aria-expanded', v);
+  }
+
   function hideTip() {
     if (tipDescribed) { removeDescribedBy(tipDescribed, TIP_ID); tipDescribed = null; }
-    for (const ic of tipIcons) {
-      if (ic.getAttribute('role') === 'button') setOwnAttr(ic, 'aria-expanded', 'false');
-    }
+    for (const ic of tipIcons) setExpanded(ic, 'false');
     if (tip) { removeOwn(tip); tip = null; }
     tipAnchor = null;
     tipIcons = [];
@@ -2173,9 +2269,7 @@
     tipIcons = icons;
     tipDescribed = describe || anchor;
     addDescribedBy(tipDescribed, TIP_ID);
-    for (const ic of icons) {
-      if (ic.getAttribute('role') === 'button') setOwnAttr(ic, 'aria-expanded', 'true');
-    }
+    for (const ic of icons) setExpanded(ic, 'true');
     placeTip(anchor);
   }
 
@@ -2309,7 +2403,7 @@
     // 誤った説明を出し続ける（実測: `data-iiyaku` を書き換えると、3秒後も
     // その文言が吹き出しに出た。role を img へ変えても押せる印として残った）。
     // 食い違ったら退役させ、正しい印を付け直す（本文には触れない）。
-    if (rec.icon.tagName !== 'SUP') return false;
+    if (rec.icon.tagName !== 'SPAN') return false;
     if (!rec.icon.classList.contains('iiyaku-icon')) return false;
     if (rec.icon.dataset.iiyakuKey !== rec.key) return false;
     if (rec.icon.dataset.iiyaku !== DICT[rec.key]) return false;
@@ -2321,6 +2415,21 @@
       // 装飾扱い。読み上げに出さず、Tab の順路にも入れない
       if (rec.icon.getAttribute('aria-hidden') !== 'true') return false;
       if (rec.icon.hasAttribute('role') || rec.icon.hasAttribute('tabindex')) return false;
+    } else if (iconButton.has(rec.icon)) {
+      // 単独の印。意味づけは closed shadow root の中の button が持ち、
+      // light DOM の host は**単独では Tab の停止点にならない**（第21回 RG-21-06）。
+      // ⚠️ host 側に role / tabindex が戻っていないことも見る。戻っていれば、
+      // 複製されたときに押せる点が復活する（これを閉じるための作り直しなので）。
+      if (rec.icon.hasAttribute('role') || rec.icon.hasAttribute('tabindex')) return false;
+      if (rec.icon.hasAttribute('aria-label') || rec.icon.hasAttribute('aria-expanded')) return false;
+      if (rec.icon.hasAttribute('aria-hidden')) return false;
+      const btn = iconButton.get(rec.icon);
+      // shadow の中はページから触れないが、**触れないことを前提にしない**——
+      // 参照の同一性と意味づけを、ここで毎回確かめる。
+      if (!btn || btn.tagName !== 'BUTTON') return false;
+      if (btn.getAttribute('aria-label') !== `「${rec.term}」の解説`) return false;
+      const ex = btn.getAttribute('aria-expanded');
+      if (ex !== 'true' && ex !== 'false') return false;
     } else {
       if (rec.icon.getAttribute('role') !== 'button') return false;
       if (rec.icon.getAttribute('tabindex') !== '0') return false;
@@ -2402,7 +2511,8 @@
     }
     // 印そのものが切り取りの外なら、見えない停止点になる（第19回 RG-19-01）
     if (!iconIsPainted(rec.icon)) return false;
-    return tabbable(rec.icon);
+    // 単独の印では、Tab の停止点は shadow の中の button（第21回 RG-21-06）
+    return tabbable(focusTargetOf(rec.icon));
   }
 
   function usableGloss(key) {
@@ -3388,6 +3498,7 @@
   function ownStyleRules() {
     const mine = `[data-iiyaku-owner="${CSS.escape(UID)}"]`;
     const body = CSS_TEXT
+      .replace(SHADOW_SECTION, '')       // shadow 専用の区間はページへ入れない
       .replace(/\bRG_LOOK\b/g, MAIN_LAYER)
       .replace(/\bRG_SCOPE\b/g, SCOPE_LAYER)
       .replace(/\[data-iiyaku-owner\]/g, mine);

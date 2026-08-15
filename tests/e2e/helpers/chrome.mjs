@@ -658,7 +658,19 @@ export class Cdp {
     this.pending.clear();
   }
 
+  // 起動段階のコマンドだけ、1回に限って試し直す（第19回 RG-19-09）。
+  // **呼ぶ側ではなくここへ置く**——呼び出しは 44 か所あり、付け忘れると
+  // その1か所だけが赤いままになる。
   send(method, params = {}, sessionId) {
+    if (!STARTUP_METHODS.has(method)) return this._send(method, params, sessionId);
+    return retryStartup(method, () => this._send(method, params, sessionId), () => ({
+      pid: this.proc.pid, killed: this.proc.killed, exitCode: this.proc.exitCode,
+      pending: [...this.pending.values()].map(p => p.method),
+      stderr: this.stderr ? this.stderr() : ''
+    }));
+  }
+
+  _send(method, params = {}, sessionId) {
     const id = ++this.id;
     const payload = { id, method, params };
     if (sessionId) payload.sessionId = sessionId;
@@ -669,7 +681,7 @@ export class Cdp {
           reject(new Error(`CDP タイムアウト: ${method}`));
         }
       }, 20000);
-      this.pending.set(id, { resolve, reject, timer });
+      this.pending.set(id, { resolve, reject, timer, method });
       this.proc.stdio[3].write(JSON.stringify(payload) + '\0');
     });
   }
@@ -693,6 +705,7 @@ export async function launchChrome({ port } = {}) {
   let stderr = '';
   proc.stderr.on('data', d => { stderr += d.toString(); });
   const cdp = new Cdp(proc);
+  cdp.stderr = () => stderr;            // 起動を試し直すときの診断に使う
   // Chrome が落ちたら、待っている呼び出しを timeout まで放置しない
   const abort = () => cdp.rejectAll(new Error(`Chrome が終了した: ${stderr.slice(-300)}`));
   proc.on('exit', abort);
@@ -702,7 +715,47 @@ export async function launchChrome({ port } = {}) {
     try { await cdp.send('Browser.getVersion'); ok = true; break; } catch (e) { await sleep(250); }
   }
   if (!ok) throw new Error(`Chrome と CDP で接続できなかった: ${stderr.slice(0, 400)}`);
-  return { cdp, proc, kill: () => { try { proc.kill('SIGKILL'); } catch (e) {} } };
+  return { cdp, proc, stderr: () => stderr,
+           kill: () => { try { proc.kill('SIGKILL'); } catch (e) {} } };
+}
+
+/* 試し直してよいのは、**起動段階のこのコマンドだけ**（第19回 RG-19-09）。
+   2026-08-14、main の run 31811058081 で `Extensions.loadUnpacked` が Windows の
+   runner で 28.4 秒かかり、CDP の上限 20 秒を超えて赤くなった。同じ配布物に対する
+   前後の run はどちらも 292 件全成功で、製品の欠陥ではなく**起動の遅れ**だった。
+   ⚠️ 製品の assertion の失敗は決して試し直さない（緑に化けさせない）。
+   ⚠️ 試し直す前に、何が起きていたかを必ず残す（黙って緑にしない）。 */
+export const STARTUP_METHODS = new Set(['Extensions.loadUnpacked']);
+
+export function startupDiagText(method, attempt, retries, elapsed, err, info) {
+  return [
+    `[e2e] ${method} に失敗したので、起動段階だけ試し直します`,
+    `  試行:        ${attempt + 1} / ${retries + 1}`,
+    `  経過:        ${elapsed}ms`,
+    `  失敗:        ${String((err && err.message) || err).slice(0, 200)}`,
+    `  Chrome:      pid=${info.pid} killed=${info.killed} exitCode=${info.exitCode}`,
+    `  CDP の待ち:  ${(info.pending || []).join(',') || '(なし)'}`,
+    `  stderr:      ${(info.stderr || '').slice(-400) || '(なし)'}`
+  ].join('\n');
+}
+
+/* run() を1回に限って試し直す。診断は必ず出す。プロセスが死んでいたら試し直さない。
+   引数だけで完結させてあるので、CDP 無しで単体試験できる。 */
+export async function retryStartup(method, run, info, { retries = 1, now = () => Date.now(),
+                                                        log = m => console.error(m) } = {}) {
+  const t0 = now();
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const r = await run();
+      if (attempt > 0) log(`[e2e] ${method} は ${attempt + 1} 回目で成功（合計 ${now() - t0}ms）`);
+      return r;
+    } catch (e) {
+      const i = info();
+      if (attempt >= retries) throw e;
+      log(startupDiagText(method, attempt, retries, now() - t0, e, i));
+      if (i.exitCode !== null && i.exitCode !== undefined) throw e;   // Chrome が死んでいる
+    }
+  }
 }
 
 /* ページを開き、そのページで式を評価できる関数を返す */

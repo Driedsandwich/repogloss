@@ -12,7 +12,7 @@ RepoGloss は、GitHub の画面に出てくる英語のうち Git / GitHub 固�
 
 | 項目 | 値 |
 |---|---|
-| **監査対象** | **`v1.8.18`（未コミット）** |
+| **監査対象** | **`v1.8.18` = コミット `617779bced04f86cc47046e187bdd437b79340f8`**（タグ済み・提出前） |
 | 直前の版 | `v1.8.17` = コミット `9ae28b907e0ec1b662f360b28fa82c040e0a82e1`（**第19回監査の指摘により提出しない**） |
 | 基点コミット | `9ae28b907e0ec1b662f360b28fa82c040e0a82e1`（ここからの差分が今回の変更） |
 | 現在の既定ブランチ | `main` |
@@ -28,13 +28,14 @@ RepoGloss は、GitHub の画面に出てくる英語のうち Git / GitHub 固�
 差分は次のコマンドで確認できます。
 
 ```sh
-git diff --name-only v1.8.17             # 直前の版との差分（作業ツリー）
+git checkout v1.8.18                     # 監査対象を手元に出す
+git diff --name-only v1.8.17 v1.8.18     # 直前の版との差分
 # → 配布13ファイルのうち manifest.json・styles.css・src/content.js・README.md・
 #    DESIGN.md・PRIVACY.md が変わっている（辞書・matcher.js・アイコン・LICENSE は無変更）
 # → ほかに scripts/ と tests/ と docs/（配布物には入らない）
 ```
 
-**この版はまだ commit していません。** commit / push / タグ / Release / ウェブストア操作は、いずれも未実施です。
+**タグ `v1.8.18` を打ち、CI が提出候補 ZIP を作るところまで済んでいます。ストアへは未提出です。**
 
 > **監査対象と `main` の関係について（第11回 RG-11-06 の是正）。** 前回まで、監査対象を「`main` の先頭」と**相対的に**書いていました。提出候補の SHA を記録するコミットを1つ積んだ時点で、その記述は事実でなくなります（実際にそうなりました）。いまは対象をタグとコミットだけで名乗り、**現在の `main` の SHA はここに書きません**——書けば、その値もまた次のコミットで古くなるためです。両者の関係は文章ではなく検査で担保します。`state` が `uncommitted` でないとき、`verify` が「ここが名乗るタグと、いまの配布13ファイルが同じか」を `git diff` で突き合わせ、タグを引けない環境では**通しません**。
 
@@ -46,16 +47,16 @@ git diff --name-only v1.8.17             # 直前の版との差分（作業ツ�
 
 ```yaml
 version:            1.8.18
-state:              uncommitted        # commit / push / tag / Release / ストア提出はいずれも未実施
+state:              tagged             # commit / push / tag / CI 済み。Release とストア提出は未実施
 base_commit:        9ae28b907e0ec1b662f360b28fa82c040e0a82e1
-commit:             null
-tag:                null
-candidate_zip:      null
-candidate_bytes:    null
-candidate_sha256:   null
-content_sha256:     null
-combined_sha256:    null
-workflow_run:       null
+commit:             617779bced04f86cc47046e187bdd437b79340f8
+tag:                v1.8.18
+candidate_zip:      repogloss-1.8.18.zip
+candidate_bytes:    146426
+candidate_sha256:   b66312dc1538d61c4bdd1d40b1c3491eac40a8583b0b6b78cbcf77d6a8df76d7
+content_sha256:     6682beaaf6343bd06595c7c2884ab4b29f7766a4c445b3ec0670338a11a57d64
+combined_sha256:    499fd7b33eaea7e5e77c87dc529c5d54b278f7d2d7bc269dfcad5deee91b81d9
+workflow_run:       31858464358
 superseded:
   - version: 1.8.17
     tag: v1.8.17
@@ -132,13 +133,13 @@ superseded:
 store_published:    1.7.1
 ```
 
-取り下げた版のタグと ZIP は、すべて保存したまま動かしていません（既存22タグは今回も1つも動かしていません）。**直前の `v1.8.17`（`ae30290f…`）は、第19回監査の指摘により提出しません。**
+取り下げた版のタグと ZIP は、すべて保存したまま動かしていません（`v1.8.18` を打った前後で、既存22タグ＝44 ref が1文字も動いていないことを `refs/tags` 一覧の突き合わせで確認済み。1件の改変なら検出できることも、変異が実際に当たったことを確かめたうえで対照として示しています）。**直前の `v1.8.17`（`ae30290f…`）は、第19回監査の指摘により提出しません。**
 
-**この版には提出候補がまだありません。** 提出候補は `main` の CI が作るもので、手元で作ったものは `--release` 検査で落ちます（実測: `EXIT=1`）。
+**提出候補は、タグの中身と1バイトも違いません。** CI の run `31858464358` の `release-zip` が出した成果物を落として展開し、13ファイルを `git show v1.8.18:<path>` と突き合わせて **13/13 一致**（対照の `v1.8.17` とは6ファイルで相違）。`--release` 検査にも合格しています（実測: `EXIT=0`）。
 
-**ZIP は誰でも再現できます。** 日時を 1980-01-01 に固定し、並び順を配布一覧の順に固定してあるため、同じ内容からは1バイト違わない同じものができます。
+**ZIP は誰でも再現できます。** 日時を 1980-01-01 に固定し、並び順を配布一覧の順に固定してあるため、同じ内容からは1バイト違わない同じものができます。配布13ファイルの合算ハッシュは **ubuntu / macos / windows / 手元 macOS の4者で完全に一致**しています（`499fd7b3…`）。
 
-> **⚠️ ZIP のハッシュだけでは、CI の成果物と手元ビルドを区別できません。** ビルドが決定的なので、同じ内容からは同じ ZIP ができます（前巡の実測: **バイト単位で同一**）。区別が付くのは sidecar の `builtInCI` / `workflowRunId` だけで、`--release` 検査が落とすのもそこです。
+> **⚠️ ZIP のハッシュだけでは、CI の成果物と手元ビルドを区別できません。** ビルドが決定的なので、同じ内容からは同じ ZIP ができます（今巡も実測: 手元の `--allow-uncommitted` ビルドと CI の成果物は**バイト単位で同一**の `b66312dc…`）。区別が付くのは **sidecar だけ**です——検査したのは `builtInCI: true` / `workflowRunId: 31858464358` を持つほうです。手元ビルドの sidecar を正本に据えると、同じ ZIP でも `--release` 検査は落ちます（実測: `EXIT=1`・「提出候補は CI で作ったものに限る（builtInCI が true でない）」）。
 
 ```sh
 npm run package:zip -- --allow-uncommitted   # commit 前に試す場合。名前に UNCOMMITTED が入る
@@ -289,16 +290,16 @@ v1.8.2 と v1.8.3 で、**注記される語の集合は3ページとも完全�
 
 ### 4-1. 手元（macOS 26 / Google Chrome 151.0.7922.76 / Node.js v22.22.3・2026-08-15）
 
-下は手元での実行結果です。**この版はまだ CI に掛けていません**（未コミットのため）。
+下は手元での実行結果です（CI の結果は §4-2）。
 
 | command | exit | 結果 |
 |---|---:|---|
 | `node --check src/matcher.js` / `src/content.js` | 0 | 構文 OK |
-| `npm test` | 0 | 単体 **63件**全成功 / 構成検査 **319項目**・不一致0（辞書61語・version 1.8.18） |
+| `npm test` | 0 | 単体 **63件**全成功 / 構成検査 **322項目**・不一致0（辞書61語・version 1.8.18） |
 | `npm run test:e2e` | 0 | **325件**全成功（v1.8.17 は 292件。**+33件**） |
 | `npm run package:stage` / `:verify` | 0 | 13ファイル一致 |
-| `npm run package:zip -- --allow-uncommitted` / `:verify-zip` | 0 | 13ファイル（名前に `UNCOMMITTED` が入る。**提出候補ではない**） |
-| `npm run package:verify-zip -- --release` | **1** | **意図どおり落ちる**（手元ビルドは提出候補として通さない） |
+| `npm run package:verify-zip -- --release`（CI の成果物） | 0 | 13ファイル / 146,426 バイト（`b66312dc…`） |
+| `npm run package:verify-zip -- --release`（手元ビルドの sidecar） | **1** | **意図どおり落ちる**（`builtInCI` が true でない） |
 
 **新しい試験に判別力があることも確かめています。** v1.8.17 の実装（`src/content.js`・`styles.css`・`manifest.json` をタグの内容へ戻したもの）へぶつけると、**新しい33件のうち14件が失敗**します。
 
@@ -330,9 +331,18 @@ v1.8.17 は約 **3N**（カーソルの合図ごとに全件を回していた�
 
 > ⚠️ **最初、この数え方を間違えました。** ページ側の世界から `Element.prototype.checkVisibility` を包んでいたため、v1.8.17 でも v1.8.18 でも **0回**という値になりました。content script は隔離された世界で動き、`Element.prototype` もそちらのものです。同じ世界へ計測器を入れて測り直しています。
 
-### 4-2. CI
+### 4-2. CI（`main` の run [`31858464358`](https://github.com/Driedsandwich/repogloss/actions/runs/31858464358)・2026-08-15）
 
-**この版はまだ CI に掛けていません**（未コミットのため）。直前の `v1.8.17` は `main` の run [`31809124124`](https://github.com/Driedsandwich/repogloss/actions/runs/31809124124) で8ジョブすべて success でした（`verify` 300項目・`e2e` と `e2e-windows` が各292件・3 OS の合算 `f2f42fac…` 一致）。**その版は第19回監査の指摘により提出しません。**
+**8ジョブすべて success。** マージコミット `617779bc…`（＝タグ `v1.8.18` が指すもの）に対する実行です。
+
+| ジョブ | 結果 |
+|---|---|
+| `verify` | 構成検査 **319項目**・不一致0（当時は `state: uncommitted`） |
+| `e2e`（ubuntu） / `e2e-windows` | どちらも **325件**全成功 |
+| `package-hash` 3 OS / `hash-compare` | 合算が `499fd7b3…` で3 OS 一致（`OK: 3 OS すべてで同じ`） |
+| `release-zip` | 提出候補 ZIP（`b66312dc…`）を生成 |
+
+PR #28 の CI（run `31858197792`）も同じジョブが success でした（`release-zip` は skip）。
 
 ---
 
@@ -440,7 +450,7 @@ v1.8.17 は約 **3N**（カーソルの合図ごとに全件を回していた�
 | 配布物の検査（壊した ZIP を9種ぶつける） | [`tests/package.test.js`](tests/package.test.js) |
 | 提出物の身元の schema と、その検査（28件） | [`scripts/provenance.mjs`](scripts/provenance.mjs) / [`tests/provenance.test.js`](tests/provenance.test.js) |
 | 配布物の一覧（唯一の正本） | [`scripts/package-files.mjs`](scripts/package-files.mjs) |
-| 構成と文書の整合検査（319項目） | [`scripts/verify.mjs`](scripts/verify.mjs) |
+| 構成と文書の整合検査（322項目） | [`scripts/verify.mjs`](scripts/verify.mjs) |
 | ZIP の読み書き（自作） | [`scripts/zip.mjs`](scripts/zip.mjs) |
 | ZIP の検査 | [`scripts/verify-zip.mjs`](scripts/verify-zip.mjs) |
 | CI | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |

@@ -15,8 +15,14 @@
   // （消す側だけ直しても、書く側で壊れる）。名前が毎回変われば、そもそも重ならない。
   const OFF_ATTR = 'data-' + UID + '-off';
   const TIP_ID = UID + '-tip';
-  // カスケードレイヤーの名前。styles.css の宣言と揃える（verify.mjs が突き合わせる）。
-  const SCOPE_LAYER = 'repogloss-e7b41d-scope';
+  // カスケードレイヤーの名前も、**読み込みごとに変える**（第19回 RG-19-06）。
+  // 固定名だったため、ページが同じ名前のレイヤーを先に宣言して順序を握れた。
+  // 実測: ページが `@layer repogloss-e7b41d-scope, repogloss-e7b41d;` を先に宣言し、
+  // 自分の規則をその中へ書くと、**ページ自身の指定が UA 既定へ差し戻されて**いた
+  // （display:grid → inline、赤 → 黒、140×30px → auto）。名前が毎回変われば、
+  // そもそも同じレイヤーへ入れない。
+  const MAIN_LAYER = UID + '-look';
+  const SCOPE_LAYER = UID + '-scope';
 
   let enabled = true;
   try {
@@ -28,11 +34,27 @@
 
   /* ---------- 1. 辞書読み込み ---------- */
   const DICT_URL = chrome.runtime.getURL('locales/dict.json');
-  let DICT = {};
+  // 見た目も、辞書と同じ経路で走り出しに読み込む（第19回 RG-19-06）。
+  // 以前は `content_scripts.css` として静的に入れていたが、静的なファイルには
+  // 読み込みごとに変わる合言葉を書けないので、レイヤー名も選択子も固定になる。
+  // ここで読み込み、**選択子へ合言葉を埋めてから**入れる。ページ側の同名要素は
+  // そもそも一致しなくなるので、打ち消す規則（revert）が要らなくなった。
+  const CSS_URL = chrome.runtime.getURL('styles.css');
+  let DICT = {}, CSS_TEXT = '';
   try {
-    DICT = await fetch(DICT_URL).then(r => r.json());
+    const [d, c] = await Promise.all([
+      fetch(DICT_URL).then(r => r.json()),
+      fetch(CSS_URL).then(r => r.text())
+    ]);
+    DICT = d; CSS_TEXT = c;
   } catch (e) {
-    console.error('[iiyaku] dict.json 読み込み失敗:', e);
+    console.error('[iiyaku] dict.json / styles.css 読み込み失敗:', e);
+    return;
+  }
+  // 印の見た目は CSS が作る（`::after` の丸と "i"）。読めていないのに走ると、
+  // **見えない押せる点**を並べることになる。失敗したら何もしない。
+  if (!CSS_TEXT.trim()) {
+    console.error('[iiyaku] styles.css が空です。何もしません');
     return;
   }
   const matcher = globalThis.RepoGlossMatcher && globalThis.RepoGlossMatcher.createMatcher(DICT);
@@ -327,8 +349,13 @@
       // 元の箱は復元できる。変形前の箱を w×h とすると、外接矩形の寸法は
       //   W = |a|w + |c|h,  H = |b|w + |d|h
       // なので、この2式を解けばよい（中心は、外接矩形の中心を戻した点と一致する）。
-      // ちょうど45°など |a||d| = |b||c| のときだけ解が定まらないので、そのときは
-      // 平行四辺形で広く見積もる。
+      //
+      // ⚠️ ちょうど45°など |a||d| = |b||c| のときは解が定まらない。以前はそこで
+      // **viewport の外接矩形の4隅を逆写像した平行四辺形**へ落としていたが、これは
+      // 実際の文字より大きく、形の外の語まで拾う（第19回 RG-19-03。実測: 45°回した
+      // 楕円の外の語は0画素・5点すべての hit test が BODY なのに印が付いた）。
+      // 広く見積もった形を「見える」の根拠にはできないので、**null を返して
+      // 「断定できない」**にする。後ろに確実に見える同じ語があればそちらへ付く。
       backPoly: r => {
         const u0 = (r.left + r.right) / 2 - tx, v0 = (r.top + r.bottom) / 2 - ty;
         const cx = (L.d * u0 - L.c * v0) / det, cy = (L.a * v0 - L.b * u0) / det;
@@ -342,9 +369,7 @@
                     [cx + w / 2, cy + h / 2], [cx - w / 2, cy + h / 2]];
           }
         }
-        return [[r.left, r.top], [r.right, r.top], [r.right, r.bottom], [r.left, r.bottom]]
-          .map(([x, y]) => { const u = x - tx, v = y - ty;
-            return [(L.d * u - L.c * v) / det, (L.a * v - L.b * u) / det]; });
+        return null;
       }
     };
   }
@@ -662,6 +687,13 @@
   // ⚠️ 「不透明な背景がある」だけでは足りない（第18回 RG-18-04。実測:
   // `background-position: 10000px 0; background-repeat: no-repeat` の語は0画素なのに
   // 印が付いた）。読み切れない指定は描かれる側へ倒す。
+  // ⚠️ `background-size: auto` の**画像**は、背景領域いっぱいではない（第19回 RG-19-04）。
+  // auto は置換画像の**自然寸法**を使う。領域全体の寸法で箱を作っていたため、1×1 の
+  // 画像を `no-repeat` で置いただけの段落を「語の位置まで塗る」と答えていた
+  // （実測: 語の画素は0なのに印が付いた）。自然寸法は同期では分からない——
+  // 読みに行けば新しい通信になるので、**断定せず 'unknown' を返す**。
+  // gradient の auto は領域いっぱいなので、そちらは今までどおり解ける。
+  //   true … 届く／false … 届かない／'unknown' … 断定できない
   function bgClipTextPaintsAt(el, cs, rect) {
     if (!TRANSPARENT.test(cs.backgroundColor || '')) return true;   // 背景色は全面を覆う
     const img = cs.backgroundImage;
@@ -674,12 +706,14 @@
     const area = refBoxRect(cs, el.getBoundingClientRect(), false,
                             origin === 'content-box' ? 'content-box'
                           : origin === 'border-box' ? 'border-box' : 'padding-box');
+    let unknown = false;
     for (let i = 0; i < layers.length; i++) {
       if (isFullyTransparentGradient(layers[i])) continue;
       const r = rep[i % rep.length] || 'repeat';
       if (!/no-repeat/.test(r)) return true;                        // 繰り返せば全面に届く
       const sz = size[i % size.length] || 'auto';
       if (sz !== 'auto') return true;                               // 寸法は解かない＝届く側へ
+      if (!isGradientLayer(layers[i])) { unknown = true; continue; } // 自然寸法が分からない
       const pv = (pos[i % pos.length] || '0px 0px').split(/\s+/);
       const px0 = lenToPx(pv[0], (area.x2 - area.x1) - (area.x2 - area.x1));
       const py0 = lenToPx(pv[1] !== undefined ? pv[1] : '50%', 0);
@@ -688,23 +722,31 @@
                     x2: area.x1 + px0 + (area.x2 - area.x1), y2: area.y1 + py0 + (area.y2 - area.y1) };
       if (rect.right > box.x1 && rect.left < box.x2 && rect.bottom > box.y1 && rect.top < box.y2) return true;
     }
-    return false;
+    return unknown ? 'unknown' : false;
   }
 
-  function textIsInvisible(cs, el, rect) {
+  const GRADIENT = /^(-webkit-)?(repeating-)?(linear|radial|conic)-gradient\(/;
+  const isGradientLayer = v => GRADIENT.test(v);
+
+  // その語の位置に、文字が描かれるか。
+  //   true … 描かれる／false … 描かれない／'unknown' … 断定できない
+  function textPaintsAt(cs, el, rect) {
     const fill = cs.webkitTextFillColor && cs.webkitTextFillColor !== 'currentcolor'
       ? cs.webkitTextFillColor : cs.color;
-    if (!TRANSPARENT.test(fill || '')) return false;
+    if (!TRANSPARENT.test(fill || '')) return true;
     // ① 縁取り。幅と色の**両方**がそろって初めて描かれる
     const sw = parseFloat(cs.webkitTextStrokeWidth || '0');
     const sc = cs.webkitTextStrokeColor || '';
-    if (sw > 0 && !TRANSPARENT.test(sc)) return false;
+    if (sw > 0 && !TRANSPARENT.test(sc)) return true;
     // ② 影。色と**ずらし量**を見る
-    if (shadowPaintsAt(cs.textShadow, rect)) return false;
+    if (shadowPaintsAt(cs.textShadow, rect)) return true;
     // ③ 背景を文字型に抜く指定。塗りが語の位置に届くかを見る
     const bc = cs.backgroundClip || cs.webkitBackgroundClip;
-    if (bc === 'text' && bgClipTextPaintsAt(el, cs, rect)) return false;
-    return true;
+    if (bc === 'text') {
+      const s = bgClipTextPaintsAt(el, cs, rect);
+      if (s !== false) return s;                                    // true か 'unknown'
+    }
+    return false;
   }
 
   // 色の並びのうち、1つでも不透明なものがあるか。`none` は無し。
@@ -732,15 +774,48 @@
   //   その他     … 透明な入力は透明のまま返す（断定は変わらない）
   // 最後まで見て「確実に0」のときだけ消えていると言う。`url()` で描き直された先は
   // 見えているかもしれないので、そこは可視の側へ倒す（断定しない）。
+  // ⚠️ `url()` を見たら「見えている」へ**戻して**いた（第19回 RG-19-05）。SVG の
+  // filter は `SourceGraphic` 以外を入力にでき、出力は何にでもなる——完全に透明にも
+  // できる（実測: `feFlood flood-opacity="0"` を指すだけの filter で、語の画素は0
+  // なのに印が付いた）。**解けないものは「断定できない」**として、可視へは昇格しない。
   function filterState(v) {
     const fns = v.match(/[a-zA-Z-]+\([^()]*(\([^()]*\)[^()]*)*\)/g);
     if (!fns) return 'shown';
-    let zero = false;
+    let state = 'shown';
     for (const f of fns) {
-      if (FILTER_OPACITY_ZERO.test(f)) zero = true;
-      else if (/^url\(/.test(f)) zero = false;
+      if (FILTER_OPACITY_ZERO.test(f)) state = 'hidden';   // ここで確実に 0 になる
+      else if (/^url\(/i.test(f)) state = 'unknown';       // 何を描くか解けない
     }
-    return zero ? 'hidden' : 'shown';
+    return state;
+  }
+
+  // 色の明るさ（0〜1）。透明なら 0。読めなければ null。
+  function luminanceOf(c) {
+    const n = (c.match(/[\d.]+/g) || []).map(parseFloat);
+    if (n.length < 3) return null;
+    const a = n.length > 3 ? n[3] : 1;
+    if (a === 0) return 0;
+    return (0.2126 * n[0] + 0.7152 * n[1] + 0.0722 * n[2]) / 255 * a;
+  }
+
+  // 覆いの1層が、その場所を残すか。
+  //   'shown' … 残る／'hidden' … 消える／'unknown' … 断定できない
+  // ⚠️ `mask-mode` を見ていなかった（第19回 RG-19-05）。`luminance` では色の明るさが
+  // 覆いの値になるので、**黒は 0＝完全に消える**。alpha では黒も不透明なので残る。
+  // 既定の `match-source` は、画像・gradient に対しては alpha として働く。
+  function maskLayerState(layer, mode) {
+    if (isFullyTransparentGradient(layer)) return 'hidden';   // alpha 0 はどちらの解釈でも 0
+    if (mode !== 'luminance') return 'shown';
+    if (!isGradientLayer(layer)) return 'unknown';            // 画像の明るさは解けない
+    const colors = layer.match(/rgba?\([^)]*\)/g);
+    if (!colors || !colors.length) return 'unknown';
+    let best = 0;
+    for (const c of colors) {
+      const l = luminanceOf(c);
+      if (l === null) return 'unknown';
+      if (l > best) best = l;
+    }
+    return best > 0 ? 'shown' : 'hidden';
   }
 
   // `mask-image` は**層の並び**で、カンマ区切りの各層を合成した結果が最終の覆いになる。
@@ -760,7 +835,15 @@
     const comp = splitTopLevel(cs.maskComposite || cs.webkitMaskComposite || 'add').map(x => x.trim());
     const allAdd = comp.every(c => c === '' || c === 'add' || c === 'source-over');
     if (!allAdd) return 'unknown';
-    return layers.every(l => isFullyTransparentGradient(l)) ? 'hidden' : 'shown';
+    // 層ごとに `mask-mode` を見る。足し合わせなので、1層でも残せば残る。
+    const modes = splitTopLevel(cs.maskMode || cs.webkitMaskSourceType || 'match-source').map(x => x.trim());
+    let unknown = false;
+    for (let i = 0; i < layers.length; i++) {
+      const s = maskLayerState(layers[i], modes[i % modes.length] || 'match-source');
+      if (s === 'shown') return 'shown';
+      if (s === 'unknown') unknown = true;
+    }
+    return unknown ? 'unknown' : 'hidden';
   }
 
   // カンマで切る。ただし `rgba(…)` や `url(…)` の中のカンマでは切らない。
@@ -841,6 +924,27 @@
     return [r.now - r.max, r.now - r.min];
   }
 
+  // `scroll-snap-type: <axis> mandatory` の軸。
+  // ⚠️ 連続した区間のどこでも止まれる、としてはいけない（第19回 RG-19-02）。
+  // mandatory では、有効な止まり位置がある限りブラウザはそこへ吸い寄せるので、
+  // 途中の位置では**止まれない**（実測: 0〜200 を頼んでも実効 0、250〜401 を
+  // 頼んでも実効 401。その間にある語はどの止まり位置でも読めないのに印が付いた）。
+  // 止まり位置そのものは解かない。**いま見えているかだけを断定し、あとは
+  // 「断定できない」**として、スクロールが終わってから見直す。
+  function snapAxes(cs) {
+    const v = cs.scrollSnapType || 'none';
+    if (v === 'none' || !/mandatory/.test(v)) return { x: false, y: false };
+    if (/^\s*x\b/.test(v)) return { x: true, y: false };
+    if (/^\s*y\b/.test(v)) return { x: false, y: true };
+    if (/^\s*(block|inline)\b/.test(v)) {           // 論理軸は書字方向で決まる
+      const vertical = /^vertical|^sideways/.test(cs.writingMode || 'horizontal-tb');
+      const isBlock = /^\s*block\b/.test(v);
+      const horizontal = isBlock ? vertical : !vertical;
+      return { x: horizontal, y: !horizontal };
+    }
+    return { x: true, y: true };                    // both
+  }
+
   //   L    … 祖先ぶんも含めた変形の線形部分（viewport ← 変形前の座標）
   //   flat … その変形が 2D で表せるか（3D は解かない）
   function ownClips(el, cs, L, flat) {
@@ -902,10 +1006,12 @@
     // 区間を伝播させて、全部の枠へ同時に入る位置があるかを見る（→ reachable）。
     let scroller = null;
     if (scrolls(cs.overflowX) || scrolls(cs.overflowY)) {
+      const snap = snapAxes(cs);
       scroller = {
         box: padBox(),
         dx: scrolls(cs.overflowX) ? shiftRange(el, cs, 'x') : [0, 0],
-        dy: scrolls(cs.overflowY) ? shiftRange(el, cs, 'y') : [0, 0]
+        dy: scrolls(cs.overflowY) ? shiftRange(el, cs, 'y') : [0, 0],
+        snapX: snap.x, snapY: snap.y
       };
     }
     // ② legacy clip。**絶対配置の要素にしか効かない**（position を見ずに判定すると、
@@ -949,7 +1055,8 @@
                                            x2: Math.max(...xs), y2: Math.max(...ys) });
           }
           const t = shapeHitTest(sh, ref);
-          if (t) tests.push(rect => t(map.backPoly(rect)));
+          // 変形前へ戻せない角度（ちょうど45°など）では断定しない（第19回 RG-19-03）
+          if (t) tests.push(rect => { const p = map.backPoly(rect); return p ? t(p) : 'unknown'; });
         }
       }
       // flat でない（3D・perspective）ときは形を解かない＝制限しない側へ倒す
@@ -1082,12 +1189,22 @@
   // 切り取りの外なのに、空白ぶんの幅が形の中を横切って可視と答えていた
   // （実測: `word-spacing:70px` の見本で、語の画素は0なのに印が付いた）。
   // 空白で切って、**塗りのある並びごと**に矩形を取る。
+  //
+  // ⚠️ 並びは**まとめずに、並びごとに分けて**返す（第19回 RG-19-01）。1つの配列へ
+  // 平らにしていたため、「どれか1つの矩形が通れば可視」で用語全体を可視と答えて
+  // いた。`pull request` の `pull` だけが見えて `request` が切り取りの外にある見本で、
+  // 用語の意味が読めないのに印が付き、その印自体も切り取りの外にあって見えない
+  // Tab の停止点になっていた（実測: `pull` 158画素・`request` 0画素・切り取りの
+  // 右端 35px に対し印は x=93.8）。
   const SPACE = /\s/;
-  function rangeRects(node, start, end) {
-    const out = [];
-    const add = r => { for (const x of r.getClientRects()) if (x.width > 0 && x.height > 0) out.push(x); };
+  function rangeRuns(node, start, end) {
+    const runs = [];
+    const add = r => {
+      const rects = [...r.getClientRects()].filter(x => x.width > 0 && x.height > 0);
+      if (rects.length) runs.push(rects);
+    };
     if (start === null) {
-      const r = document.createRange(); r.selectNodeContents(node); add(r); return out;
+      const r = document.createRange(); r.selectNodeContents(node); add(r); return runs;
     }
     const text = node.nodeValue || '';
     let i = start;
@@ -1098,7 +1215,7 @@
       if (j > i) { const r = document.createRange(); r.setStart(node, i); r.setEnd(node, j); add(r); }
       i = j;
     }
-    return out;
+    return runs;
   }
 
   // **その語**が、切り取りを越えて実際に描かれているか。
@@ -1112,25 +1229,80 @@
     const chain = paintChain(el, 'none');
     if (chain.hidden) return false;
     if (rectIsEmpty(chain.clip)) return false;
-    const rects = rangeRects(node, start, end);
-    if (rects.length === 0) return false;
-    // 文字の塗りは**語の位置**で見る（影のずらし・背景の位置がここに効く）
+    const runs = rangeRuns(node, start, end);
+    if (runs.length === 0) return false;
     const cs = getComputedStyle(el);
-    if (rects.every(r => textIsInvisible(cs, el, r))) return false;
-    // **同じ断片が、全部の条件を通ること**を求める。条件ごとに「どれか1つの断片が
-    // 通るか」を見ていたため、断片Aが形Aだけ・断片Bが形Bだけを通る場合に、
-    // どの断片も全部は通っていないのに合格していた（第15回 RG-15-03）。
     const c = chain.clip;
     const inClip = r => !c || (Math.min(r.right, c.x2) - Math.max(r.left, c.x1) > 1 &&
                                Math.min(r.bottom, c.y2) - Math.max(r.top, c.y1) > 1);
+    // **同じ断片が、全部の条件を通ること**を求める。条件ごとに「どれか1つの断片が
+    // 通るか」を見ていたため、断片Aが形Aだけ・断片Bが形Bだけを通る場合に、
+    // どの断片も全部は通っていないのに合格していた（第15回 RG-15-03）。
     // 画面（または動かせる範囲）の外にある語は、読めないしスクロールでも出せない。
     // スクロールできる入れ物の中なら、その入れ物を動かせる範囲で見る。ただし
     // **入れ物そのものが文書のどこにも出せない**なら、中身も出せない。
-    const inReach = r => reachable(r, chain);
-    const ok = rects.some(r => inClip(r) && inReach(r) && chain.tests.every(t => t(r)));
+    //   true … 確実に読める／false … 確実に読めない／'unknown' … 断定できない
+    const rectState = r => {
+      if (!inClip(r)) return false;
+      const reach = reachable(r, chain);
+      if (reach === false) return false;
+      let u = reach === 'unknown';
+      for (const t of chain.tests) {
+        const v = t(r);
+        if (v === false) return false;
+        if (v === 'unknown') u = true;
+      }
+      // 文字の塗りは**語の位置**で見る（影のずらし・背景の位置がここに効く）
+      const p = textPaintsAt(cs, el, r);
+      if (p === false) return false;
+      if (p === 'unknown') u = true;
+      return u ? 'unknown' : true;
+    };
+    // 1つの並びは、**どれか1つの断片**が通れば読める（折り返しても読める）。
+    const runState = rects => {
+      let best = false;
+      for (const r of rects) {
+        const s = rectState(r);
+        if (s === true) return true;
+        if (s === 'unknown') best = 'unknown';
+      }
+      return best;
+    };
+    let unknown = chain.paintUnknown;
+    // **全部の並び**が読めることを求める（第19回 RG-19-01）。
+    for (const rects of runs) {
+      const s = runState(rects);
+      if (s === false) return false;
+      if (s === 'unknown') unknown = true;
+    }
     // 解けない描画効果があるときは「見える」と断定しない。後ろに確実に見える同じ語が
     // あればそちらへ付ける（第18回 RG-18-04 / RG-18-05）。
-    return ok ? (chain.paintUnknown ? 'unknown' : true) : false;
+    //
+    // ⚠️ **印が入る場所は、ここでは見ない。** 一度「用語の直後に 1.4em」と見積もって
+    // 判定へ入れたが、その見積もりが外れていた（実測: 35°回した楕円の中の語で、
+    // 見積もりは形の外なのに、実際の印は5点中4点が印そのものに当たる＝見えていた）。
+    // 印は**実物を測れる**ので、入れたあとの「まだ説明として使えるか」で見る
+    // （→ iconIsPainted）。
+    return unknown ? 'unknown' : true;
+  }
+
+  // 印そのものが、切り取りの中に描かれているか（第19回 RG-19-01）。
+  // 用語が読めても、印だけが切り取りの外へ出ることがある（実測:
+  // `overflow-clip-margin:100px` の枠で、語は余白の中に見えているのに、
+  // その直後に入った印は x=176 で余白の外＝5点すべてが印に当たらず、それでも
+  // `tabIndex:0` で Tab の順路に入っていた）。**見えない停止点を残さない。**
+  function iconIsPainted(icon) {
+    const chain = paintChain(icon, 'none');
+    if (chain.hidden) return false;
+    if (rectIsEmpty(chain.clip)) return false;
+    const b = icon.getBoundingClientRect();
+    if (!(b.width > 0 && b.height > 0)) return false;
+    const c = chain.clip;
+    if (c && !(Math.min(b.right, c.x2) - Math.max(b.left, c.x1) > 1 &&
+               Math.min(b.bottom, c.y2) - Math.max(b.top, c.y1) > 1)) return false;
+    if (reachable(b, chain) === false) return false;
+    for (const t of chain.tests) if (t(b) === false) return false;
+    return true;
   }
 
   // 文書そのものの枠（画面）と、そこで動かせる量。
@@ -1142,10 +1314,13 @@
   function rootScroller(fixed) {
     const de = document.documentElement;
     const box = { x1: 0, y1: 0, x2: de.clientWidth, y2: de.clientHeight };
-    if (fixed) return { box, dx: [0, 0], dy: [0, 0] };   // 画面に固定＝動かせない
+    if (fixed) return { box, dx: [0, 0], dy: [0, 0], snapX: false, snapY: false };  // 画面に固定＝動かせない
     const se = document.scrollingElement || de;
     const cs = getComputedStyle(se);
-    return { box, dx: shiftRange(se, cs, 'x'), dy: shiftRange(se, cs, 'y') };
+    // 文書そのものの吸い寄せは `<html>` 側にも書ける
+    const snap = snapAxes(getComputedStyle(de));
+    return { box, dx: shiftRange(se, cs, 'x'), dy: shiftRange(se, cs, 'y'),
+             snapX: snap.x, snapY: snap.y };
   }
 
   // その矩形を、**全部の枠へ同時に入れられる**スクロール位置があるか。
@@ -1155,17 +1330,28 @@
   //   ・S_k は S_{k-1} に k 番目の可動量を足した範囲に入る
   //   ・語が k 番目の枠に入る条件は S_k ∈ (箱の始点 - 語の終点, 箱の終点 - 語の始点)
   // となり、内側から外側へ**区間を狭めていくだけ**で答えが出る（軸ごとに独立）。
+  // 返り値は true / false / 'unknown'。
+  // mandatory な吸い寄せがある枠では、**いまの位置でしか断定しない**。いま入って
+  // いなければ、連続区間で入れるかを見て、入れるなら 'unknown'（止まり位置は解かない）、
+  // 入れないなら false（吸い寄せが無くても届かない）。
   function reachable(r, chain) {
     const doms = chain.scrolls.concat([rootScroller(chain.fixed)]);
-    return feasible(r, doms, 'x') && feasible(r, doms, 'y');
+    const anySnap = doms.some(d => d.snapX || d.snapY);
+    if (!anySnap) {
+      return (feasible(r, doms, 'x', false) && feasible(r, doms, 'y', false)) ? true : false;
+    }
+    if (feasible(r, doms, 'x', true) && feasible(r, doms, 'y', true)) return true;   // いま見えている
+    return (feasible(r, doms, 'x', false) && feasible(r, doms, 'y', false)) ? 'unknown' : false;
   }
 
-  function feasible(r, doms, axis) {
+  //   pinSnap … true なら、吸い寄せのある枠を「いまの位置から動かせない」として解く
+  function feasible(r, doms, axis, pinSnap) {
     const t1 = axis === 'x' ? r.left : r.top;
     const t2 = axis === 'x' ? r.right : r.bottom;
     let lo = 0, hi = 0;
     for (const d of doms) {
-      const sh = axis === 'x' ? d.dx : d.dy;
+      const snapped = pinSnap && (axis === 'x' ? d.snapX : d.snapY);
+      const sh = snapped ? [0, 0] : (axis === 'x' ? d.dx : d.dy);
       lo += sh[0]; hi += sh[1];
       const b1 = axis === 'x' ? d.box.x1 : d.box.y1;
       const b2 = axis === 'x' ? d.box.x2 : d.box.y2;
@@ -2054,6 +2240,8 @@
       if (now.trigger !== rec.trigger) return false;
       return tabbable(rec.trigger);
     }
+    // 印そのものが切り取りの外なら、見えない停止点になる（第19回 RG-19-01）
+    if (!iconIsPainted(rec.icon)) return false;
     return tabbable(rec.icon);
   }
 
@@ -2192,6 +2380,23 @@
       parent.insertBefore(icon, tail ?? cur.nextSibling);
       applyIconSemantics(icon, placement);                  // 入った場所を見てから決める
       markHandled(cur);
+      // ⚠️ **入れてから、その印が本当に描かれているかを測る**（第19回 RG-19-01）。
+      // 語が読めても、直後に入る印だけが切り取りの外へ出ることがある（実測:
+      // 負の inset で外へ広げた枠と `overflow-clip-margin` の枠で、印の5点すべてが
+      // 印に当たらない＝描かれていないのに `tabIndex:0` で Tab の順路に入っていた）。
+      // 場所は**予測しない**——一度「用語の直後に 1.4em」と見積もって判定へ入れたが、
+      // 35°回した形の中で外れた。入れて測り、描かれていなければ引き取る。
+      // その語はこの世代では諦め、控えへ戻す（形が変われば入り直せる）。
+      if (!iconIsPainted(icon)) {
+        if (tip && tipIcons.includes(icon)) hideTip();
+        ownedIcons.delete(icon); iconTrigger.delete(icon); expectedAttrs.delete(icon);
+        removeOwn(icon);
+        if (placement.kind === 'hosted') releaseTriggerIfUnused(placement.trigger);
+        rememberLatent(cur);
+        if (!tail) break;
+        cur = tail; consumed = hit.end;
+        continue;
+      }
       // 実際に挿入できたものだけ、作ったものと一緒に控える。
       // termNode は用語を末尾に含む節点。片づけのとき、これを走査対象へ戻す。
       // tailNode は自分が作った右側（作らなかったときは null）。控えるのは
@@ -2324,6 +2529,10 @@
       // 控えからは外さない——その印があとで退役すれば、また候補に戻るからである。
       const v = node.nodeValue;
       if (!v || matcher.findHits(v, key => usableGloss(key) !== null).length === 0) continue;
+      // 同じ世代で既に見た候補は、答えが変わらない（第19回 RG-19-08）。
+      // ここから下がレイアウトを起こす部分なので、その手前で飛ばす。
+      if (latentEpoch.get(node) === visEpoch) continue;
+      latentEpoch.set(node, visEpoch);
       if (!isTarget(node)) continue;
       n += annotate(node);
       // 外すのは「もう当たらない」と決まったときだけ。入口がまだ無い節点は控えに残す。
@@ -2454,6 +2663,8 @@
   const observer = new MutationObserver(muts => {
     // 複製された「自分のふり」は、走査より前に取り除く
     for (const mu of muts) for (const n of mu.addedNodes) sanitizeClones(n);
+    // DOM が変わった＝見え方の状態が変わりうる（第19回 RG-19-08）
+    bumpEpoch();
 
     let deep = false;
     const roots = [];
@@ -2516,16 +2727,79 @@
   // `<head>` の stylesheet が変わると、body には何の変更も出ないまま見え方が変わる。
   // ここは記録の確認だけでよいので、走査し直す場所は渡さない。
   const headObserver = new MutationObserver(muts => {
-    for (const mu of muts) if (!isSelfMutation(mu)) { schedule({ deep: true }); return; }
+    for (const mu of muts) if (!isSelfMutation(mu)) {
+      // stylesheet が増減した＝`:hover` を使う規則の有無を調べ直す（第19回 RG-19-08）
+      styleSerial++;
+      bumpEpoch();
+      schedule({ deep: true });
+      return;
+    }
   });
   const HEAD_OPTS = { childList: true, subtree: true, attributes: true, attributeOldValue: true };
 
+  // ---- 見え方の世代（第19回 RG-19-08）----
+  // 控えの見直しは、合図が来るたびに**全件**やり直していた（実測: 5,000候補・
+  // 10移動で `checkVisibility` 65,000回）。同じ状態のまま2回見ても答えは変わらない。
+  // 「見え方に関わる状態が変わった」ときだけ世代を進め、同じ世代で既に見た候補は
+  // 飛ばす。世代を進めるのは、DOM の変更・stylesheet の増減・画面の大きさ・
+  // CSS の遷移の終わり・利用者の操作・スクロール。
+  let visEpoch = 1;
+  const latentEpoch = new WeakMap();
+  const bumpEpoch = () => { visEpoch++; };
+  // stylesheet が変わった回数（`:hover` を使う規則があるかの調べ直しに使う）
+  let styleSerial = 0;
+
+  // ページに、カーソル／フォーカスで見え方が変わりうる規則があるか。
+  // 無ければ、カーソルが動いても CSS では何も変わらない——JS で開くメニューは
+  // DOM の変更として届くので、見張りのほうが拾う。
+  // ⚠️ **自分の stylesheet は数えない**（`:hover` / `:focus-visible` を持っている）。
+  const HOVERISH = /:hover|:focus|:focus-within|:focus-visible|:active|:has\(/i;
+  const RULE_SCAN_MAX = 20000;
+  let hoverCssSerial = -1, hoverCssHas = true;
+  function pageUsesHoverRules() {
+    if (hoverCssSerial === styleSerial) return hoverCssHas;
+    hoverCssSerial = styleSerial;
+    let seen = 0;
+    const give = v => { hoverCssHas = v; return v; };
+    try {
+      for (const sheet of document.styleSheets) {
+        if (ownStyle && sheet.ownerNode === ownStyle) continue;
+        let rules;
+        try { rules = sheet.cssRules; } catch (e) { return give(true); }   // 読めない＝あるものとして扱う
+        if (!rules) continue;
+        const stack = [rules];
+        while (stack.length) {
+          for (const r of stack.pop()) {
+            if (++seen > RULE_SCAN_MAX) return give(true);                 // 大きすぎる＝あるものとして扱う
+            if (r.selectorText && HOVERISH.test(r.selectorText)) return give(true);
+            if (r.cssRules) stack.push(r.cssRules);
+          }
+        }
+      }
+    } catch (e) { return give(true); }
+    return give(false);
+  }
+
   // DOM の変更を伴わない合図。CSS の遷移・アニメーションの終わり、画面の大きさの変化。
   const EXTERNAL_SIGNALS = ['transitionend', 'transitioncancel', 'animationend', 'animationcancel'];
-  const onExternal = e => { if (!isOurNode(e.target)) schedule({ deep: true }); };
-  const onViewport = () => schedule({ deep: true });
+  const onExternal = e => { if (!isOurNode(e.target)) { bumpEpoch(); schedule({ deep: true }); } };
+  const onViewport = () => { bumpEpoch(); schedule({ deep: true }); };
   // 利用者の操作は、属性に出ない状態（checked など）を変えうる
-  const onInteraction = () => schedule({ deep: true });
+  const onInteraction = () => { bumpEpoch(); schedule({ deep: true }); };
+
+  // スクロールが落ち着いたら見直す。**吸い寄せのある枠では、止まってからでないと
+  // 到達できるかを断定できない**（第19回 RG-19-02）。`scrollend` が無い版のために、
+  // `scroll` から遅らせて1回だけ出す形も置く。
+  const SCROLL_SETTLE = 150;
+  let scrollTail = null;
+  const onScrollSignal = () => {
+    bumpEpoch();
+    if (scrollTail !== null) clearTimeout(scrollTail);
+    scrollTail = setTimeout(() => {
+      scrollTail = null;
+      if (observing) schedule({ deep: true });
+    }, SCROLL_SETTLE);
+  };
 
   // カーソルとフォーカスも合図にする。`:hover` / `:focus-within` だけで開く
   // メニューは、DOM も属性も transition も動かさないので、どの合図にも乗らない。
@@ -2577,6 +2851,10 @@
   let hoverTail = null;
   const onPointerOrFocus = () => {
     if (latent.size === 0 || hoverPending) return;
+    // カーソルで見え方が変わりうる規則がページに無いなら、見直す意味が無い
+    // （第19回 RG-19-08）。JS で開くメニューは DOM の変更として別経路で届く。
+    if (!pageUsesHoverRules()) return;
+    bumpEpoch();                   // `:hover` の当たる先が変わった＝状態が変わった
     if (overBudget()) return;      // 使いすぎた。2秒ごとの確認に任せる
     const now = performance.now();
     if (now - hoverAt < hoverGap) {
@@ -2599,6 +2877,9 @@
   };
   let hoverTriggered = false;
   const HOVER_SIGNALS = ['pointerover', 'pointerout', 'focusin', 'focusout'];
+  // `scrollend` はブラウザが「止まった」と決めた瞬間に1回だけ来る。無い版のために
+  // `scroll` も取り、そこから遅らせて1回にまとめる（→ onScrollSignal）。
+  const SCROLL_SIGNALS = ('onscrollend' in window) ? ['scrollend'] : ['scroll'];
 
   // 属性にも DOM にも出ない変化（property だけの書き換え）は、どの合図にも乗らない。
   // 暇なときにだけ、記録の見え方を確かめ直す。画面が見えていないときは何もしない。
@@ -2614,7 +2895,12 @@
       // （property だけの変化は、この経路でしか気づけない）。
       // 控えが上限で打ち切られている場合も、控えてある分は見に行く。
       if (document.hidden || (glossed.size === 0 && latent.size === 0)) { scheduleIdleCheck(); return; }
-      const run = () => { schedule({ deep: true }); scheduleIdleCheck(); };
+      // ⚠️ ここでは**必ず世代を進める**（第19回 RG-19-08 の門を、この経路には掛けない）。
+      // 暇なときの確認は、属性にも DOM にも出ない変化（`checked` など property だけの
+      // 書き換え）を拾うためにある。世代が進まないと「同じ世代で見た」として飛ばされ、
+      // その変化に永久に気づかない（実測: 2,100件の控えのある見本と、上限で
+      // こぼれた候補の見本が、どちらも後から見えた語を見つけられなくなった）。
+      const run = () => { bumpEpoch(); schedule({ deep: true }); scheduleIdleCheck(); };
       if (canIdle) requestIdleCallback(run, { timeout: IDLE_GAP });
       else run();
     }, IDLE_GAP);
@@ -2653,6 +2939,7 @@
     window.addEventListener('orientationchange', onViewport);
     for (const t of ['input', 'change', 'click']) document.addEventListener(t, onInteraction, true);
     for (const t of HOVER_SIGNALS) document.addEventListener(t, onPointerOrFocus, true);
+    for (const t of SCROLL_SIGNALS) document.addEventListener(t, onScrollSignal, true);
     scheduleIdleCheck();
   }
 
@@ -2665,6 +2952,8 @@
     window.removeEventListener('orientationchange', onViewport);
     for (const t of ['input', 'change', 'click']) document.removeEventListener(t, onInteraction, true);
     for (const t of HOVER_SIGNALS) document.removeEventListener(t, onPointerOrFocus, true);
+    for (const t of SCROLL_SIGNALS) document.removeEventListener(t, onScrollSignal, true);
+    if (scrollTail !== null) { clearTimeout(scrollTail); scrollTail = null; }
     if (idleTimer !== null) { clearTimeout(idleTimer); idleTimer = null; }
     if (latentResume !== null) { clearTimeout(latentResume); latentResume = null; }
     if (hoverTail !== null) { clearTimeout(hoverTail); hoverTail = null; }
@@ -2752,33 +3041,27 @@
   // なので、自分の見た目は確実に打ち消せて、**ページ自身の指定には必ず負ける**。
   // 以前はレイヤー無しで書いていたため、ページの指定まで打ち消していた（実測:
   // ページの `display:grid`・赤・140×30px が block・黒・740×24px になった）。
-  const OWN_STYLE_PROPS = [
-    'align-items', 'background', 'background-color', 'border', 'border-radius', 'border-top',
-    'bottom', 'box-shadow', 'box-sizing', 'color', 'content', 'cursor', 'display',
-    'font-family', 'font-size', 'font-style', 'font-weight', 'height', 'justify-content',
-    'line-height', 'margin-left', 'margin-top', 'max-height', 'max-width', 'opacity',
-    'outline', 'outline-offset', 'overflow', 'overflow-wrap', 'padding', 'padding-top',
-    'pointer-events', 'position', 'right', 'text-align', 'text-decoration', 'transition',
-    'user-select', 'vertical-align', 'white-space', 'width', 'word-break', 'z-index'
-  ];
-
   let ownStyle = null;
   let ownStyleText = '';
 
+  // `styles.css` は**雛形**で、そのままでは使わない。合言葉を埋めてから入れる。
+  //   `@layer RG_LOOK, RG_SCOPE;`  … レイアウト名を読み込みごとの名前へ
+  //   `[data-iiyaku-owner]`        … 値まで自分のものに限る
+  // 値まで見るので、ページが同じ class と属性を持つ要素を作っても**一致しない**。
+  // 打ち消す規則（revert）はもう要らない——与えなければ、打ち消す必要も無い。
+  // 以前は打ち消す側で、ページ自身の指定まで巻き込んでいた（第14回・第19回）。
   function ownStyleRules() {
     const mine = `[data-iiyaku-owner="${CSS.escape(UID)}"]`;
-    const sels = OWN_CLASSES.map(c => `.${c}[data-iiyaku-owner]:not(${mine})`);
-    const inner = ['iiyaku-tooltip-item', 'iiyaku-tooltip-term']
-      .map(c => `.iiyaku-tooltip[data-iiyaku-owner]:not(${mine}) .${c}`);
-    const revert = OWN_STYLE_PROPS.map(p => `${p}:revert`).join(';');
+    const body = CSS_TEXT
+      .replace(/\bRG_LOOK\b/g, MAIN_LAYER)
+      .replace(/\bRG_SCOPE\b/g, SCOPE_LAYER)
+      .replace(/\[data-iiyaku-owner\]/g, mine);
     // OFF のとき、**自分の印だけ**を隠す。目印はページと共有しない合言葉つきの属性
     // （以前は `<html>` の class を使い、ページの同名 class を消していた）。
-    const off = `${document.documentElement.tagName.toLowerCase()}[${CSS.escape(OFF_ATTR)}] ` +
-                `.${OWN_CLASSES[0]}${mine}{display:none}`;
-    return `@layer ${SCOPE_LAYER}{` +
-           `${sels.concat(inner).join(',')}{${revert}}` +
-           `${sels.map(s => `${s}::after`).join(',')}{content:none}` +
-           off + `}`;
+    const off = `@layer ${SCOPE_LAYER}{` +
+                `${document.documentElement.tagName.toLowerCase()}[${CSS.escape(OFF_ATTR)}] ` +
+                `.${OWN_CLASSES[0]}${mine}{display:none}}`;
+    return body + '\n' + off;
   }
 
   function scopeOwnStyle() {
@@ -2790,7 +3073,7 @@
       ownStyle = st;
     } catch (e) {
       // 足せなくても本体の動作は変わらない（複製は sanitizeClones が無力化する）
-      console.error('[iiyaku] 見た目の絞り込みを足せません:', e);
+      console.error('[iiyaku] 見た目を足せません:', e);
     }
   }
 

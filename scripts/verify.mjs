@@ -40,8 +40,10 @@ const MIN_CHROME = '105';
 const ALLOWED_PERMISSIONS = ['storage'];
 const ALLOWED_MATCHES = ['https://github.com/*'];
 const ALLOWED_JS = ['src/matcher.js', 'src/content.js'];
-const ALLOWED_CSS = ['styles.css'];
-const ALLOWED_WAR_RESOURCES = ['locales/dict.json'];
+// 見た目は走り出しに読み込む（第19回 RG-19-06）。静的な `content_scripts.css` には
+// 読み込みごとに変わる合言葉を書けないため、CSS はここに1つも入れない。
+const ALLOWED_CSS = undefined;
+const ALLOWED_WAR_RESOURCES = ['locales/dict.json', 'styles.css'];
 
 check('manifest: Manifest V3', manifest.manifest_version === 3, `manifest_version=${manifest.manifest_version}`);
 check('manifest: version が x.y.z', /^\d+\.\d+\.\d+$/.test(manifest.version), `version=${manifest.version}`);
@@ -111,10 +113,17 @@ for (const f of PACKAGE_FILES.filter(p => extname(p) === '.js')) {
   // 拡張の外へ出る URL が無いこと。github.com は説明用の記述にだけ出る。
   const urls = [...body.matchAll(/https?:\/\/[^\s'"`)]+/g)].map(m => m[0]);
   check(`${f} に外部の URL が埋め込まれていない`, urls.length === 0, urls.join(', '));
-  // fetch は同梱辞書の読み込み1か所だけ
+  // fetch は同梱物（辞書と見た目）の読み込みだけ。どちらも `chrome.runtime.getURL`
+  // が返す拡張の中の URL で、外へは出ない（第19回 RG-19-06 で styles.css を追加）。
   const fetches = [...body.matchAll(/\bfetch\s*\(([^)]*)/g)].map(m => m[1].trim());
-  const badFetch = fetches.filter(a => a !== 'DICT_URL');
-  check(`${f} の fetch は同梱辞書の読み込みだけ`, badFetch.length === 0, badFetch.join(' / '));
+  const badFetch = fetches.filter(a => a !== 'DICT_URL' && a !== 'CSS_URL');
+  check(`${f} の fetch は同梱物の読み込みだけ`, badFetch.length === 0, badFetch.join(' / '));
+  for (const [name, res] of [['DICT_URL', 'locales/dict.json'], ['CSS_URL', 'styles.css']]) {
+    if (!body.includes(name)) continue;
+    check(`${f} の ${name} は chrome.runtime.getURL で作っている`,
+      new RegExp(`const ${name} = chrome\\.runtime\\.getURL\\('${res.replace('.', '\\.')}'\\)`).test(body),
+      '拡張の外の URL を読みに行く経路になりうる');
+  }
 }
 
 /* ---------- 編集領域を触らない仕掛けが入っているか ---------- */
@@ -388,10 +397,17 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   check('無力化するとき、合言葉の class も外している',
     /classList\.remove\(\.\.\.OWN_CLASSES, UID\)/.test(content),
     '外し忘れると、同じ要素を毎回つかみ直す');
-  check('見た目の側で、印・吹き出し・切替ボタンの3つとも合言葉の値まで見ている',
-    /function scopeOwnStyle/.test(content) && /:not\(\$\{mine\}\)/.test(content) &&
-    /OWN_CLASSES\.map\(c => `\.\$\{c\}\[data-iiyaku-owner\]:not\(\$\{mine\}\)`\)/.test(content),
+  // 見た目は**与える側**で合言葉の値まで絞る（第19回 RG-19-06）。
+  // 以前は静的 CSS が値を見ずに与え、走り出しの規則で打ち消していた。打ち消す側は
+  // ページ自身の指定まで巻き込む事故を2度起こしている。
+  check('見た目の選択子に、合言葉の値を埋めてから入れている',
+    /function scopeOwnStyle/.test(content) &&
+    /\.replace\(\/\\\[data-iiyaku-owner\\\]\/g, mine\)/.test(content) &&
+    /const mine = `\[data-iiyaku-owner="\$\{CSS\.escape\(UID\)\}"\]`/.test(content),
     'ページ側の同名 class へ、自分の見た目が乗る');
+  check('打ち消しの一覧（revert）を持っていない',
+    !/OWN_STYLE_PROPS/.test(stripComments(content)) && !/:revert/.test(stripComments(content)),
+    '打ち消す側は、ページ自身の指定まで巻き込む');
   // 「作ったことがある」という永久の記録は持たない（持つと、退役した節点を
   // ページが戻したときにも自分のものとして扱う）
   check('「作ったことがある」という永久の記録を持っていない',
@@ -482,8 +498,13 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     /isFullyTransparentGradient/.test(code));
   // filter は最後まで見る。最初の opacity(0) で打ち切ると、後ろの opacity(0) を見落とす
   check('filter の並びを最後までたどっている',
-    /for \(const f of fns\) \{\s*\n\s*if \(FILTER_OPACITY_ZERO\.test\(f\)\) zero = true;/.test(code),
+    /for \(const f of fns\) \{\s*\n\s*if \(FILTER_OPACITY_ZERO\.test\(f\)\) state = 'hidden';/.test(code),
     '`opacity(0) url(#f) opacity(0)` を可視と答える');
+  // 解けない filter URL は、可視へ**昇格させない**（第19回 RG-19-05）
+  check('解けない filter URL を可視へ戻していない',
+    /\/\^url\\\(\/i\.test\(f\)\) state = 'unknown'/.test(code) &&
+    !/\/\^url\\\(\/\.test\(f\)\) zero = false/.test(code),
+    '透明な出力を作る SVG filter の語を可視と答える');
   // 合成の演算は解かない。足し合わせ以外は「断定できない」として後回しにする
   check('mask の合成が足し合わせ以外なら、断定しない',
     /function maskState/.test(code) && /allAdd/.test(code) && /'unknown'/.test(code),
@@ -491,6 +512,62 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   check('断定できない候補で、その語を使い切らない',
     /let acceptUnknown = false/.test(code) && /unknownNodes/.test(code),
     '前方の断定できない候補が、後ろの確実に見える語を抑止する');
+
+  /* ---------- 第19回で足した不変条件 ---------- */
+  // RG-19-01 複数語の用語は、**全部の並び**が読めるときだけ可視
+  check('語の矩形を、並びごとに分けて持っている',
+    /function rangeRuns/.test(code) && !/function rangeRects/.test(code),
+    '1つへ潰すと「どれか1つ見えれば可視」になる');
+  check('全部の並びが読めることを求めている',
+    /for \(const rects of runs\) \{[\s\S]{0,200}?const s = runState\(rects\);[\s\S]{0,120}?if \(s === false\) return false;/.test(code) &&
+    !/rects\.some\(r => inClip\(r\)/.test(code),
+    '`pull request` の `pull` だけ見えていても用語全体を可視と答える');
+  // RG-19-01 印そのものも、切り取りの中に描かれていること（実物を測る）
+  check('入れた印が描かれているかを、実物で測っている',
+    /function iconIsPainted/.test(code) && /if \(!iconIsPainted\(icon\)\) \{/.test(code) &&
+    /if \(!iconIsPainted\(rec\.icon\)\) return false;/.test(code),
+    '語は読めても、印だけが切り取りの外に出て見えない停止点になる');
+  // RG-19-02 mandatory な吸い寄せでは、止まれない位置を到達可能としない
+  check('吸い寄せのある軸を見ている',
+    /function snapAxes/.test(code) && /mandatory/.test(code) && /snapX/.test(code) && /snapY/.test(code),
+    '連続区間のどこでも止まれるとして、読めない語へ印を付ける');
+  check('吸い寄せがあるときは、いまの位置でしか断定しない',
+    /feasible\(r, doms, 'x', true\)/.test(code) && /pinSnap/.test(code) &&
+    /return \(feasible\(r, doms, 'x', false\) && feasible\(r, doms, 'y', false\)\) \? 'unknown' : false;/.test(code),
+    '止まり位置を解かないまま、到達できると断定してしまう');
+  check('スクロールが落ち着いたら、控えを見直している',
+    /const SCROLL_SIGNALS/.test(code) && /scrollend/.test(code) && /function onScrollSignal|const onScrollSignal/.test(code),
+    '吸い寄せで止まったあと、読めるようになった語が説明されない');
+  // RG-19-03 変形前へ戻せない角度では断定しない
+  check('変形前へ戻せないときは、広い形で代用していない',
+    /return null;\s*\n\s*\}\s*\n\s*\};\s*\n\s*\}/.test(code.slice(code.indexOf('backPoly'))) &&
+    !/map\(\(\[x, y\]\) => \{ const u = x - tx, v = y - ty;/.test(code),
+    'ちょうど45°などで、形の外の語まで拾う');
+  check('形の判定が三値を返せる',
+    /const p = map\.backPoly\(rect\); return p \? t\(p\) : 'unknown';/.test(code),
+    '断定できない形を、見える側にも見えない側にも倒してしまう');
+  // RG-19-04 background-size:auto の画像は自然寸法（同期では分からない＝断定しない）
+  check('background-size:auto の画像を、領域いっぱいとみなしていない',
+    /if \(!isGradientLayer\(layers\[i\]\)\) \{ unknown = true; continue; \}/.test(code) &&
+    /function isGradientLayer|const isGradientLayer/.test(code),
+    '1×1 の画像を段落いっぱいの塗りとして扱う');
+  // RG-19-05 mask-mode を層ごとに見る
+  check('mask-mode を層ごとに見ている',
+    /function maskLayerState/.test(code) && /mode !== 'luminance'/.test(code) &&
+    /cs\.maskMode/.test(code),
+    'luminance の黒（＝完全に消える）を可視として扱う');
+  check('明るさを色から出している',
+    /function luminanceOf/.test(code) && /0\.2126/.test(code) && /0\.7152/.test(code),
+    'luminance の判定ができない');
+  // RG-19-08 見え方の世代
+  check('見え方の世代を持っている',
+    /let visEpoch = 1/.test(code) && /const latentEpoch = new WeakMap\(\)/.test(code) &&
+    /if \(latentEpoch\.get\(node\) === visEpoch\) continue;/.test(code),
+    '合図のたびに控え全件を測り直す');
+  check('カーソルの合図は、ページに効く規則があるときだけ動く',
+    /function pageUsesHoverRules/.test(code) && /if \(!pageUsesHoverRules\(\)\) return;/.test(code) &&
+    /sheet\.ownerNode === ownStyle/.test(code),
+    '何も変わらないページでも、控え全件を測り直す');
   check('絶対配置が切り取りから逃げることを見ている',
     /function establishesContainingBlock/.test(code) && /function positionEscape/.test(code),
     '包含ブロックでない祖先の切り取りで、読める語を落とす');
@@ -1003,35 +1080,35 @@ check('content.js が保存キー iiyakuEnabled を変えていない', content.
   // 走り出しの規則は「画面を乗っ取る3つ」だけへ絞る（第14回 RG-14-07）。
   {
     const css = read('styles.css');
+    const cssBody = css.replace(/\/\*[\s\S]*?\*\//g, '').trim();
     check('styles.css がカスケードレイヤーに入っている',
-      /^@layer repogloss-e7b41d \{/m.test(css.replace(/\/\*[\s\S]*?\*\//g, '').trim()),
+      /^@layer RG_LOOK \{/m.test(cssBody),
       'ページ側が同じ性質を指定していても、自分の見た目が勝ってしまう');
     check('レイヤーの順序を、styles.css で先に宣言している',
-      /@layer repogloss-e7b41d, repogloss-e7b41d-scope;/.test(css),
+      /@layer RG_LOOK, RG_SCOPE;/.test(cssBody),
       '絞り込みの規則がページ側の指定より強くなってしまう');
-    check('絞り込みの規則が、後ろのレイヤーに入っている',
-      /@layer \$\{SCOPE_LAYER\}\{/.test(content),
-      'レイヤー無しで書くと、ページ自身の author style まで打ち消す');
-    // 名前は2つのファイルに分かれて書かれる。ずれると絞り込みが黙って効かなくなる。
-    check('レイヤー名が styles.css と content.js で揃っている',
-      content.includes("const SCOPE_LAYER = 'repogloss-e7b41d-scope'"),
-      'styles.css が宣言した名前と違うレイヤーへ書くと、順序が付かない');
-    // ページと共有する名前は、偶然のぶつかりを生む（第16回 RG-16-06）。
-    check('レイヤー名にページが使いそうな綴りを使っていない',
-      !/@layer\s+repogloss\s*[,{]/.test(css),
-      'ページ側の @layer repogloss と合流すると、ページ自身の規則の順序が入れ替わる');
-    // 戻す性質の一覧は、styles.css が与えるものを網羅していること
-    const want = new Set();
-    for (const m of css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-      if (!/\.iiyaku-(icon|tooltip|toggle)\[data-iiyaku-owner\]/.test(m[1])) continue;
-      for (const d of m[2].split(';')) if (d.includes(':')) want.add(d.split(':')[0].trim());
-    }
-    const listed = new Set((/const OWN_STYLE_PROPS = \[([\s\S]*?)\];/.exec(content) || [, ''])[1]
-      .split(',').map(x => x.replace(/['\s\n]/g, '')).filter(Boolean));
-    const missing = [...want].filter(x => !listed.has(x));
-    check('戻す性質の一覧が、styles.css と一致している',
-      want.size >= 10 && missing.length === 0 && [...listed].every(x => want.has(x)),
-      `styles.css にあって一覧に無い: ${missing.join(',') || 'なし'}（抜き出せた数 ${want.size}）`);
+    // ⚠️ 固定名では、ページが順序を握れる（第19回 RG-19-06。3巡持ち越しの解消）。
+    check('レイヤー名が読み込みごとに変わる',
+      /const MAIN_LAYER = UID \+ '-look'/.test(content) &&
+      /const SCOPE_LAYER = UID \+ '-scope'/.test(content),
+      'ページが同名レイヤーを先に宣言すると、ページ自身の指定が差し戻される');
+    check('レイヤー名の雛形を、合言葉つきの名前へ書き換えてから入れている',
+      /\.replace\(\/\\bRG_LOOK\\b\/g, MAIN_LAYER\)/.test(content) &&
+      /\.replace\(\/\\bRG_SCOPE\\b\/g, SCOPE_LAYER\)/.test(content),
+      '雛形のまま入れると、名前が固定になる');
+    check('styles.css に当てられる固定のレイヤー名が残っていない',
+      !/@layer\s+repogloss[\w-]*\s*[,{;]/.test(cssBody),
+      'ページ側が同名レイヤーを先に宣言できる');
+    check('styles.css を content_scripts.css として静的に入れていない',
+      !JSON.stringify(JSON.parse(read('manifest.json')).content_scripts).includes('styles.css'),
+      '静的なファイルには読み込みごとに変わる合言葉を書けない');
+    check('styles.css を web_accessible_resources から読めるようにしている',
+      JSON.parse(read('manifest.json')).web_accessible_resources
+        .some(r => (r.resources || []).includes('styles.css')),
+      '走り出しに読み込めず、印の見た目が付かない');
+    check('見た目を読めなかったら、何もしないで止まる',
+      /if \(!CSS_TEXT\.trim\(\)\)/.test(content) && /return;/.test(content),
+      '見た目の無い、見えない押せる点だけを並べることになる');
     check('走り出しの規則の中身も見て、書き換えられたら足し直す',
       /ownStyle\.textContent === ownStyleText/.test(content));
   }

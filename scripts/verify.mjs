@@ -509,9 +509,70 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   check('mask の合成が足し合わせ以外なら、断定しない',
     /function maskState/.test(code) && /allAdd/.test(code) && /'unknown'/.test(code),
     '打ち消し合って消えている語を可視と答える');
-  check('断定できない候補で、その語を使い切らない',
-    /let acceptUnknown = false/.test(code) && /unknownNodes/.test(code),
+  // ⚠️ 断定できない候補は、**印そのものを作らない**（第20回 RG-20-01）。
+  // 以前は2周目で引き受け直していたが、そこを通ると 0画素の語が辞書のキーを取り、
+  // `tabindex="0"` の見えない停止点を残していた。
+  check('断定できない候補は、印を作らずに控えへ戻す',
+    /else if \(v === 'unknown'\) deferred = true;/.test(code) &&
+    /if \(deferred\) rememberLatent\(node\);/.test(code),
     '前方の断定できない候補が、後ろの確実に見える語を抑止する');
+  check('断定できない候補を引き受け直す2周目を持っていない',
+    !/acceptUnknown/.test(code) && !/unknownNodes/.test(code),
+    '0画素の語が辞書のキーを取り、見えない押せる点になる');
+
+  /* ---------- 第20回で足した不変条件 ---------- */
+  // RG-20-02 解けない形は「制限なし」ではない
+  check('解けない clip-path を、断定できないこととして扱っている',
+    /else if \(t !== 'rect'\) tests\.push\(\(\) => 'unknown'\);/.test(code),
+    '面積0の polygon の中の語を、確実に見えるものとして扱う');
+  // ⚠️ 「外接矩形で足りる形」と混同しない。角を丸めていない `inset()` と、
+  // 参照ボックスだけの `clip-path` は矩形そのもの（ここを一緒くたにして対照12件を落とした）。
+  check('外接矩形で足りる形を、解けない形と区別している',
+    /if \(!shape \|\| !shape\.trim\(\)\) return 'rect';/.test(code) &&
+    /if \(parts\.length !== 2\) return insetRect\(parts\[0\], ref\) \? 'rect' : null;/.test(code),
+    '`inset(0)` や `clip-path: content-box` の中の読める語を落とす');
+  // RG-20-03 印の実測に、不透明度・visibility・重なりを入れる
+  check('印の実測に、不透明度と visibility を入れている',
+    /if \(cs\.visibility !== 'visible' \|\| cs\.display === 'none'\) return false;/.test(code) &&
+    /if \(parseFloat\(cs\.opacity\) === 0\) return false;/.test(code),
+    'ページ側の `opacity:0!important` で消された印が残る');
+  check('印が覆われていないかを、当たり判定で見ている',
+    /const ICON_PROBES/.test(code) && /document\.elementFromPoint\(x, y\)/.test(code) &&
+    /if \(inView > 0 && exposed === 0 && visibleNow\(b, chain\)\) return false;/.test(code) &&
+    /hit\.contains\(icon\)/.test(code) && /function visibleNow/.test(code),
+    '不透明な要素に全面を覆われた印が残る／逆に、スクロールで出せる印を覆いと誤判定する');
+  // RG-20-04 mask は一様でなければ断定しない
+  check('一様でない mask を、断定できないこととして扱っている',
+    /if \(colors\.some\(c => c !== colors\[0\]\)\) return 'unknown';/.test(code),
+    '左半分が透明な mask で、語が消えていても可視と答える');
+  // 断片の URL（`url(#id)`）は SVG の `<mask>` を指しうる。`mask-type` が luminance
+  // なら黒は 0 になるので、中身を見ないと決められない。画像の URL は今までどおり
+  // （第17回 RG-17-04 の対照＝不透明な画像の層は残る、を壊さないため）。
+  check('mask の断片 URL は断定していない',
+    code.includes(String.raw`/^\s*(-webkit-)?(image-set\()?\s*url\(\s*["']?#/.test(layer)`) &&
+    code.includes(`return mode === 'luminance' ? 'unknown' : 'shown';`),
+    'match-source の SVG mask（mask-type:luminance）を可視と答える');
+  // RG-20-05 背景は層ごとに対応付ける
+  check('背景の層を、同じ番号どうしで対応付けている',
+    /const at = \(v, i, d\) =>/.test(code) &&
+    /if \(at\(clipAll, i, 'border-box'\) !== 'text'\) continue;/.test(code),
+    '複数層のうち1層だけが文字型に抜く場合を取り違える');
+  check('明示された背景の寸法を、実寸へ解いている',
+    /bw = lenToPx\(parts\[0\], aw\);/.test(code) && !/if \(sz !== 'auto'\) return true;/.test(code),
+    '1px の背景でも「届く」と答える');
+  // RG-20-06 CSSOM の変更を見る
+  check('stylesheet の形の指紋を見ている',
+    /function styleFingerprint/.test(code) && /hoverCssPrint/.test(code),
+    'insertRule で足した hover 規則に気づけない');
+  // RG-20-07 自前 style の生きた規則を見る
+  check('自前 style の生きた規則の数も見ている',
+    /function liveRuleCount/.test(code) && /liveRuleCount\(ownStyle\) === ownStyleRuleCount/.test(code),
+    'deleteRule で規則を消されても直さない');
+  // RG-20-09 擬似クラスの状態
+  check('擬似クラスの状態を覚えて、同じ状態では測り直さない',
+    /function pseudoStateKey/.test(code) && /if \(doneStates\.has\(key\)\) return;/.test(code) &&
+    /const dropStates/.test(code),
+    'カーソルが同じ場所へ戻るたびに控え全件を測り直す');
 
   /* ---------- 第19回で足した不変条件 ---------- */
   // RG-19-01 複数語の用語は、**全部の並び**が読めるときだけ可視
@@ -707,6 +768,23 @@ check(`STORE_LISTING が今回の提出版 ${manifest.version} を指してい�
     /Chrome Web Store User Data Policy/.test(privacy) && /Limited Use/.test(privacy));
   check('PRIVACY.md に Limited Use 準拠の明言がある（英語）',
     /adhere to the Chrome Web Store User Data Policy/.test(privacy));
+  // ⚠️ manifest の `web_accessible_resources` と、PRIVACY.md の日英の記載を**機械で**
+  // 突き合わせる（第20回 RG-20-10）。`styles.css` を足したときに文書だけ古いままに
+  // なっていた。文章で気をつけるのではなく、ずれたら落ちるようにする。
+  {
+    const war = (JSON.parse(read('manifest.json')).web_accessible_resources || [])
+      .flatMap(r => r.resources || []);
+    const rows = [...privacy.matchAll(/^\|\s*(?:同梱ファイルの読み込み|Bundled file access)\s*\|([^|]*)\|/gm)]
+      .map(m => m[1]);
+    check('PRIVACY.md の同梱資源の欄が、日英の2行そろっている',
+      rows.length === 2, `見つかった行数: ${rows.length}`);
+    for (let i = 0; i < rows.length; i++) {
+      const miss = war.filter(f => !rows[i].includes(f));
+      check(`PRIVACY.md の同梱資源が manifest と一致している（${i === 0 ? '日本語' : '英語'}）`,
+        war.length > 0 && miss.length === 0,
+        `manifest にあって記載に無い: ${miss.join(', ') || 'なし'}（manifest: ${war.join(', ')}）`);
+    }
+  }
   check('PRIVACY.md が公式ポリシーへのリンクを持つ',
     privacy.includes('developer.chrome.com/docs/webstore/program-policies/limited-use'));
   // 走査は広いので、「個人情報を読み取らない」という言い切りは事実と合わない

@@ -23,6 +23,8 @@ import { launchChrome, startTestServer, stageExtension, stageExtensionWith,
          PAINT17_PAGE, REACH17_PAGE, CAPTURED17_PAGE, NAMESPACE17_PAGE,
          PAINT18_PAGE, NESTED18_PAGE, VERTICAL18_PAGE, RTLROOT18_PAGE, PAGEOWN18_PAGE,
          PHRASE19_PAGE, SNAP19_PAGE, TRANS19_PAGE, PAINT19_PAGE, LAYER19_PAGE,
+         UNKNOWN20_PAGE, ICONVIS20_PAGE, ICONCOVER20_PAGE, MASK20_PAGE, BG20_PAGE,
+         CSSOM20_PAGE, OWNSTYLE20_PAGE,
          retryStartup, startupDiagText, STARTUP_METHODS,
          openPage, sleep, waitFor,
          pressKey, collectTabOrder, tabUntil } from './helpers/chrome.mjs';
@@ -3593,4 +3595,193 @@ test('起動段階だけを試し直す（第19回 RG-19-09）', async t => {
       assert.ok(s.includes(want), `診断に ${want} が無い:\n${s}`);
     }
   });
+});
+
+/* ===== 第20回監査への対応（v1.8.19） ===== */
+
+// 本物のマウスを動かす。`:hover` は合成イベントでは発火しない（実測で確認）。
+async function moveMouse(chrome, tab, x, y) {
+  await chrome.cdp.send('Input.dispatchMouseEvent',
+    { type: 'mouseMoved', x, y, button: 'none', buttons: 0 }, tab.sessionId);
+}
+
+test('断定できない候補は、押せる印を作らない（第20回）', async t => {
+  const { tab } = await openWith(t, UNKNOWN20_PAGE);
+
+  for (const [id, why, want] of [
+    ['flt',   'RG-20-01 透明な url() filter が、後ろの可視な語より先に選ばれない', [0, 1]],
+    ['poly',  'RG-20-02 面積0の polygon の中の語を、可視として扱わない',           [0, 1]],
+    ['inset', 'RG-20-02【対照】角を丸めていない inset は落とさない',               [1, 0]],
+    ['cbox',  'RG-20-02【対照】参照ボックスだけの clip-path も落とさない',         [1, 0]]
+  ]) {
+    await t.test(why, async () => {
+      assert.deepEqual([await tab.evaluate(`document.querySelectorAll('#h-${id} [data-iiyaku-key]').length`),
+                        await tab.evaluate(`document.querySelectorAll('#l-${id} [data-iiyaku-key]').length`)],
+        want, why);
+    });
+  }
+
+  await t.test('RG-20-01 描かれていない印が、1つも残らない', async () => {
+    const bad = await tab.evaluate(`(() => {
+      const out = [];
+      for (const ic of document.querySelectorAll('[data-iiyaku-key]')) {
+        const b = ic.getBoundingClientRect();
+        if (b.width <= 0 || b.height <= 0) { out.push(['size', ic.dataset.iiyakuKey]); continue; }
+        const pts = [[b.x+b.width/2,b.y+b.height/2],[b.x+1,b.y+1],[b.right-1,b.bottom-1]];
+        const ok = pts.some(([x,y]) => { const e = document.elementFromPoint(x,y);
+          return e && (e === ic || ic.contains(e) || e.contains(ic)); });
+        if (!ok) out.push(['unpainted', ic.dataset.iiyakuKey]);
+      }
+      return out;
+    })()`);
+    assert.deepEqual(bad, [], `描かれていない印が残っている: ${JSON.stringify(bad)}`);
+  });
+
+  await tab.close();
+});
+
+test('ページ CSS が印を消したら、その印は残さない（第20回 RG-20-03）', async t => {
+  const { chrome, tab } = await openWith(t, ICONVIS20_PAGE);
+  await t.test('opacity:0 の印は、前方にも後方にも残らない', async () => {
+    // このページでは印はどこへ置いても `opacity:0` になるので、正しい答えは0件。
+    assert.equal(await tab.evaluate(`document.querySelectorAll('[data-iiyaku-key]').length`), 0,
+      '見えない押せる点を残している');
+  });
+  await t.test('Tab の順路に印が入らない', async () => {
+    const order = await collectTabOrder(chrome.cdp, tab, 5, 'before');
+    assert.ok(!order.includes('SUP'), `Tab の順路に印がある: ${JSON.stringify(order)}`);
+  });
+  await tab.close();
+});
+
+test('不透明な要素に全面を覆われた印は、後方へ譲る（第20回 RG-20-03）', async t => {
+  const srv = await startTestServer(ICONCOVER20_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await chrome.cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(chrome.cdp, PAGE);
+  await waitFor('印が付く', async () =>
+    await tab.evaluate(`document.querySelectorAll('#h-cov .iiyaku-icon').length`) > 0);
+  await sleep(1200);
+
+  const before = await tab.evaluate(`(() => { const ic = document.querySelector('#h-cov [data-iiyaku-key]');
+    const b = ic.getBoundingClientRect();
+    const d = document.createElement('div'); d.id = 'cover20';
+    d.style.cssText = 'position:fixed;background:#000;z-index:2147483647;left:' + (b.x-2) + 'px;top:' + (b.y-2)
+      + 'px;width:' + (b.width+4) + 'px;height:' + (b.height+4) + 'px';
+    document.body.appendChild(d); return true; })()`);
+  assert.ok(before);
+  await sleep(2600);
+
+  await t.test('覆われた印は退役し、後方の語へ引き継ぐ', async () => {
+    assert.deepEqual([await tab.evaluate(`document.querySelectorAll('#h-cov [data-iiyaku-key]').length`),
+                      await tab.evaluate(`document.querySelectorAll('#l-cov [data-iiyaku-key]').length`)],
+      [0, 1], '全面を覆われた印を残している');
+  });
+
+  await tab.close();
+});
+
+test('mask は語の位置で見る（第20回 RG-20-04）', async t => {
+  const { tab } = await openWith(t, MASK20_PAGE);
+  for (const [id, why, want] of [
+    ['alpha', 'RG-20-04 左55%が透明な alpha mask の中の語',        [0, 1]],
+    ['lum',   'RG-20-04 左55%が黒の luminance mask の中の語',      [0, 1]],
+    ['svg',   'RG-20-04 match-source が指す SVG の黒い mask',      [0, 1]],
+    ['uniA',  'RG-20-04【対照】一様な黒の alpha mask は残る',       [1, 0]],
+    ['uniW',  'RG-20-04【対照】一様な白の luminance mask は残る',   [1, 0]]
+  ]) {
+    await t.test(why, async () => {
+      assert.deepEqual([await tab.evaluate(`document.querySelectorAll('#h-${id} [data-iiyaku-key]').length`),
+                        await tab.evaluate(`document.querySelectorAll('#l-${id} [data-iiyaku-key]').length`)],
+        want, why);
+    });
+  }
+  await tab.close();
+});
+
+test('背景は層ごとに対応付ける（第20回 RG-20-05）', async t => {
+  const { tab } = await openWith(t, BG20_PAGE);
+  for (const [id, why, want] of [
+    ['1px',  'RG-20-05 明示 1px×1px の gradient は語へ届かない',      [0, 1]],
+    ['1pxr', 'RG-20-05 明示 1px×1px の画像も語へ届かない',            [0, 1]],
+    ['two',  'RG-20-05 1層目だけが text を描く複数背景は、可視',      [1, 0]],
+    ['full', 'RG-20-05【対照】領域いっぱいの gradient は届く',        [1, 0]]
+  ]) {
+    await t.test(why, async () => {
+      assert.deepEqual([await tab.evaluate(`document.querySelectorAll('#h-${id} [data-iiyaku-key]').length`),
+                        await tab.evaluate(`document.querySelectorAll('#l-${id} [data-iiyaku-key]').length`)],
+        want, why);
+    });
+  }
+  await tab.close();
+});
+
+test('CSSOM で足した hover 規則を拾う（第20回 RG-20-06）', async t => {
+  const srv = await startTestServer(CSSOM20_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await chrome.cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(chrome.cdp, PAGE);
+  await waitFor('走査が終わる', async () => await tab.evaluate(`document.readyState === 'complete'`));
+  await sleep(2500);
+
+  const box = await tab.evaluate(`(() => { const b = document.getElementById('host20').getBoundingClientRect();
+    return [b.x + b.width/2, b.y + b.height/2]; })()`);
+  // ⚠️ **先にカーソルを動かして「hover 規則は無い」と判定させる**。あとから
+  // 判定させると、その場で作り直されるので反例にならない（最初この順序を間違えた）。
+  await moveMouse(chrome, tab, 5, 5); await sleep(150);
+  await moveMouse(chrome, tab, 60, 5); await sleep(150);
+  await moveMouse(chrome, tab, 5, 5); await sleep(350);
+
+  await tab.evaluate(`(() => { const s = document.getElementById('s20');
+    s.sheet.insertRule('#host20:hover #menu20{display:inline}', s.sheet.cssRules.length); return true; })()`);
+  await sleep(200);
+  await moveMouse(chrome, tab, box[0], box[1]); await sleep(80);
+  await moveMouse(chrome, tab, box[0] + 1, box[1] + 1);
+  await sleep(700);
+
+  await t.test('メニューが開いている（この試験の前提）', async () => {
+    assert.equal(await tab.evaluate(`getComputedStyle(document.getElementById('menu20')).display`), 'inline');
+  });
+  await t.test('2秒ごとの確認を待たずに説明が付く', async () => {
+    assert.equal(await tab.evaluate(`document.querySelectorAll('#menu20 [data-iiyaku-key]').length`), 1,
+      'insertRule で足した hover 規則に気づいていない');
+  });
+
+  await tab.close();
+});
+
+test('自前 style の規則を消されたら直す（第20回 RG-20-07）', async t => {
+  const { chrome, tab } = await openWith(t, OWNSTYLE20_PAGE);
+
+  const tamper = await tab.evaluate(`(() => {
+    let n = 0;
+    for (const st of document.querySelectorAll('style')) {
+      if (!/-look|-scope/.test(st.textContent)) continue;
+      while (st.sheet && st.sheet.cssRules.length) { st.sheet.deleteRule(0); n++; }
+    }
+    document.body.setAttribute('data-poke20', '1');
+    return n;
+  })()`);
+  await t.test('規則を消せている（この試験の前提）', () => {
+    assert.ok(tamper > 0, `消せた規則が 0 件: ${tamper}`);
+  });
+  await sleep(1500);
+
+  await t.test('規則が入れ直され、印の見た目が戻る', async () => {
+    const got = await tab.evaluate(`(() => {
+      const st = [...document.querySelectorAll('style')].filter(s => /-look|-scope/.test(s.textContent));
+      const ic = document.querySelector('#src20 .iiyaku-icon');
+      const b = ic ? ic.getBoundingClientRect() : null;
+      return { rules: st.length && st[0].sheet ? st[0].sheet.cssRules.length : 0,
+               display: ic ? getComputedStyle(ic).display : null,
+               width: b ? Math.round(b.width) : 0 };
+    })()`);
+    assert.ok(got.rules > 0, `規則が入れ直されていない: ${JSON.stringify(got)}`);
+    assert.equal(got.display, 'inline-flex', `印の見た目が戻っていない: ${JSON.stringify(got)}`);
+    assert.ok(got.width > 0, `印の幅が0のまま: ${JSON.stringify(got)}`);
+  });
+
+  await tab.close();
 });

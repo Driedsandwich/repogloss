@@ -1678,3 +1678,135 @@ export async function clickToggle(cdp, page) {
       { type, x: r.x, y: r.y, button: 'left', clickCount: 1 }, page.sessionId);
   }
 }
+
+/* ===================== 第22回監査（v1.8.20）の反例 ===================== */
+
+/* RG-22-01。退役した印を、ページが本文の入れ物として使い回す。 */
+export const RETIRE22_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>retire22</title><style>html,body{background:#fff;color:#000;margin:0;font:16px/1.6 monospace}</style>
+</head><body>
+  <button id="before">before</button>
+  <p id="first">A branch first.</p>
+  <p id="second">A branch second.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-22-02。ページ由来の custom property が shadow の中まで継承する。
+   前方は透明な変数、後方はふつう。後から透明にする枝も置く。 */
+export const VARS22_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>vars22</title><style>html,body{background:#fff;color:#000;margin:0;font:16px/1.6 monospace}
+ #h-var{--fgColor-accent:transparent;--color-accent-fg:transparent;
+        --bgColor-default:transparent;--color-canvas-default:transparent}</style>
+</head><body>
+  <button id="before">before</button>
+  <div id="h-var"><p>A branch var.</p></div>
+  <p id="l-var">A branch var later.</p>
+  <!-- ［対照］変数をいじらない側。同じ形で、ふつうに塗れていること -->
+  <div id="h-plain"><p>A commit plain.</p></div>
+  <p id="l-plain">A commit plain later.</p>
+  <!-- あとから透明にする枝 -->
+  <div id="h-late"><p>A merge late.</p></div>
+  <p id="l-late">A merge late later.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-22-03。当たり判定に映らない覆い。落としすぎの対照つき。 */
+export const COVER22_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>cover22</title><style>html,body{background:#fff;color:#000;margin:0;font:16px/1.6 monospace}
+ #box22{width:200px;height:40px;overflow:auto;border:1px solid #ccc}
+ #box22 .pad{height:200px}</style></head><body>
+  <button id="before">before</button>
+  <div id="h-op"><p>A branch opaque.</p></div>
+  <p id="l-op">A branch opaque later.</p>
+  <!-- ［対照］透明な覆い。見えているので落としてはいけない -->
+  <div id="h-cl"><p>A commit clear.</p></div>
+  <p id="l-cl">A commit clear later.</p>
+  <!-- ［対照］部分的な覆い。残りが見えているので落としてはいけない -->
+  <div id="h-hf"><p>A merge half.</p></div>
+  <p id="l-hf">A merge half later.</p>
+  <!-- ［対照］ふつうのスクロール枠。覆いと誤認してはいけない -->
+  <div id="box22"><div class="pad"></div><p id="h-sc">A fetch scrolled.</p></div>
+  <p id="l-sc">A fetch scrolled later.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-22-04。選択子も規則の数も変えずに、宣言だけを書き換える。 */
+export const CSSOM22_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>cssom22</title><style id="s22">#menu22{display:none}</style>
+<style>html,body{background:#fff;color:#000;margin:0;font:16px/1.6 monospace}</style></head><body>
+  <button id="before">before</button>
+  <div id="menu22">A branch menu22.</div>
+  <p id="quiet22">nothing to see</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-22-05。`:target` と、同じ相手のままの `:focus-visible`。 */
+export const TARGET22_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>target22</title><style>html,body{background:#fff;color:#000;margin:0;font:16px/1.6 monospace}
+ #menu22{display:none}
+ #menu22:target{display:inline}
+ #tgt22:focus-visible ~ #fmenu22{display:inline}
+ #fmenu22{display:none}</style></head><body>
+  <button id="before">before</button>
+  <div id="menu22">A branch targeted.</div>
+  <button id="tgt22">target</button>
+  <div id="fmenu22">A commit keyboarded.</div>
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-22-06。ページから切替ボタンを押そうとする。 */
+export const TRUST22_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>trust22</title><style>html,body{background:#fff;color:#000;margin:0;font:16px/1.6 monospace}</style>
+</head><body>
+  <button id="before">before</button>
+  <p id="first">A branch first.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* 印の矩形で「白でない画素」を数える。**実際のスクリーンショットを読む**——
+   computed style だけでは、塗られているかは分からない（第22回 RG-22-02/03）。 */
+export async function iconPixels(cdp, page, sel) {
+  const r = await page.evaluate(`(() => { const i = document.querySelector(${JSON.stringify(sel)});
+    if (!i) return null; const b = i.getBoundingClientRect();
+    return { x: b.x, y: b.y, w: b.width, h: b.height }; })()`);
+  if (!r) return null;
+  return { ...await pixelsAt(cdp, page, r), rect: r };
+}
+
+/* 画面の**決まった矩形**で、白でない画素を数える。
+   ⚠️ 印が消えたあとも同じ場所を測れるようにするために分けてある——`iconPixels` は
+   印が無ければ null を返すので、「覆ったら印が退役した」場面では測れない
+   （最初これに気づかず、直った側の試験が null 参照で落ちた）。 */
+export async function pixelsAt(cdp, page, r) {
+  const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' }, page.sessionId);
+  return await page.evaluate(`(async () => {
+    const img = new Image();
+    img.src = 'data:image/png;base64,${data}';
+    await img.decode();
+    const dpr = devicePixelRatio || 1;
+    const w = Math.max(1, Math.round(${r.w} * dpr)), h = Math.max(1, Math.round(${r.h} * dpr));
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const g = c.getContext('2d');
+    g.drawImage(img, Math.round(${r.x} * dpr), Math.round(${r.y} * dpr), w, h, 0, 0, w, h);
+    const d = g.getImageData(0, 0, w, h).data;
+    let n = 0;
+    for (let i = 0; i < d.length; i += 4) if (d[i] < 250 || d[i+1] < 250 || d[i+2] < 250) n++;
+    return { nonwhite: n, total: w * h };
+  })()`);
+}
+
+/* 当たり判定に映らない覆いを置く（`pointer-events: none`）。 */
+export async function putGhostCover(page, sel, style) {
+  return await page.evaluate(`(() => {
+    const i = document.querySelector(${JSON.stringify(sel)});
+    if (!i) return 'no-icon';
+    const b = i.getBoundingClientRect();
+    const c = document.createElement('div');
+    Object.assign(c.style, { position: 'fixed', left: b.left + 'px', top: b.top + 'px',
+      width: b.width + 'px', height: b.height + 'px', zIndex: '2147483647',
+      pointerEvents: 'none', ...${JSON.stringify(style)} });
+    document.body.append(c);
+    return 'ok';
+  })()`);
+}

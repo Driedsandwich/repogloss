@@ -540,10 +540,13 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   // 祖先の `::after` が印を覆うと `elementFromPoint` はその祖先を返すので、
   // 0画素の印が合格していた（第21回 RG-21-03）。**その書き方が戻っていないこと**を
   // 検査する。スクロールで出せる印を守るのは `visibleNow` の門のほう。
+  // ⚠️ **1行まるごとで留めない。** v1.8.20 はこの `exposed++` の行を文字どおり
+  //    見ていたので、当たり判定に映らない覆いの判定を足した瞬間に落ちた（v1.8.21）。
+  //    見たいのは「露出と数える条件が、印そのものか印の子孫であること」という性質。
   check('印が覆われていないかを、当たり判定で見ている',
     /const ICON_PROBES/.test(code) && /document\.elementFromPoint\(x, y\)/.test(code) &&
     /if \(inView > 0 && exposed === 0 && visibleNow\(b, chain\)\) return false;/.test(code) &&
-    /if \(hit && \(hit === icon \|\| icon\.contains\(hit\)\)\) exposed\+\+;/.test(code) &&
+    /hit === icon \|\| icon\.contains\(hit\)[\s\S]{0,80}exposed\+\+;/.test(code) &&
     /function visibleNow/.test(code),
     '不透明な要素に全面を覆われた印が残る／逆に、スクロールで出せる印を覆いと誤判定する');
   check('祖先が最前面に出ることを、露出の証拠にしていない（第21回 RG-21-03）',
@@ -695,6 +698,25 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     /const target = focusTargetOf\(icon\);/.test(code) &&
     /TRANSPARENT\.test\(ts\.color\) && TRANSPARENT\.test\(ts\.borderTopColor\) &&/.test(code),
     'host だけ見ても、shadow の中が 0 画素かは分からない');
+  // RG-22-03 当たり判定に映らない覆い
+  check('当たり判定に映らない覆いも見ている（第22回 RG-22-03）',
+    /function ghostCovers/.test(code) && /function ghostBlocks/.test(code) &&
+    /&& !ghostBlocks\(icon, x, y\)\) exposed\+\+;/.test(code),
+    '`pointer-events: none` の不透明な覆いで 0 画素になった印が、正規のまま残る');
+  check('覆いは、断定できるものだけ数えている（第22回 RG-22-03）',
+    /if \(TRANSPARENT\.test\(cs\.backgroundColor\)\) continue;/.test(code) &&
+    /if \(cs\.position === 'static'\) continue;/.test(code) &&
+    /if \(!opaqueChain\(el\)\) continue;/.test(code),
+    '透明な覆い・重なり順の分からない箱まで覆いと数え、読める語が説明されなくなる');
+  check('覆いを、点ごとに見ている（第22回 RG-22-03）',
+    /for \(const \[fx, fy\] of ICON_PROBES\)[\s\S]{0,600}ghostBlocks\(icon, x, y\)/.test(code),
+    '部分的な覆いを「全面が覆われている」と誤判定する');
+  check('覆いの候補を、宣言のある規則から引いている（第22回 RG-22-03）',
+    /function ghostSelectorList/.test(code) &&
+    /getPropertyValue\('pointer-events'\) === 'none'/.test(code) &&
+    /if \(ghostSelWalk\) pool = \[\.\.\.document\.querySelectorAll\('\*'\)\];/.test(code),
+    '毎回すべての要素を歩くと、10,000要素で 6〜13ms 掛かる');
+
 
   /* ---------- 第19回で足した不変条件 ---------- */
   // RG-19-01 複数語の用語は、**全部の並び**が読めるときだけ可視

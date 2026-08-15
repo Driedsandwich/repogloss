@@ -1393,6 +1393,131 @@
   // ⑥**実際の当たり判定**（自分か自分の子孫が最前面に出る点があるか）。
   const ICON_PROBES = [[0.5, 0.5], [0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]];
 
+  /* ---------- 当たり判定に映らない覆い（第22回 RG-22-03） ---------- */
+  //
+  // `pointer-events: none` の箱は hit testing から外れる。だから `elementFromPoint`
+  // はその**下**にあるものを返し、印は「最前面」に見える。実測（実際に読み込んだ
+  // 拡張・スクリーンショットの画素を数えた）: 印の上へ不透明な白い箱を
+  // `position:fixed; z-index:2147483647; pointer-events:none` で置くと、印の矩形の
+  // 白でない画素は **129 → 0**。それでも5点すべてが印を返し、印は Tab の停止点として
+  // 残り、後方の読める同じ語は説明されないままだった。
+  //
+  // ⚠️ **IntersectionObserver v2（`trackVisibility`）は使えない。** 遮蔽まで見てくれる
+  //    API だが、実測では**覆いが無くても**この印を `isVisible: false` と答えた
+  //    （同じ実行で、ふつうの `<div>` と `<button>` は true。つまり環境の問題ではなく、
+  //    この印が対象外と判定されている）。覆いの有無で答えが変わらないので、
+  //    判別には使えない。
+  //
+  // ⚠️ **全要素を歩いて集める形も採らなかった。** 実測で 10,000要素あたり 6〜13ms。
+  //    代わりに、`pointer-events: none` を**宣言している規則の選択子**と、
+  //    `style` 属性にそう書いてある要素から候補を引く。宣言が1つも無ければ走査は
+  //    起きない（ふつうのページはここで終わる）。読めない stylesheet が1枚でもあれば
+  //    見落とすので、そのときだけ全要素を歩くほうへ落とす。
+  //
+  // ⚠️ **断定できるものだけを覆いと数える。** 地の色が不透明で、透けておらず、
+  //    位置指定があり、重なり順で印より前に来るもの。画像や gradient で塗られた箱、
+  //    重なり順を推し量れない箱は「覆いではない」側へ倒す（落としすぎると、
+  //    ふつうのページの語が説明されなくなる）。→ 残る限界は AUDIT.md §7。
+  const PE_NONE_INLINE = /(^|[;\s])pointer-events\s*:\s*none/i;
+  let ghostSelSerial = -1, ghostSelPrint = -1, ghostSelectors = null, ghostSelWalk = false;
+
+  function ghostSelectorList() {
+    const print = styleFingerprint();
+    if (ghostSelectors !== null && ghostSelSerial === styleSerial && ghostSelPrint === print) {
+      return ghostSelectors;
+    }
+    ghostSelSerial = styleSerial; ghostSelPrint = print;
+    const sels = [];
+    let walk = false, seen = 0;
+    for (const sheet of document.styleSheets) {
+      let rules;
+      try { rules = sheet.cssRules; } catch (e) { walk = true; continue; }   // 読めない
+      if (!rules) continue;
+      const stack = [rules];
+      while (stack.length) {
+        for (const r of stack.pop()) {
+          if (++seen > RULE_SCAN_MAX) { walk = true; stack.length = 0; break; }
+          if (r.selectorText && r.style && r.style.getPropertyValue('pointer-events') === 'none') {
+            sels.push(r.selectorText);
+          }
+          if (r.cssRules) stack.push(r.cssRules);
+        }
+      }
+    }
+    ghostSelWalk = walk;
+    ghostSelectors = sels;
+    return sels;
+  }
+
+  // 祖先まで含めて、その箱が透けていないか
+  function opaqueChain(el) {
+    for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
+      const cs = getComputedStyle(n);
+      if (cs.visibility !== 'visible' || cs.display === 'none') return false;
+      if (parseFloat(cs.opacity) !== 1) return false;
+    }
+    return true;
+  }
+
+  const GHOST_GAP = 120;
+  let ghostAt = -1, ghostList = null;
+
+  function ghostCovers() {
+    const now = performance.now();
+    if (ghostList !== null && now - ghostAt < GHOST_GAP) return ghostList;
+    const out = [];
+    const sels = ghostSelectorList();
+    let pool = [];
+    if (ghostSelWalk) pool = [...document.querySelectorAll('*')];
+    else {
+      if (sels.length) {
+        // 選択子はページの持ち物。1つでも読めない形が混じると全部が落ちるので、
+        // まとめて渡さず、落ちたぶんだけ捨てる。
+        for (const s of sels) {
+          try { pool.push(...document.querySelectorAll(s)); } catch (e) { /* 読めない選択子 */ }
+        }
+      }
+      for (const el of document.querySelectorAll('[style]')) {
+        if (PE_NONE_INLINE.test(el.getAttribute('style') || '')) pool.push(el);
+      }
+      // `pointer-events` は継承する。当たった要素の中も候補に入れる。
+      const inner = [];
+      for (const el of pool) if (el.firstElementChild) inner.push(...el.querySelectorAll('*'));
+      pool.push(...inner);
+    }
+    const seen = new Set();
+    for (const el of pool) {
+      if (seen.has(el)) continue;
+      seen.add(el);
+      if (isOurNode(el) || ownedIcons.has(el)) continue;      // 自分の持ち物は覆いに数えない
+      const cs = getComputedStyle(el);
+      if (cs.pointerEvents !== 'none') continue;
+      if (cs.position === 'static') continue;                 // 重なり順を推し量れない
+      if (TRANSPARENT.test(cs.backgroundColor)) continue;     // 地が透明＝断定しない
+      const z = cs.zIndex === 'auto' ? 0 : (parseInt(cs.zIndex, 10) || 0);
+      if (z < 0) continue;                                    // 後ろに敷いてある
+      const r = el.getBoundingClientRect();
+      if (!(r.width > 0 && r.height > 0)) continue;
+      if (!opaqueChain(el)) continue;
+      out.push({ el, r, z });
+    }
+    ghostAt = now; ghostList = out;
+    return out;
+  }
+
+  // その点が、当たり判定に映らない覆いで塞がれているか
+  function ghostBlocks(icon, x, y) {
+    const list = ghostCovers();
+    for (const g of list) {
+      if (x < g.r.left || x >= g.r.right || y < g.r.top || y >= g.r.bottom) continue;
+      if (g.el === icon || g.el.contains(icon) || icon.contains(g.el)) continue;
+      if (g.z > 0) return true;
+      // 重なり順の指定が無いときは、**後から来たほうが上**に描かれる
+      if (icon.compareDocumentPosition(g.el) & Node.DOCUMENT_POSITION_FOLLOWING) return true;
+    }
+    return false;
+  }
+
   function iconIsPainted(icon) {
     const chain = paintChain(icon, 'none');
     if (chain.hidden) return false;
@@ -1442,9 +1567,8 @@
     //   同じもので、この判定に足すものが無かった。実測の重なりは
     //   `[first(::after), 印, first, BODY, HTML]` で、先頭を見れば足りる。）
     //
-    // ⚠️ **`pointer-events: none` の覆いは、当たり判定では見えない**（既知の限界）。
-    // 印自身が `pointer-events: none` にされた場合も、当たり判定では何も言えない。
-    // どちらも「覆いを判定しない」側へ倒す（→ AUDIT.md §7）。
+    // ⚠️ **印自身が `pointer-events: none` にされたら、当たり判定では何も言えない**
+    // （残る限界）。そのときは覆いを判定しない側へ倒す（→ AUDIT.md §7）。
     if (cs.pointerEvents === 'none') return true;
     let inView = 0, exposed = 0;
     for (const [fx, fy] of ICON_PROBES) {
@@ -1452,8 +1576,12 @@
       if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) continue;
       inView++;
       // 最前面が印そのものか、印の子孫のときだけ「その点で見えている」と数える。
+      // ⚠️ **当たり判定に映らない覆いも見る**（第22回 RG-22-03。→ ghostBlocks）。
+      // `pointer-events: none` の箱は hit testing から外れるので、`elementFromPoint`
+      // は印を返し続ける。点ごとに見るので、**部分的な覆いでは残りの点が露出と数えられ**、
+      // 「全面が覆われている」とは判定されない。
       const hit = document.elementFromPoint(x, y);
-      if (hit && (hit === icon || icon.contains(hit))) exposed++;
+      if (hit && (hit === icon || icon.contains(hit)) && !ghostBlocks(icon, x, y)) exposed++;
     }
     if (inView > 0 && exposed === 0 && visibleNow(b, chain)) return false;   // 全面が覆われている
     return true;

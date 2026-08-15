@@ -12,7 +12,7 @@ RepoGloss は、GitHub の画面に出てくる英語のうち Git / GitHub 固�
 
 | 項目 | 値 |
 |---|---|
-| **監査対象** | **`v1.8.20`（未コミット）** |
+| **監査対象** | **`v1.8.20` = コミット `e9be0713df082c84692bd0e700925f3fef6c25c7`**（タグ済み・提出前） |
 | 直前の版 | `v1.8.19` = コミット `d76a6cdb68d5ab5e0fac5895934010f66e585295`（**第21回監査の指摘により提出しない**） |
 | 基点コミット | `d76a6cdb68d5ab5e0fac5895934010f66e585295`（ここからの差分が今回の変更） |
 | 現在の既定ブランチ | `main` |
@@ -28,7 +28,8 @@ RepoGloss は、GitHub の画面に出てくる英語のうち Git / GitHub 固�
 差分は次のコマンドで確認できます。
 
 ```sh
-git diff --name-only v1.8.19             # 直前の版との差分（作業ツリー）
+git checkout v1.8.20                     # 監査対象を手元に出す
+git diff --name-only v1.8.19 v1.8.20     # 直前の版との差分
 # CHANGED:   manifest.json src/content.js styles.css README.md DESIGN.md
 # UNCHANGED: src/matcher.js locales/dict.json PRIVACY.md LICENSE icons/icon16.png icons/icon32.png icons/icon48.png icons/icon128.png
 # → ほかに scripts/ と tests/ と docs/（配布物には入らない）
@@ -38,7 +39,7 @@ git diff --name-only v1.8.19             # 直前の版との差分（作業ツ�
 > ファイルがあれば落とします**（第21回 RG-21-08。実測: v1.8.19 の同じ説明が `styles.css` を
 > 「変わっている」と「無変更」の両方に挙げていた——版を上げるときに片方だけ直したため）。
 
-**この版はまだ commit していません。** commit / push / タグ / Release / ウェブストア操作は、いずれも未実施です。
+**タグ `v1.8.20` を打ち、CI が提出候補 ZIP を作るところまで済んでいます。ストアへは未提出です。**
 
 > **監査対象と `main` の関係について（第11回 RG-11-06 の是正）。** 前回まで、監査対象を「`main` の先頭」と**相対的に**書いていました。提出候補の SHA を記録するコミットを1つ積んだ時点で、その記述は事実でなくなります（実際にそうなりました）。いまは対象をタグとコミットだけで名乗り、**現在の `main` の SHA はここに書きません**——書けば、その値もまた次のコミットで古くなるためです。両者の関係は文章ではなく検査で担保します。`state` が `uncommitted` でないとき、`verify` が「ここが名乗るタグと、いまの配布13ファイルが同じか」を `git diff` で突き合わせ、タグを引けない環境では**通しません**。
 
@@ -50,16 +51,16 @@ git diff --name-only v1.8.19             # 直前の版との差分（作業ツ�
 
 ```yaml
 version:            1.8.20
-state:              uncommitted        # commit / push / tag / Release / ストア提出はいずれも未実施
+state:              tagged             # commit / push / tag / CI 済み。Release とストア提出は未実施
 base_commit:        d76a6cdb68d5ab5e0fac5895934010f66e585295
-commit:             null
-tag:                null
-candidate_zip:      null
-candidate_bytes:    null
-candidate_sha256:   null
-content_sha256:     null
-combined_sha256:    null
-workflow_run:       null
+commit:             e9be0713df082c84692bd0e700925f3fef6c25c7
+tag:                v1.8.20
+candidate_zip:      repogloss-1.8.20.zip
+candidate_bytes:    159481
+candidate_sha256:   cc024072ac641c990684edbcdc040d941e6d71e89d47ef71f74a23bcdff54b9d
+content_sha256:     2fec9c63f4690bb096f7d2c5995c1cfa4b60a25dc67ff8f4751870e764bd6c40
+combined_sha256:    32a66c1c705ef9c42ffa898287f8c22c518228889fbd6558c7b28fd40d1a98d7
+workflow_run:       31879198285
 superseded:
   - version: 1.8.19
     tag: v1.8.19
@@ -148,13 +149,13 @@ superseded:
 store_published:    1.7.1
 ```
 
-取り下げた版のタグと ZIP は、すべて保存したまま動かしていません（既存24タグは今回も1つも動かしていません）。**直前の `v1.8.19`（`19b5ed38…`）は、第21回監査の指摘により提出しません。**
+取り下げた版のタグと ZIP は、すべて保存したまま動かしていません（`v1.8.20` を打った前後で、既存24タグ＝48 ref が1文字も動いていないことを `refs/tags` 一覧の突き合わせで確認済み。1件の改変なら検出できることも、同じ実行で対照として示しています）。**直前の `v1.8.19`（`19b5ed38…`）は、第21回監査の指摘により提出しません。**
 
-**この版には提出候補がまだありません。** 提出候補は `main` の CI が作るもので、手元で作ったものは `--release` 検査で落ちます（実測: `EXIT=1`）。
+**提出候補は、タグの中身と1バイトも違いません。** CI の run `31879198285` の `release-zip` が出した成果物を落として展開し、13ファイルを `git show v1.8.20:<path>` と突き合わせて **13/13 一致**（対照の `v1.8.19` とは5ファイルで相違）。`--release` 検査にも合格しています（実測: `EXIT=0`）。
 
-**ZIP は誰でも再現できます。** 日時を 1980-01-01 に固定し、並び順を配布一覧の順に固定してあるため、同じ内容からは1バイト違わない同じものができます。
+**ZIP は誰でも再現できます。** 日時を 1980-01-01 に固定し、並び順を配布一覧の順に固定してあるため、同じ内容からは1バイト違わない同じものができます。配布13ファイルの合算ハッシュは **ubuntu / macos / windows / 手元 macOS の4者で完全に一致**しています（`32a66c1c…`）。
 
-> **⚠️ ZIP のハッシュだけでは、CI の成果物と手元ビルドを区別できません。** ビルドが決定的なので、同じ内容からは同じ ZIP ができます（前巡の実測: **バイト単位で同一**）。区別が付くのは sidecar の `builtInCI` / `workflowRunId` だけで、`--release` 検査が落とすのもそこです。
+> **⚠️ ZIP のハッシュだけでは、CI の成果物と手元ビルドを区別できません。** ビルドが決定的なので、同じ内容からは同じ ZIP ができます（今巡も実測: 手元ビルドと CI の成果物は**バイト単位で同一**の `cc024072…`）。区別が付くのは **sidecar だけ**です——検査したのは `builtInCI: true` / `workflowRunId: 31879198285` を持つほうです。手元ビルドの sidecar を正本に据えると、同じ ZIP でも `--release` 検査は落ちます（実測: `EXIT=1`・「提出候補は CI で作ったものに限る（builtInCI が true でない）」）。
 
 ```sh
 npm run package:zip -- --allow-uncommitted   # commit 前に試す場合。名前に UNCOMMITTED が入る
@@ -211,16 +212,16 @@ npm run package:verify-zip                   # 中身と身元の記録を検査
 
 ### 4-1. 手元（macOS 26 / Google Chrome 151.0.7922.76 / Node.js v22.22.3・2026-08-15）
 
-下は手元での実行結果です。**この版はまだ CI に掛けていません**（未コミットのため）。
+下は手元での実行結果です（CI の結果は §4-2）。
 
 | command | exit | 結果 |
 |---|---:|---|
 | `node --check src/matcher.js` / `src/content.js` | 0 | 構文 OK |
-| `npm test` | 0 | 単体 **63件**全成功 / 構成検査 **358項目**・不一致0（辞書61語・version 1.8.20） |
+| `npm test` | 0 | 単体 **63件**全成功 / 構成検査 **361項目**・不一致0（辞書61語・version 1.8.20） |
 | `npm run test:e2e` | 0 | **383件**全成功（v1.8.19 は 353件。**+30件**） |
 | `npm run package:stage` / `:verify` | 0 | 13ファイル一致 |
-| `npm run package:zip -- --allow-uncommitted` / `:verify-zip` | 0 | 13ファイル（名前に `UNCOMMITTED` が入る。**提出候補ではない**） |
-| `npm run package:verify-zip -- --release` | **1** | **意図どおり落ちる**（手元ビルドは提出候補として通さない） |
+| `npm run package:verify-zip -- --release`（CI の成果物） | 0 | 13ファイル / 159,481 バイト（`cc024072…`） |
+| `npm run package:verify-zip -- --release`（手元ビルドの sidecar） | **1** | **意図どおり落ちる**（`builtInCI` が true でない） |
 
 **8件すべて、直す前に v1.8.19 の実物で再現しました。**
 
@@ -255,9 +256,20 @@ npm run package:verify-zip                   # 中身と身元の記録を検査
 
 ⚠️ **最初、絞りが効きすぎた数字（−67%）を出しました。** 上記②の取り違えで控えが1件も評価されていなかったためです。**同じ見本で v1.8.19 を測る対照**を並べて気づきました。
 
-### 4-2. CI
+### 4-2. CI（`main` の run [`31879198285`](https://github.com/Driedsandwich/repogloss/actions/runs/31879198285)・2026-08-15）
 
-**この版はまだ CI に掛けていません**（未コミットのため）。直前の `v1.8.19` は `main` の run [`31866299353`](https://github.com/Driedsandwich/repogloss/actions/runs/31866299353) で8ジョブすべて success でした（`verify` 334項目・`e2e` と `e2e-windows` が各353件・3 OS の合算 `401133a5…` 一致）。**その版は第21回監査の指摘により提出しません。**
+**8ジョブすべて success。** マージコミット `e9be0713…`（＝タグ `v1.8.20` が指すもの）に対する実行です。
+
+| ジョブ | 結果 |
+|---|---|
+| `verify` | 構成検査 **358項目**・不一致0（当時は `state: uncommitted`） |
+| `e2e`（ubuntu） / `e2e-windows` | どちらも **383件**全成功 |
+| `package-hash` 3 OS / `hash-compare` | 合算が `32a66c1c…` で3 OS 一致（`OK: 3 OS すべてで同じ`） |
+| `release-zip` | 提出候補 ZIP（`cc024072…`）を生成 |
+
+PR #30 の CI（run `31878308222`）も同じジョブが success でした（`release-zip` は skip）。
+
+> ⚠️ **手元で見た揺らぎは、CI では出ていません。** 手元では全体4回のうち1回だけ、時間に敏感な2件が落ちました（単独で5回回すと 5/5 通過）。CI は ubuntu・windows とも失敗0です。
 
 ---
 
@@ -370,7 +382,7 @@ npm run package:verify-zip                   # 中身と身元の記録を検査
 | 配布物の検査（壊した ZIP を9種ぶつける） | [`tests/package.test.js`](tests/package.test.js) |
 | 提出物の身元の schema と、その検査（28件） | [`scripts/provenance.mjs`](scripts/provenance.mjs) / [`tests/provenance.test.js`](tests/provenance.test.js) |
 | 配布物の一覧（唯一の正本） | [`scripts/package-files.mjs`](scripts/package-files.mjs) |
-| 構成と文書の整合検査（358項目） | [`scripts/verify.mjs`](scripts/verify.mjs) |
+| 構成と文書の整合検査（361項目） | [`scripts/verify.mjs`](scripts/verify.mjs) |
 | ZIP の読み書き（自作） | [`scripts/zip.mjs`](scripts/zip.mjs) |
 | ZIP の検査 | [`scripts/verify-zip.mjs`](scripts/verify-zip.mjs) |
 | CI | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |

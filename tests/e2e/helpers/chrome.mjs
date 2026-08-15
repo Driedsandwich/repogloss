@@ -784,12 +784,18 @@ const KEYS = {
   Space: { key: ' ', code: 'Space', vk: 32 }
 };
 
-export async function pressKey(cdp, sessionId, name, { shift = false } = {}) {
+export async function pressKey(cdp, sessionId, name, { shift = false, activate = false } = {}) {
   const k = KEYS[name];
   if (!k) throw new Error(`未対応のキー: ${name}`);
   const base = { key: k.key, code: k.code, windowsVirtualKeyCode: k.vk, nativeVirtualKeyCode: k.vk,
                  modifiers: shift ? 8 : 0 };
-  await cdp.send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...base }, sessionId);
+  // ⚠️ `rawKeyDown` では **<button> の既定の活性化が起きない**（実測: 切替ボタンへ
+  //    Enter を送っても切り替わらなかった）。ブラウザに「文字が入った」まで伝える
+  //    `keyDown` + `text` を送ると、本物のキーボード操作と同じ経路になる。
+  //    既定はこれまでどおり `rawKeyDown`（移動キーはこちらで足りる）。
+  const text = activate ? (name === 'Enter' ? '\r' : name === 'Space' ? ' ' : k.key) : null;
+  await cdp.send('Input.dispatchKeyEvent',
+    activate ? { type: 'keyDown', text, ...base } : { type: 'rawKeyDown', ...base }, sessionId);
   await cdp.send('Input.dispatchKeyEvent', { type: 'keyUp', ...base }, sessionId);
 }
 
@@ -1658,3 +1664,17 @@ export const SHADOW21_PAGE = `<!doctype html><html lang="en"><head><meta charset
   <div id="sink"></div>
   <button id="after">after</button>
 </body></html>`;
+
+/* 切替ボタンを**本物のマウス操作**で押す（第22回 RG-22-06）。
+   ページの世界からの `.click()` は `isTrusted` が偽なので、もう設定を変えない。
+   ここを合成イベントのままにすると、検査のほうが「押せない」ことを確かめてしまう。 */
+export async function clickToggle(cdp, page) {
+  const r = await page.evaluate(`(() => { const b = document.querySelector('.iiyaku-toggle');
+    if (!b) return null; const q = b.getBoundingClientRect();
+    return { x: q.x + q.width / 2, y: q.y + q.height / 2 }; })()`);
+  if (!r) throw new Error('切替ボタンが見つからない');
+  for (const type of ['mousePressed', 'mouseReleased']) {
+    await cdp.send('Input.dispatchMouseEvent',
+      { type, x: r.x, y: r.y, button: 'left', clickCount: 1 }, page.sessionId);
+  }
+}

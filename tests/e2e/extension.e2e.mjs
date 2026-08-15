@@ -29,7 +29,7 @@ import { launchChrome, startTestServer, stageExtension, stageExtensionWith,
          retryStartup, startupDiagText, STARTUP_METHODS,
          openPage, sleep, waitFor,
          pressKey, collectTabOrder, tabUntil,
-         HOST_SEL, hostInfo, glossButtons, shadowShape, countTabStops } from './helpers/chrome.mjs';
+         HOST_SEL, hostInfo, glossButtons, shadowShape, countTabStops, clickToggle } from './helpers/chrome.mjs';
 
 const PAGE = 'https://github.com/octocat/Hello-World';
 
@@ -548,7 +548,7 @@ test('拡張として読み込んだ状態で動く', async t => {
 
   await t.test('OFF にしてもページを読み直さず、書きかけの入力が残る', async () => {
     await tab.evaluate(`globalThis.__alive = 'このページのまま'; document.querySelector('#draft').value = '消えないで'; true`);
-    await tab.evaluate(`document.querySelector('.iiyaku-toggle').click(); true`);
+    await clickToggle(cdp, tab);
     await sleep(300);
     assert.equal(await tab.evaluate(`globalThis.__alive ?? null`), 'このページのまま');
     assert.equal(await tab.evaluate(`document.querySelector('#draft').value`), '消えないで');
@@ -565,7 +565,7 @@ test('拡張として読み込んだ状態で動く', async t => {
     await waitFor('2枚目が OFF で開く', async () =>
       await other.evaluate(
         `[...document.documentElement.attributes].some(a => /^data-iiyaku-\\w+-off$/.test(a.name))`));
-    await other.evaluate(`document.querySelector('.iiyaku-toggle').click(); true`);
+    await clickToggle(cdp, other);
     await waitFor('1枚目へ伝わる', async () =>
       await tab.evaluate(
         `[...document.documentElement.attributes].every(a => !/^data-iiyaku-\\w+-off$/.test(a.name))`));
@@ -574,11 +574,11 @@ test('拡張として読み込んだ状態で動く', async t => {
   });
 
   await t.test('ON に戻すと、OFF 中に増えた文章にも印が付く', async () => {
-    await tab.evaluate(`document.querySelector('.iiyaku-toggle').click(); true`);   // OFF
+    await clickToggle(cdp, tab);   // OFF
     await sleep(200);
     await tab.evaluate(`(() => { const p = document.createElement('p'); p.id = 'later';
       p.textContent = 'A squash merge keeps history tidy.'; document.body.appendChild(p); })(); true`);
-    await tab.evaluate(`document.querySelector('.iiyaku-toggle').click(); true`);   // ON
+    await clickToggle(cdp, tab);   // ON
     await waitFor('後から足した文章に印が付く', async () =>
       await tab.evaluate(`document.querySelectorAll('#later .iiyaku-icon').length === 1`));
   });
@@ -2021,13 +2021,13 @@ test('所有していないものへ手を出さず、自分の変更だけを�
 
   await t.test('RG-10-04 OFF のあいだに複製しても、ON へ戻したら印は1つ', async () => {
     assert.equal(await nKey('branch'), 1, '前提が崩れている');
-    await tab.evaluate(`document.querySelector('.iiyaku-toggle').click(); true`);
+    await clickToggle(cdp, tab);
     await sleep(400);
     await tab.evaluate(`(() => { const c = document.getElementById('orig').cloneNode(true);
       c.id = 'off-clone'; document.getElementById('sink').append(c); })(); true`);
     await sleep(300);
     assert.equal(await nIn('#off-clone'), 1, 'この試験の前提（複製に印が写る）が崩れている');
-    await tab.evaluate(`document.querySelector('.iiyaku-toggle').click(); true`);
+    await clickToggle(cdp, tab);
     await waitFor('複製の印が消える', async () => await nIn('#off-clone') === 0);
     assert.equal(await nKey('branch'), 1, 'ON へ戻したら印が増えている');
     assert.equal(await tab.evaluate(`document.getElementById('off-clone').textContent`),
@@ -3219,7 +3219,7 @@ test('ページの持ち物に触れない（第17回）', async t => {
   });
 
   await t.test('RG-17-05【対照】自分の OFF は自分の合言葉で書く', async () => {
-    await tab.evaluate(`document.querySelector('.iiyaku-toggle').click(); true`);
+    await clickToggle(cdp, tab);
     await sleep(400);
     const own = await tab.evaluate(
       `[...document.documentElement.attributes].filter(a => /^data-iiyaku-\\w+-off$/.test(a.name)).map(a => a.name)`);
@@ -3227,7 +3227,7 @@ test('ページの持ち物に触れない（第17回）', async t => {
     assert.notEqual(own[0], 'data-iiyaku-off', '固定名を使っている');
     assert.equal(await tab.evaluate(
       `getComputedStyle(document.querySelector('#src .iiyaku-icon')).display`), 'none');
-    await tab.evaluate(`document.querySelector('.iiyaku-toggle').click(); true`);
+    await clickToggle(cdp, tab);
     await sleep(400);
     assert.equal(await tab.evaluate(`document.documentElement.getAttribute('data-iiyaku-off')`), 'page',
       'ON へ戻すとき、ページの値を消している');

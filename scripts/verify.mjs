@@ -736,6 +736,15 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     /\+ '\|' \+ focusVisibleNow\(\)/.test(code),
     '同じ相手にフォーカスしたまま `:focus-visible` が付いても、測り直されない');
 
+  // RG-22-06 恒久の設定を変えるのは、利用者が押したときだけ
+  check('合成された click では設定を変えない（第22回 RG-22-06）',
+    /btn\.addEventListener\('click', async event => \{/.test(code) &&
+    /if \(!event\.isTrusted\) return;/.test(code),
+    'ページ側の script が `.click()` するだけで、恒久の ON/OFF を書き換えられる');
+  check('`isTrusted` の門を、受け身の合図へ広げていない（第22回 RG-22-06）',
+    // 出てくるのは切替ボタンの1か所だけ
+    (code.match(/isTrusted/g) || []).length === 1,
+    '合成された変化でも「見えるようになった」ことは本当に起きているので、測り直しは止めない');
 
   /* ---------- 第19回で足した不変条件 ---------- */
   // RG-19-01 複数語の用語は、**全部の並び**が読めるときだけ可視

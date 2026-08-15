@@ -3758,7 +3758,18 @@
     btn.type = 'button';
     toggleBtn = btn;
     updateToggle();
-    btn.addEventListener('click', async () => {
+    btn.addEventListener('click', async event => {
+      // ⚠️ **恒久の設定を変えるのは、利用者が押したときだけ**（第22回 RG-22-06）。
+      // この切替ボタンは light DOM に居るのでページから参照でき、`.click()` や
+      // `dispatchEvent(new MouseEvent('click'))` で押せてしまう。実測: ページ側の
+      // script から `.click()` を1回呼ぶだけで表示が「解説 OFF」に変わり、
+      // **別のタブを開いてもそのまま OFF だった**（＝保存まで届いていた）。
+      // ブラウザが起こした操作だけ `isTrusted` が真になる。実際のマウス操作・
+      // Enter / Space・支援技術による activation はどれも真なので、そのまま通る。
+      // ⚠️ この門は**設定を変える経路だけ**に掛ける。見え方を測り直すための
+      // 受け身の合図（カーソル・フォーカス・スクロール）へ広げてはいけない。
+      // 合成された変化でも「見えるようになった」ことは本当に起きているため。
+      if (!event.isTrusted) return;
       const prev = enabled;
       applyEnabled(!prev);   // 先に表示を変える。ページの再読み込みはしない
       try {

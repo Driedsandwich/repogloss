@@ -725,6 +725,17 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   check('その見直しは、使いすぎの門を通している（第22回 RG-22-04）',
     /latent\.size > 0 && !overBudget\(\)/.test(code),
     '重いページで、短い周期の見直しが CPU を食い続ける');
+  check('画面内の移動も合図にしている（第22回 RG-22-05）',
+    /const NAV_SIGNALS = \[/.test(code) &&
+    ['hashchange', 'popstate'].every(t =>
+      (/const NAV_SIGNALS = \[([\s\S]*?)\];/.exec(code) || [, ''])[1].includes(`'${t}'`)) &&
+    /window\.addEventListener\(t, onNavState\)/.test(code),
+    '`:target` で開いたメニューが、2秒ごとの確認まで説明されない');
+  check('入力のやり方の変化も合図にしている（第22回 RG-22-05）',
+    subscribes22('keydown') && /function focusVisibleNow/.test(code) &&
+    /\+ '\|' \+ focusVisibleNow\(\)/.test(code),
+    '同じ相手にフォーカスしたまま `:focus-visible` が付いても、測り直されない');
+
 
   /* ---------- 第19回で足した不変条件 ---------- */
   // RG-19-01 複数語の用語は、**全部の並び**が読めるときだけ可視
@@ -1310,12 +1321,16 @@ check('content.js が保存キー iiyakuEnabled を変えていない', content.
     /if \(mu\.target !== document\.documentElement\) roots\.push\(mu\.target\)/.test(code));
 
   // カーソルとフォーカスも合図にする（CSS だけで開くメニューは他の合図に乗らない）
+  // ⚠️ **並びを1行で留めない。** 合図は回を追うごとに増える（第21回に `:active`、
+  //    第22回に `keydown`）。そのたびに正しい実装が落ちるので、**入っているか**で見る。
+  const hoverSignalList = (/const HOVER_SIGNALS = \[([\s\S]*?)\];/.exec(code) || [, ''])[1];
+  const subscribes = t => hoverSignalList.includes(`'${t}'`);
   check('カーソルとフォーカスを、控えの見直しの合図にしている',
-    /const HOVER_SIGNALS = \['pointerover', 'pointerout', 'focusin', 'focusout',/.test(code) &&
+    ['pointerover', 'pointerout', 'focusin', 'focusout'].every(subscribes) &&
     /addEventListener\(t, onPointerOrFocus, true\)/.test(code));
   // ⚠️ `:active` は規則の走査では見ているのに購読していなかった（第21回 RG-21-05）
   check('`:active` の合図も購読している（第21回 RG-21-05）',
-    /'pointerdown', 'pointerup', 'pointercancel'\]/.test(code) &&
+    ['pointerdown', 'pointerup', 'pointercancel'].every(subscribes) &&
     /if \(e\.type === 'pointerdown'\) pressedNode = e\.target;/.test(code) &&
     /\+ '\|' \+ \(pressedNode \? chainKey\(pressedNode\) : '-'\)/.test(code),
     '押しているあいだだけ開くメニューが、2秒ごとの確認まで説明されない');

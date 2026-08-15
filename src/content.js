@@ -3475,9 +3475,18 @@
     if (e.type === 'pointerdown') pressedNode = e.target;
     else if (e.type === 'pointerup' || e.type === 'pointercancel') pressedNode = null;
   }
+  // ⚠️ 入力のやり方も鍵に入れる（第22回 RG-22-05）。連なりだけを鍵にすると、
+  // 「同じ相手にフォーカスしたまま modality だけ変わった」が同じ鍵になり、
+  // `doneStates` に阻まれて一度も測り直されない。
+  function focusVisibleNow() {
+    const a = document.activeElement;
+    if (!a || typeof a.matches !== 'function') return '-';
+    try { return a.matches(':focus-visible') ? 'k' : 'm'; } catch (e) { return '-'; }
+  }
   function pseudoStateKey(e) {
     return chainKey(e && e.target) + '|' + chainKey(document.activeElement)
-         + '|' + (pressedNode ? chainKey(pressedNode) : '-');
+         + '|' + (pressedNode ? chainKey(pressedNode) : '-')
+         + '|' + focusVisibleNow();
   }
   let pendingState = null;
 
@@ -3562,8 +3571,20 @@
   // ⚠️ `:active` は規則の走査（HOVERISH）では見ているのに、**購読していなかった**
   // （第21回 RG-21-05。実測: `:active` だけで開くメニューは、押しているあいだ印0で、
   // 2秒ごとの確認まで説明されなかった。対照の `:hover` は即1）。
+  // ⚠️ `keydown` も要る（第22回 RG-22-05）。**フォーカスの相手を変えずに、入力の
+  // やり方（マウス→キーボード）だけが変わると `:focus-visible` が付く。** 実測:
+  // マウスで押して focus した状態から矢印キーを1回押すと `:focus-visible` は
+  // false → true になり、それで開くメニューは 600ms 後も印0のままだった
+  // （2秒ごとの確認でようやく1）。`focusin` は相手が変わらないので来ない。
   const HOVER_SIGNALS = ['pointerover', 'pointerout', 'focusin', 'focusout',
-                         'pointerdown', 'pointerup', 'pointercancel'];
+                         'pointerdown', 'pointerup', 'pointercancel', 'keydown'];
+  // 画面内の移動（`:target` の付け替え）。DOM も属性も動かないので、どの合図にも乗らない。
+  // 実測: `location.hash` を変えて `:target` で開いたメニューは、600ms 後も印0だった。
+  const NAV_SIGNALS = ['hashchange', 'popstate'];
+  const onNavState = () => { bumpEpoch(); dropStates(); schedule({ deep: true }); };
+  // `pushState` は何の event も出さない。Navigation API があれば、そこも拾う。
+  const navApi = (typeof navigation === 'object' && navigation &&
+                  typeof navigation.addEventListener === 'function') ? navigation : null;
   // `scrollend` はブラウザが「止まった」と決めた瞬間に1回だけ来る。無い版のために
   // `scroll` も取り、そこから遅らせて1回にまとめる（→ onScrollSignal）。
   const SCROLL_SIGNALS = ('onscrollend' in window) ? ['scrollend'] : ['scroll'];
@@ -3675,6 +3696,8 @@
     for (const t of ['input', 'change', 'click']) document.addEventListener(t, onInteraction, true);
     for (const t of HOVER_SIGNALS) document.addEventListener(t, onPointerOrFocus, true);
     for (const t of SCROLL_SIGNALS) document.addEventListener(t, onScrollSignal, true);
+    for (const t of NAV_SIGNALS) window.addEventListener(t, onNavState);
+    if (navApi) navApi.addEventListener('navigatesuccess', onNavState);
     scheduleIdleCheck();
     scheduleFastCheck();
   }
@@ -3689,6 +3712,8 @@
     for (const t of ['input', 'change', 'click']) document.removeEventListener(t, onInteraction, true);
     for (const t of HOVER_SIGNALS) document.removeEventListener(t, onPointerOrFocus, true);
     for (const t of SCROLL_SIGNALS) document.removeEventListener(t, onScrollSignal, true);
+    for (const t of NAV_SIGNALS) window.removeEventListener(t, onNavState);
+    if (navApi) navApi.removeEventListener('navigatesuccess', onNavState);
     if (scrollTail !== null) { clearTimeout(scrollTail); scrollTail = null; }
     if (idleTimer !== null) { clearTimeout(idleTimer); idleTimer = null; }
     if (fastTimer !== null) { clearTimeout(fastTimer); fastTimer = null; }

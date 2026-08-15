@@ -2529,6 +2529,10 @@
       // 控えからは外さない——その印があとで退役すれば、また候補に戻るからである。
       const v = node.nodeValue;
       if (!v || matcher.findHits(v, key => usableGloss(key) !== null).length === 0) continue;
+      // 同じ世代で既に見た候補は、答えが変わらない（第19回 RG-19-08）。
+      // ここから下がレイアウトを起こす部分なので、その手前で飛ばす。
+      if (latentEpoch.get(node) === visEpoch) continue;
+      latentEpoch.set(node, visEpoch);
       if (!isTarget(node)) continue;
       n += annotate(node);
       // 外すのは「もう当たらない」と決まったときだけ。入口がまだ無い節点は控えに残す。
@@ -2659,6 +2663,8 @@
   const observer = new MutationObserver(muts => {
     // 複製された「自分のふり」は、走査より前に取り除く
     for (const mu of muts) for (const n of mu.addedNodes) sanitizeClones(n);
+    // DOM が変わった＝見え方の状態が変わりうる（第19回 RG-19-08）
+    bumpEpoch();
 
     let deep = false;
     const roots = [];
@@ -2721,16 +2727,65 @@
   // `<head>` の stylesheet が変わると、body には何の変更も出ないまま見え方が変わる。
   // ここは記録の確認だけでよいので、走査し直す場所は渡さない。
   const headObserver = new MutationObserver(muts => {
-    for (const mu of muts) if (!isSelfMutation(mu)) { schedule({ deep: true }); return; }
+    for (const mu of muts) if (!isSelfMutation(mu)) {
+      // stylesheet が増減した＝`:hover` を使う規則の有無を調べ直す（第19回 RG-19-08）
+      styleSerial++;
+      bumpEpoch();
+      schedule({ deep: true });
+      return;
+    }
   });
   const HEAD_OPTS = { childList: true, subtree: true, attributes: true, attributeOldValue: true };
 
+  // ---- 見え方の世代（第19回 RG-19-08）----
+  // 控えの見直しは、合図が来るたびに**全件**やり直していた（実測: 5,000候補・
+  // 10移動で `checkVisibility` 65,000回）。同じ状態のまま2回見ても答えは変わらない。
+  // 「見え方に関わる状態が変わった」ときだけ世代を進め、同じ世代で既に見た候補は
+  // 飛ばす。世代を進めるのは、DOM の変更・stylesheet の増減・画面の大きさ・
+  // CSS の遷移の終わり・利用者の操作・スクロール。
+  let visEpoch = 1;
+  const latentEpoch = new WeakMap();
+  const bumpEpoch = () => { visEpoch++; };
+  // stylesheet が変わった回数（`:hover` を使う規則があるかの調べ直しに使う）
+  let styleSerial = 0;
+
+  // ページに、カーソル／フォーカスで見え方が変わりうる規則があるか。
+  // 無ければ、カーソルが動いても CSS では何も変わらない——JS で開くメニューは
+  // DOM の変更として届くので、見張りのほうが拾う。
+  // ⚠️ **自分の stylesheet は数えない**（`:hover` / `:focus-visible` を持っている）。
+  const HOVERISH = /:hover|:focus|:focus-within|:focus-visible|:active|:has\(/i;
+  const RULE_SCAN_MAX = 20000;
+  let hoverCssSerial = -1, hoverCssHas = true;
+  function pageUsesHoverRules() {
+    if (hoverCssSerial === styleSerial) return hoverCssHas;
+    hoverCssSerial = styleSerial;
+    let seen = 0;
+    const give = v => { hoverCssHas = v; return v; };
+    try {
+      for (const sheet of document.styleSheets) {
+        if (ownStyle && sheet.ownerNode === ownStyle) continue;
+        let rules;
+        try { rules = sheet.cssRules; } catch (e) { return give(true); }   // 読めない＝あるものとして扱う
+        if (!rules) continue;
+        const stack = [rules];
+        while (stack.length) {
+          for (const r of stack.pop()) {
+            if (++seen > RULE_SCAN_MAX) return give(true);                 // 大きすぎる＝あるものとして扱う
+            if (r.selectorText && HOVERISH.test(r.selectorText)) return give(true);
+            if (r.cssRules) stack.push(r.cssRules);
+          }
+        }
+      }
+    } catch (e) { return give(true); }
+    return give(false);
+  }
+
   // DOM の変更を伴わない合図。CSS の遷移・アニメーションの終わり、画面の大きさの変化。
   const EXTERNAL_SIGNALS = ['transitionend', 'transitioncancel', 'animationend', 'animationcancel'];
-  const onExternal = e => { if (!isOurNode(e.target)) schedule({ deep: true }); };
-  const onViewport = () => schedule({ deep: true });
+  const onExternal = e => { if (!isOurNode(e.target)) { bumpEpoch(); schedule({ deep: true }); } };
+  const onViewport = () => { bumpEpoch(); schedule({ deep: true }); };
   // 利用者の操作は、属性に出ない状態（checked など）を変えうる
-    const onInteraction = () => schedule({ deep: true });
+  const onInteraction = () => { bumpEpoch(); schedule({ deep: true }); };
 
   // スクロールが落ち着いたら見直す。**吸い寄せのある枠では、止まってからでないと
   // 到達できるかを断定できない**（第19回 RG-19-02）。`scrollend` が無い版のために、
@@ -2738,6 +2793,7 @@
   const SCROLL_SETTLE = 150;
   let scrollTail = null;
   const onScrollSignal = () => {
+    bumpEpoch();
     if (scrollTail !== null) clearTimeout(scrollTail);
     scrollTail = setTimeout(() => {
       scrollTail = null;
@@ -2795,6 +2851,10 @@
   let hoverTail = null;
   const onPointerOrFocus = () => {
     if (latent.size === 0 || hoverPending) return;
+    // カーソルで見え方が変わりうる規則がページに無いなら、見直す意味が無い
+    // （第19回 RG-19-08）。JS で開くメニューは DOM の変更として別経路で届く。
+    if (!pageUsesHoverRules()) return;
+    bumpEpoch();                   // `:hover` の当たる先が変わった＝状態が変わった
     if (overBudget()) return;      // 使いすぎた。2秒ごとの確認に任せる
     const now = performance.now();
     if (now - hoverAt < hoverGap) {
@@ -2835,7 +2895,12 @@
       // （property だけの変化は、この経路でしか気づけない）。
       // 控えが上限で打ち切られている場合も、控えてある分は見に行く。
       if (document.hidden || (glossed.size === 0 && latent.size === 0)) { scheduleIdleCheck(); return; }
-      const run = () => { schedule({ deep: true }); scheduleIdleCheck(); };
+      // ⚠️ ここでは**必ず世代を進める**（第19回 RG-19-08 の門を、この経路には掛けない）。
+      // 暇なときの確認は、属性にも DOM にも出ない変化（`checked` など property だけの
+      // 書き換え）を拾うためにある。世代が進まないと「同じ世代で見た」として飛ばされ、
+      // その変化に永久に気づかない（実測: 2,100件の控えのある見本と、上限で
+      // こぼれた候補の見本が、どちらも後から見えた語を見つけられなくなった）。
+      const run = () => { bumpEpoch(); schedule({ deep: true }); scheduleIdleCheck(); };
       if (canIdle) requestIdleCallback(run, { timeout: IDLE_GAP });
       else run();
     }, IDLE_GAP);

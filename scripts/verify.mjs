@@ -559,6 +559,15 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   check('明るさを色から出している',
     /function luminanceOf/.test(code) && /0\.2126/.test(code) && /0\.7152/.test(code),
     'luminance の判定ができない');
+  // RG-19-08 見え方の世代
+  check('見え方の世代を持っている',
+    /let visEpoch = 1/.test(code) && /const latentEpoch = new WeakMap\(\)/.test(code) &&
+    /if \(latentEpoch\.get\(node\) === visEpoch\) continue;/.test(code),
+    '合図のたびに控え全件を測り直す');
+  check('カーソルの合図は、ページに効く規則があるときだけ動く',
+    /function pageUsesHoverRules/.test(code) && /if \(!pageUsesHoverRules\(\)\) return;/.test(code) &&
+    /sheet\.ownerNode === ownStyle/.test(code),
+    '何も変わらないページでも、控え全件を測り直す');
   check('絶対配置が切り取りから逃げることを見ている',
     /function establishesContainingBlock/.test(code) && /function positionEscape/.test(code),
     '包含ブロックでない祖先の切り取りで、読める語を落とす');

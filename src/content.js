@@ -2660,6 +2660,12 @@
       if (isHandled(node)) latent.delete(node);
     }
     latentPass = null; latentCursor = 0;
+    // ここが「控えをひと回りし終えた」瞬間。いまの擬似クラスの状態は見終わったので、
+    // 同じ状態へ戻ってきても測り直さない（第20回 RG-20-09）。
+    // ⚠️ まとめ直しの終わりで印を付けてはいけない——控えが多いと予算（8ms）で
+    // 必ず途中になり、`latentPass` が残るので一度も済みにならない
+    // （最初そう書いて、2,000候補で 24,024回のまま効かなかった）。
+    if (pendingState !== null) { doneStates.add(pendingState); pendingState = null; }
     bill();
     // ひと回りし終えたときだけ、上限で取りこぼした分を入れ直す。
     if (latentTruncated) reindexLatent();
@@ -2774,6 +2780,7 @@
     for (const mu of muts) for (const n of mu.addedNodes) sanitizeClones(n);
     // DOM が変わった＝見え方の状態が変わりうる（第19回 RG-19-08）
     bumpEpoch();
+    dropStates();
 
     let deep = false;
     const roots = [];
@@ -2840,6 +2847,7 @@
       // stylesheet が増減した＝`:hover` を使う規則の有無を調べ直す（第19回 RG-19-08）
       styleSerial++;
       bumpEpoch();
+      dropStates();
       schedule({ deep: true });
       return;
     }
@@ -2855,6 +2863,8 @@
   let visEpoch = 1;
   const latentEpoch = new WeakMap();
   const bumpEpoch = () => { visEpoch++; };
+  // DOM・stylesheet・画面が変わったら、擬似クラスの状態の記録は捨てる
+  const dropStates = () => { if (doneStates.size) doneStates.clear(); };
   // stylesheet が変わった回数（`:hover` を使う規則があるかの調べ直しに使う）
   let styleSerial = 0;
 
@@ -2881,9 +2891,9 @@
 
   let hoverCssSerial = -1, hoverCssPrint = -1, hoverCssHas = true;
   function pageUsesHoverRules() {
-      const print = styleFingerprint();
-      if (hoverCssSerial === styleSerial && hoverCssPrint === print) return hoverCssHas;
-      if (hoverCssPrint !== print) bumpEpoch();   // 規則が増減した
+    const print = styleFingerprint();
+    if (hoverCssSerial === styleSerial && hoverCssPrint === print) return hoverCssHas;
+    if (hoverCssPrint !== print) { bumpEpoch(); dropStates(); }   // 規則が増減した
     hoverCssSerial = styleSerial;
     hoverCssPrint = print;
     let seen = 0;
@@ -2909,10 +2919,10 @@
 
   // DOM の変更を伴わない合図。CSS の遷移・アニメーションの終わり、画面の大きさの変化。
   const EXTERNAL_SIGNALS = ['transitionend', 'transitioncancel', 'animationend', 'animationcancel'];
-  const onExternal = e => { if (!isOurNode(e.target)) { bumpEpoch(); schedule({ deep: true }); } };
-  const onViewport = () => { bumpEpoch(); schedule({ deep: true }); };
+  const onExternal = e => { if (!isOurNode(e.target)) { bumpEpoch(); dropStates(); schedule({ deep: true }); } };
+  const onViewport = () => { bumpEpoch(); dropStates(); schedule({ deep: true }); };
   // 利用者の操作は、属性に出ない状態（checked など）を変えうる
-  const onInteraction = () => { bumpEpoch(); schedule({ deep: true }); };
+  const onInteraction = () => { bumpEpoch(); dropStates(); schedule({ deep: true }); };
 
   // スクロールが落ち着いたら見直す。**吸い寄せのある枠では、止まってからでないと
   // 到達できるかを断定できない**（第19回 RG-19-02）。`scrollend` が無い版のために、
@@ -2921,6 +2931,7 @@
   let scrollTail = null;
   const onScrollSignal = () => {
     bumpEpoch();
+    dropStates();
     if (scrollTail !== null) clearTimeout(scrollTail);
     scrollTail = setTimeout(() => {
       scrollTail = null;
@@ -2976,11 +2987,39 @@
   let hoverPending = false;
   let hoverAt = 0;
   let hoverTail = null;
-  const onPointerOrFocus = () => {
+  // ---- 擬似クラスの状態（第20回 RG-20-09）----
+  // `:hover` が当たるのは、ポインタの祖先の連なりだけ。`:focus-within` も同じ形。
+  // **その連なりが同じなら、CSS が作る見え方は同じ**なので、一度ひと回りし終えた
+  // 状態へ戻ってきたときに全件を測り直す必要は無い。
+  // 以前は、カーソルが要素の境目をまたぐたびに世代を進めて全件を回していた
+  // （実測: hover 規則のあるページで 2,000候補・10移動＝28,000回）。
+  // DOM や stylesheet が変われば `doneStates` は捨てるので、正しさは落ちない。
+  let stateSerial = 0;
+  const stateIds = new WeakMap();
+  const doneStates = new Set();
+  function chainKey(node) {
+    const out = [];
+    for (let n = asElement(node); n; n = n.parentElement) {
+      let id = stateIds.get(n);
+      if (id === undefined) { id = ++stateSerial; stateIds.set(n, id); }
+      out.push(id);
+    }
+    return out.join('.');
+  }
+  function pseudoStateKey(e) {
+    return chainKey(e && e.target) + '|' + chainKey(document.activeElement);
+  }
+  let pendingState = null;
+
+  const onPointerOrFocus = e => {
     if (latent.size === 0 || hoverPending) return;
     // カーソルで見え方が変わりうる規則がページに無いなら、見直す意味が無い
     // （第19回 RG-19-08）。JS で開くメニューは DOM の変更として別経路で届く。
     if (!pageUsesHoverRules()) return;
+    // 同じ擬似クラスの状態で、既にひと回り終えているなら、答えは変わらない
+    const key = pseudoStateKey(e);
+    if (doneStates.has(key)) return;
+    pendingState = key;
     bumpEpoch();                   // `:hover` の当たる先が変わった＝状態が変わった
     if (overBudget()) return;      // 使いすぎた。2秒ごとの確認に任せる
     const now = performance.now();
@@ -3027,7 +3066,7 @@
       // 書き換え）を拾うためにある。世代が進まないと「同じ世代で見た」として飛ばされ、
       // その変化に永久に気づかない（実測: 2,100件の控えのある見本と、上限で
       // こぼれた候補の見本が、どちらも後から見えた語を見つけられなくなった）。
-      const run = () => { bumpEpoch(); schedule({ deep: true }); scheduleIdleCheck(); };
+      const run = () => { bumpEpoch(); dropStates(); schedule({ deep: true }); scheduleIdleCheck(); };
       if (canIdle) requestIdleCallback(run, { timeout: IDLE_GAP });
       else run();
     }, IDLE_GAP);

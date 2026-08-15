@@ -568,6 +568,11 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   check('自前 style の生きた規則の数も見ている',
     /function liveRuleCount/.test(code) && /liveRuleCount\(ownStyle\) === ownStyleRuleCount/.test(code),
     'deleteRule で規則を消されても直さない');
+  // RG-20-09 擬似クラスの状態
+  check('擬似クラスの状態を覚えて、同じ状態では測り直さない',
+    /function pseudoStateKey/.test(code) && /if \(doneStates\.has\(key\)\) return;/.test(code) &&
+    /const dropStates/.test(code),
+    'カーソルが同じ場所へ戻るたびに控え全件を測り直す');
 
   /* ---------- 第19回で足した不変条件 ---------- */
   // RG-19-01 複数語の用語は、**全部の並び**が読めるときだけ可視

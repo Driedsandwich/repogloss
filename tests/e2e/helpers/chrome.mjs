@@ -759,11 +759,29 @@ export async function retryStartup(method, run, info, { retries = 1, now = () =>
 }
 
 /* ページを開き、そのページで式を評価できる関数を返す */
+/*
+ * ⚠️ **試験のために、ブラウザ側を決めた倍率で遅くできるようにする。**（2026-08-16）
+ * 「忙しい機械だと落ちる」を調べるのに、機械を混ませるのは再現できない
+ *（実測: 合成負荷 load 12〜17 では落ちず、周囲の負荷は 47〜163 と3倍以上ふれた）。
+ * CDP の `Emulation.setCPUThrottlingRate` なら、**この試験のブラウザだけ**を
+ * 決めた倍率で遅くできる。他のセッションの邪魔をせず、同じ条件を何度でも作れる。
+ *
+ *   RG_CPU_THROTTLE=20 node --test tests/e2e/extension.e2e.mjs
+ *
+ * ⚠️ 実効の遅さは倍率そのものではない（実測: 20x で 8.8倍、60x で 12.7倍）。
+ *    倍率は「効かせる強さの目盛り」であって、時間の保証ではない。
+ * 既定（未指定）では**何もしない**ので、ふだんの実行は変わらない。
+ */
+export const CPU_THROTTLE = Number(process.env.RG_CPU_THROTTLE || 0);
+
 export async function openPage(cdp, url) {
   const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
   const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
   await cdp.send('Page.enable', {}, sessionId);
   await cdp.send('Runtime.enable', {}, sessionId);
+  if (CPU_THROTTLE > 1) {
+    await cdp.send('Emulation.setCPUThrottlingRate', { rate: CPU_THROTTLE }, sessionId);
+  }
   await cdp.send('Page.navigate', { url }, sessionId);
   const evaluate = async expression => {
     const r = await cdp.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, sessionId);
@@ -846,6 +864,7 @@ export async function waitFor(label, fn, { timeout = 15000, interval = 200 } = {
   }
   throw new Error(`待ち時間内に成立しなかった: ${label}`);
 }
+
 
 /* ===================== 第13回監査（v1.8.12）の反例 ===================== */
 

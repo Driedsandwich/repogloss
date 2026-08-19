@@ -39,9 +39,34 @@
     getBoundingClientRect: countWith(Element.prototype, 'getBoundingClientRect', 'getBoundingClientRect')
   };
 
+  /*
+   * **遅い周期（2秒ごとの確認）が何回まわったか**を数える（2026-08-16）。
+   *
+   * ⚠️ 「2秒を待たずに拾う」を `sleep(320)` で確かめている試験がある。これは壁時計なので、
+   * 機械が遅いと「まだ来ていない」ところを見て赤くなる。見たいのは時間ではなく
+   * **どちらの経路が届けたか**——速い経路か、2秒ごとの確認か。
+   * 遅い周期の回数を数えておけば、「その回数が増えないうちに付いた」と言える。
+   *
+   * ⚠️ 1500ms 以上の待ちだけを数える。短い間引きの窓（120ms など）まで数えると、
+   * 速い経路の側の回数が混ざって、区別にならない。
+   *
+   * ⚠️ **`setInterval` ではなく `setTimeout` を包む。** 実測: `src/content.js` の
+   * `setInterval` は **0件**で、暇なときの確認は `setTimeout(…, IDLE_GAP=2000)` を
+   * 自分で繋ぎ直す形だった（`scheduleIdleCheck`）。`setInterval` を包んでいたら
+   * 回数は永久に 0 のままで、**当たるものが無いまま通る検査**になっていた。
+   */
+  const SLOW_MS = 1500;
+  let slowTicks = 0;
+  const origTimeout = setTimeout;
+  setTimeout = (fn, ms, ...rest) => origTimeout((...a) => {
+    if (typeof ms === 'number' && ms >= SLOW_MS) { slowTicks++; publish(); }
+    return typeof fn === 'function' ? fn(...a) : undefined;
+  }, ms, ...rest);
+
   const publish = () => {
     localStorage.setItem('rg-times', JSON.stringify(durations.slice(-12)));
     localStorage.setItem('rg-count', String(n));
+    localStorage.setItem('rg-slowticks', String(slowTicks));
     localStorage.setItem('rg-work', JSON.stringify({
       checkVisibility: work.checkVisibility.slice(-12),
       getComputedStyle: work.getComputedStyle.slice(-12),
@@ -78,10 +103,22 @@
       getBoundingClientRect: tally.getBoundingClientRect
     }));
   });
+  /*
+   * 陽性対照: 遅い周期の計数器そのものが効いているか。
+   * ⚠️ これが無いと、「回数が増えなかった」と「そもそも数えられていない」が
+   * 同じ顔になる。包んだ側で 2000ms の予約を1つ入れ、**包んでいない側**で
+   * その後に読む（読む側まで数えてしまわないように `origTimeout` を使う）。
+   */
+  setTimeout(() => {}, 2000);
+  origTimeout(() => {
+    localStorage.setItem('rg-slowtick-selftest', String(slowTicks));
+  }, 2600);
+
   setInterval(() => {
     if (localStorage.getItem('rg-reset') === '1') {
       localStorage.removeItem('rg-reset');
       durations.length = 0; n = 0;
+      slowTicks = 0;
       work.checkVisibility.length = 0; work.getComputedStyle.length = 0;
       work.getBoundingClientRect.length = 0;
       publish();

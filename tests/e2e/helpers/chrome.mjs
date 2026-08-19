@@ -628,6 +628,18 @@ export function startTestServer(html = REPO_PAGE) {
 }
 
 /* CDP をパイプ（fd3=送信 / fd4=受信、NUL 区切り JSON）で話す最小クライアント */
+/*
+ * ⚠️ **待ち時間は、絞り倍率に追従させる。**（2026-08-19）
+ * 以前は CDP の上限が 20,000ms 直書きで、絞り 60x でも変わらなかった。
+ * 各試験の `waitFor` は 90,000ms などに調整されていたのに、その**下**にある
+ * CDP の上限が先に切れるので、「製品が遅い」ではなく **`CDP タイムアウト: Runtime.evaluate`**
+ * という道具側の失敗になる（実測: 19,999件のページで 28.6秒・2026-08-19の60x通し）。
+ * 絞りは意図的に遅くしているのだから、道具の上限も同じだけ伸ばさないと、
+ * **測り過ぎを製品の欠陥と読み違える。**
+ */
+export const CPU_THROTTLE = Number(process.env.RG_CPU_THROTTLE || 0);
+const CDP_TIMEOUT = 20000 * (CPU_THROTTLE > 1 ? Math.min(CPU_THROTTLE, 6) : 1);
+
 export class Cdp {
   constructor(proc) {
     this.proc = proc;
@@ -678,9 +690,9 @@ export class Cdp {
       const timer = setTimeout(() => {
         if (this.pending.has(id)) {
           this.pending.delete(id);
-          reject(new Error(`CDP タイムアウト: ${method}`));
+          reject(new Error(`CDP タイムアウト: ${method}（上限 ${CDP_TIMEOUT}ms・絞り ${CPU_THROTTLE || 1}x）`));
         }
-      }, 20000);
+      }, CDP_TIMEOUT);
       this.pending.set(id, { resolve, reject, timer, method });
       this.proc.stdio[3].write(JSON.stringify(payload) + '\0');
     });
@@ -772,7 +784,6 @@ export async function retryStartup(method, run, info, { retries = 1, now = () =>
  *    倍率は「効かせる強さの目盛り」であって、時間の保証ではない。
  * 既定（未指定）では**何もしない**ので、ふだんの実行は変わらない。
  */
-export const CPU_THROTTLE = Number(process.env.RG_CPU_THROTTLE || 0);
 
 export async function openPage(cdp, url) {
   const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
@@ -788,6 +799,27 @@ export async function openPage(cdp, url) {
     if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails).slice(0, 300));
     return r.result?.value;
   };
+  /*
+   * ⚠️ **文書が出来る前に返さない。**（2026-08-19）
+   * `Page.navigate` は「行け」と言っただけで、文書ができたことは意味しない。
+   * 普段は人が見る間もなく済むので気づかないが、絞り 60x では
+   * 最初の `evaluate` が `document.documentElement === null` の瞬間に当たり、
+   * **`TypeError: Cannot read properties of null` で落ちる**（実測: 2026-08-19の60x通し）。
+   * assertion ではないので「何が違ったか」が出ず、遅い機械ほど当たりやすい。
+   * ここで一度だけ待てば、呼ぶ側全部が守られる。
+   */
+  const started = Date.now();
+  const limit = 20000 * (CPU_THROTTLE > 1 ? 3 : 1);
+  for (;;) {
+    const ready = await evaluate(
+      `!!(document.documentElement && document.readyState !== 'loading')`).catch(() => false);
+    if (ready) break;
+    if (Date.now() - started > limit) {
+      throw new Error(`文書ができないまま ${limit}ms 経過した: ${url}`);
+    }
+    await new Promise(r => setTimeout(r, 50));
+  }
+
   return { targetId, sessionId, evaluate, close: () => cdp.send('Target.closeTarget', { targetId }) };
 }
 
@@ -1654,20 +1686,49 @@ export async function shadowShape(cdp, tab) {
 /* Tab を押し続けて、**条件に当てはまる停止点の数**を数える。
    一周して開始位置へ戻ったら止める。`collectTabOrder` は id か tagName しか
    返さないので、host が `<span>` になった第21回以降はこちらで見る。 */
-export async function countTabStops(cdp, page, testExpr, { steps = 40, startId = 'before' } = {}) {
-  await page.evaluate(`(() => { const s = document.getElementById(${JSON.stringify(startId)});
-    if (s) s.focus(); else document.body.focus(); })(); true`);
-  let n = 0;
-  for (let i = 0; i < steps; i++) {
-    await pressKey(cdp, page.sessionId, 'Tab');
-    const r = await page.evaluate(`(() => { const el = document.activeElement;
-      if (!el) return 'none';
-      if (el.id === ${JSON.stringify(startId)}) return 'wrap';
-      return (${testExpr}) ? 'hit' : 'other'; })()`);
-    if (r === 'wrap') break;
-    if (r === 'hit') n++;
+/*
+ * Tab の停止点を数える。
+ *
+ * ⚠️ **1回の走査を答えにしない。**（2026-08-16）
+ * Tab を押した直後に `document.activeElement` を読むので、機械が忙しいと
+ * **まだ移っていない**ところを読む。実測（絞り 60x）で、同じページの同じ状態を
+ * 2回数えて **8 と 7** になり、その差が「複製が停止点として残っている」という
+ * 誤った失敗になった。歩数を増やしても、1回の走査が不安定なままでは直らない。
+ *
+ * **同じ値が続けて出るまで数え直す**（既定: 2回連続）。忙しい機械では数え直しが
+ * 増えるだけで、答えは変わらない。安定しなければ、黙って数を返さずに落とす
+ * ——数えられなかったことを、数えられた 7 と同じ顔で返さないため。
+ */
+export async function countTabStops(cdp, page, testExpr,
+  { steps = 40, startId = 'before', stable = 2, tries = 6 } = {}) {
+  const once = async () => {
+    await page.evaluate(`(() => { const s = document.getElementById(${JSON.stringify(startId)});
+      if (s) s.focus(); else document.body.focus(); })(); true`);
+    let n = 0;
+    for (let i = 0; i < steps; i++) {
+      const from = await page.evaluate(
+        '(() => { const el = document.activeElement; return el ? (el.id || el.tagName + ":" + el.className) : "none"; })()');
+      await pressKey(cdp, page.sessionId, 'Tab');
+      /* ⚠️ 移り終わるのを待つ。押した直後の activeElement は前の要素のことがある */
+      await waitFor('フォーカスが移る', async () => await page.evaluate(
+        '(() => { const el = document.activeElement; return el ? (el.id || el.tagName + ":" + el.className) : "none"; })()'
+      ) !== from, { timeout: 3000, interval: 20 }).catch(() => {});
+      const r = await page.evaluate(`(() => { const el = document.activeElement;
+        if (!el) return 'none';
+        if (el.id === ${JSON.stringify(startId)}) return 'wrap';
+        return (${testExpr}) ? 'hit' : 'other'; })()`);
+      if (r === 'wrap') break;
+      if (r === 'hit') n++;
+    }
+    return n;
+  };
+  const seen = [];
+  for (let t = 0; t < tries; t++) {
+    seen.push(await once());
+    const tail = seen.slice(-stable);
+    if (tail.length === stable && tail.every(v => v === tail[0])) return tail[0];
   }
-  return n;
+  throw new Error(`Tab の停止点が安定しない（${seen.join(', ')}）`);
 }
 
 /* RG-21-06。単独の印を closed shadow root へ入れたことの受入。

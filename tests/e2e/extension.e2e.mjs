@@ -31,7 +31,7 @@ import { launchChrome, startTestServer, stageExtension, stageExtensionWith,
          pressKey, collectTabOrder, tabUntil,
          HOST_SEL, hostInfo, glossButtons, shadowShape, countTabStops, clickToggle,
          RETIRE22_PAGE, VARS22_PAGE, COVER22_PAGE, CSSOM22_PAGE, TARGET22_PAGE,
-         TRUST22_PAGE, iconPixels, pixelsAt, putGhostCover } from './helpers/chrome.mjs';
+         TRUST22_PAGE, iconPixels, pixelsAt, putGhostCover, CPU_THROTTLE } from './helpers/chrome.mjs';
 
 const PAGE = 'https://github.com/octocat/Hello-World';
 
@@ -469,7 +469,14 @@ test('拡張として読み込んだ状態で動く', async t => {
     // 隠れている側に付くと、その語はページのどこでも説明されなくなる。
     // 祖先の opacity と content-visibility は、子の computed 値には出ないので、
     // 直接の親だけを見る判定では見抜けない（実測: 子は箱も持つ）。
-    const r = await tab.evaluate(`(() => {
+    /*
+     * ⚠️ **1回の走査を答えにしない。**（2026-08-19）
+     * 以前はここで1度だけ数えて突き合わせていた。拡張が印を付け終わる前に
+     * 当たると、まだ 0 のところを見て落ちる（実測: 絞り 60x で揺れた）。
+     * 「後ろの読める語に付く（0→1）」は前へ進む変化なので、そこまで待ってから
+     * 突き合わせる。待っても揃わなければ、下の deepEqual が**何が違うか**を出す。
+     */
+    const snap = async () => await tab.evaluate(`(() => {
       const n = sel => document.querySelectorAll(sel + ' .iiyaku-icon').length;
       return {
         inert:   { hidden: n('#inert-box'), later: n('#after-inert') },
@@ -478,6 +485,11 @@ test('拡張として読み込んだ状態で動く', async t => {
         clip:    { hidden: n('#clip-box'),  later: n('#after-clip') }
       };
     })()`);
+    let r = await snap();
+    await waitFor('後ろの読める語に印が付き終わる', async () => {
+      r = await snap();
+      return Object.values(r).every(v => v.later === 1);
+    }, { timeout: 20000 }).catch(() => {});
     assert.deepEqual(r, {
       inert:    { hidden: 0, later: 1 },
       opacity:  { hidden: 0, later: 1 },
@@ -571,7 +583,18 @@ test('拡張として読み込んだ状態で動く', async t => {
     await waitFor('1枚目へ伝わる', async () =>
       await tab.evaluate(
         `[...document.documentElement.attributes].every(a => !/^data-iiyaku-\\w+-off$/.test(a.name))`));
-    assert.equal(await tab.evaluate(`document.querySelector('.iiyaku-toggle').textContent`), '解説 ON');
+    /*
+     * ⚠️ **無いかもしれないものから、いきなり読まない。**（2026-08-16）
+     * 以前は `document.querySelector('.iiyaku-toggle').textContent` を直に読んでいた。
+     * 属性が戻ったあと切替ボタンが描き直されるまでの隙に当たると `querySelector` が
+     * null を返し、**TypeError で落ちる**——assertion ではないので「何が違ったか」が
+     * 出ず、機械が遅いほど当たりやすい（実測: 絞り 60x で Uncaught TypeError）。
+     * null を許す形で読み、表示が戻るまで待ってから確かめる。
+     */
+    const toggleText = () => tab.evaluate(
+      `(() => { const b = document.querySelector('.iiyaku-toggle'); return b ? b.textContent : null; })()`);
+    await waitFor('切替の表示が ON へ戻る', async () => await toggleText() === '解説 ON');
+    assert.equal(await toggleText(), '解説 ON');
     await other.close();
   });
 
@@ -2804,12 +2827,37 @@ test('控えが多くても、1回の見直しを短く保ち、上限の外も�
     assert.equal(await probe('time-selftest'), '1', '予約を包めていない');
   });
 
-  await t.test('RG-13-06 20,000 件の控えでも、1回の処理が 50ms を超えない', async () => {
+  await t.test('RG-13-06 20,000 件の控えでも、1回の見直しは刻まれている', async () => {
+    /*
+     * ⚠️ **ここは時間で測らない。**（2026-08-16）
+     * 以前は `max(ms) < 50` を見ていたが、`performance.now()` は壁時計なので、
+     * OS にCPUを取り上げられていた時間まで入る。実測で、負荷の高い機械
+     * （load average 20〜38）では 58.6ms が出て赤くなった——刻まずに 20,000件を
+     * さらったなら桁が変わるはずで、これは「忙しかった」の姿でしかない。
+     *
+     * 守りたい性質は「**1回のパスが、刻まずに無制限へ広がらない**」こと。
+     * それは**1パスで見た候補の数**で測れる。忙しい機械ほど予算に収まる件数は
+     * **減る**ので、過負荷でしきい値を超える向きには動かない（＝赤くならない）。
+     * 刻みを外せば1パスで全件をさらうので、そのときだけ増える。
+     */
     await tab.evaluate(`localStorage.setItem('rg-reset', '1'); true`);
     await sleep(11000);   // 暇なときの確認を5周ぶん（1回だけ短い回を見て済まさない）
+    const w = JSON.parse(await probe('work') || '{}');
+    const cv = w.checkVisibility || [];
     const ms = JSON.parse(await probe('times') || '[]');
-    assert.ok(ms.length > 0, '1回も測れていない');
-    assert.ok(Math.max(...ms) < 50, `1回の処理が長すぎる: ${Math.max(...ms)}ms`);
+    /* ⚠️ 数えられていないと 0 が並び、上限の検査が素通りする（＝当たるものが無い） */
+    const wrapped = JSON.parse(await probe('wrapped') || '{}');
+    assert.equal(wrapped.checkVisibility, true, '仕事量を数える包みが効いていない');
+    assert.ok(cv.length > 0, '1回も測れていない');
+    assert.ok(Math.max(...cv) > 0, '仕事量が全部 0＝数えられていない（上限の検査が素通りする）');
+    /*
+     * 上限は候補数の半分。実測（暇な機械）で1パス 2,178〜4,722、5パスの合計 17,018 に対し
+     * 候補は 20,000 ——1候補あたりおよそ1回なので、刻みを外せば1パスが 2万近くになる。
+     * 半分に置けば、速い機械の揺れ（増える向き）には十分な余地がありつつ、
+     * 「刻まずに全部さらった」は確実に捕まる。
+     */
+    assert.ok(Math.max(...cv) < 10000,
+      `1回の見直しが刻まれていない: ${Math.max(...cv)} 件（20,000 候補中）/ 参考 ${Math.max(...ms)}ms`);
   });
 
   await t.test('RG-13-06 上限を超えてこぼれた候補も、空きができれば見つける', async () => {
@@ -3412,11 +3460,15 @@ async function pair(tab, id) {
           await tab.evaluate(`document.querySelectorAll('#l-${id} [data-iiyaku-key]').length`)];
 }
 
-async function openWith(t, page) {
+async function openWith(t, page, { probe = false } = {}) {
   const srv = await startTestServer(page);
   const chrome = await launchChrome({ port: srv.port });
   t.after(async () => { chrome.kill(); await srv.close(); });
-  await chrome.cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  /* probe: 隔離された世界の中から回数を数えたいときだけ載せる（既定は載せない） */
+  await chrome.cdp.send('Extensions.loadUnpacked', { path: probe
+    ? stageExtensionWith({ 'timing-probe.js': 'tests/e2e/timing-probe.js' },
+        js => ['timing-probe.js', ...js])
+    : stageExtension() });
   const tab = await openPage(chrome.cdp, PAGE);
   await waitFor('走査が終わる', async () =>
     await tab.evaluate(`document.readyState === 'complete'`));
@@ -3984,7 +4036,10 @@ test('CSSOM の書き換えに気づく（第21回 RG-21-04）', async t => {
 });
 
 test('`:active` の合図も拾う（第21回 RG-21-05）', async t => {
-  const { chrome, tab } = await openWith(t, ACTIVE21_PAGE);
+  /* 「2秒を待たずに」を壁時計でなく、暇なときの確認の**周回数**で見る（2026-08-16） */
+  const { chrome, tab } = await openWith(t, ACTIVE21_PAGE, { probe: true });
+  const slowTicks = async () =>
+    Number(await tab.evaluate(`localStorage.getItem('rg-slowticks')`) || 0);
   const nIn = sel => tab.evaluate(`document.querySelectorAll(${JSON.stringify(sel)} + ' .iiyaku-icon').length`);
   const rect = async id => await tab.evaluate(`(() => { const r =
     document.getElementById(${JSON.stringify(id)}).getBoundingClientRect();
@@ -4004,13 +4059,76 @@ test('`:active` の合図も拾う（第21回 RG-21-05）', async t => {
     await moveMouse(chrome, tab, act.x, act.y);
     await sleep(700);
     assert.equal(await nIn('#act21'), 0, 'カーソルを置いただけで開いている＝見本が効いていない');
+    /*
+     * ⚠️ **「2秒を待たずに」を壁時計で測らない。**（2026-08-16）
+     * 以前は `sleep(320)` のあと数えていた。320ms は「暇なときの確認（2秒）より
+     * 十分早い」ことの代わりだったが、機械が遅いと**まだ来ていない**ところを見て
+     * 落ちる（実測: 絞り 60x で 0 !== 1）。
+     *
+     * 見たいのは時間ではなく**どちらの経路が届けたか**。暇なときの確認が何回
+     * まわったかを数え、**その回数が増えないうちに付いた**ことを確かめる。
+     * 遅い機械では待つ時間が延びるだけで、速い経路が効いている限り回数は増えない。
+     *
+     * ⚠️ 計数器そのものが効いていることを先に確かめる。効いていなければ
+     * 「増えなかった」は「数えられていない」と同じ顔になる。
+     */
+    assert.ok(Number(await tab.evaluate(`localStorage.getItem('rg-slowtick-selftest')`) || 0) >= 1,
+      '遅い周期の計数器が効いていない（この検査は何も測れない）');
+    /*
+     * ⚠️ **周回数は、こちらが気づいた時ではなく「付いた瞬間」に記録する。**（2026-08-19）
+     * 前の書き方は、印を見つけてから `slowTicks()` を読んでいた。ふだんは同じだが、
+     * 絞り 60x では 1 回の往復だけで 2 秒を超えることがあり、**印は速い経路で
+     * すぐ付いていたのに、読むまでに暇なときの確認が 1 回まわってしまう**。
+     * すると「遅い経路が届けた」と読み違える（実測: `3 !== 2`・2026-08-19の60x通し）。
+     * ページ側に見張りを置き、付いたその場で周回数を控えれば、
+     * こちらの往復がいくら遅くても記録はずれない。
+     */
+    await tab.evaluate(`(() => {
+      localStorage.removeItem('rg-active-at-tick');
+      const host = document.querySelector('#act21');
+      const ob = new MutationObserver(() => {
+        if (!host.querySelector('.iiyaku-icon')) return;
+        if (localStorage.getItem('rg-active-at-tick') !== null) return;
+        localStorage.setItem('rg-active-at-tick', localStorage.getItem('rg-slowticks') || '0');
+        ob.disconnect();
+      });
+      ob.observe(host, { childList: true, subtree: true });
+      return true;
+    })()`);
+    const before = await slowTicks();
     await chrome.cdp.send('Input.dispatchMouseEvent',
       { type: 'mousePressed', x: act.x, y: act.y, button: 'left', buttons: 1, clickCount: 1 }, tab.sessionId);
-    await sleep(320);
-    const got = await nIn('#act21');
+    let got = 0;
+    await waitFor('押しているあいだに説明が付く', async () => {
+      got = await nIn('#act21');
+      return got === 1;
+    }, { timeout: 8000, interval: 25 }).catch(() => {});
+    const recorded = await tab.evaluate(`localStorage.getItem('rg-active-at-tick')`);
     await chrome.cdp.send('Input.dispatchMouseEvent',
       { type: 'mouseReleased', x: act.x, y: act.y, button: 'left', buttons: 0, clickCount: 1 }, tab.sessionId);
     assert.equal(got, 1, '押しているあいだに説明が付いていない');
+    /* ⚠️ 見張りが動いていなければ、下の比較は当たるものが無いまま通る */
+    assert.notEqual(recorded, null, '付いた瞬間の見張りが記録していない（この検査は何も測れない）');
+    const atAppear = Number(recorded);
+    /*
+     * ⚠️ **これは壁時計の競争なので、絞ったぶんだけ余裕が要る。**（2026-08-19）
+     * 「暇なときの確認（2秒）より速い」を確かめたいが、暇なときの確認は**壁時計**で
+     * 動く一方、拡張の仕事は絞りで 60 倍遅くなる。だから絞りを強くしていくと、
+     * 速い経路が正しく効いていても 2 秒を跨いでしまう瞬間が来る。
+     *
+     * 実測（2026-08-19・同じ作業ツリー）:
+     *   絞り 1x / 10x / 30x / 45x … 通る
+     *   絞り 60x … **機械の負荷しだいで割れた**（load≒7〜10 で 2→3 に落ち、
+     *              load≒5.9 では 2 回とも通った）
+     * 割れ目が倍率ではなく負荷で動く＝製品の欠陥ではなく、測り方が競争になっている。
+     *
+     * そこで **1x では従来どおり厳格に 0 回**（出荷の門はここ）、絞ったときだけ
+     * 倍率に応じた回数を許す。押しているあいだに付くこと自体は上で必ず確かめている。
+     */
+    const tickSlack = CPU_THROTTLE > 1 ? Math.ceil(CPU_THROTTLE / 30) : 0;
+    assert.ok(atAppear - before <= tickSlack,
+      `暇なときの確認を待って付いた＝速い経路が効いていない`
+      + `（周回 ${before} → ${atAppear}・許容 ${tickSlack}・絞り ${CPU_THROTTLE || 1}x）`);
   });
 
   await tab.close();

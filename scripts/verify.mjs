@@ -864,6 +864,65 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
       dup.length ? `重複: ${dup.join(', ')}` : '§7 の行を1つも読めていない');
   }
 
+  // ⚠️ **AUDIT.md の中の「§N」は、実在する節を指す**（第23回 RG-23-14）。
+  //    §7 #5 と §9 が「§5」を指していたが、§5 は無かった（見出しは §4 の次が §6）。
+  //    別の文書の節（`STORE_LISTING.md` §3-4 など）は、直前にその文書名を書いたものだけ外す。
+  {
+    const audit = read('AUDIT.md');
+    const ids = new Set([...audit.matchAll(/^#{2,4}\s+(\d+(?:-\d+[a-z]?)*)\.\s/gm)].map(m => m[1]));
+    const refsIn = (text, known) => {
+      const body = text.replace(/```[\s\S]*?```/g, '');
+      const out = [];
+      for (const m of body.matchAll(/§(\d+(?:-\d+[a-z]?)*)/g)) {
+        const before = body.slice(Math.max(0, m.index - 24), m.index);
+        if (/\.md[`)\]]*\)?\s*$/.test(before)) continue;           // 別の文書の節
+        if (!known.has(m[1])) out.push(m[1]);
+      }
+      return out;
+    };
+    const missing = refsIn(audit, ids);
+    check('AUDIT.md の「§N」が、実在する節を指している（第23回 RG-23-14）',
+      ids.size > 5 && missing.length === 0,
+      `無い節: ${[...new Set(missing)].join(', ') || '（節の見出しを読めていない）'}`);
+    // 陽性対照: 第23回の指摘どおりの形（§5 を指すが §5 の見出しは無い）を捕まえること
+    check('無い節への参照を探す検査が、実際に捕まえる（陽性対照）',
+      refsIn('転記欄は §5 のとおり。[`STORE_LISTING.md`](STORE_LISTING.md) §3-4 も見る。',
+             new Set(['4', '6'])).join() === '5');
+  }
+
+  // ⚠️ **§7 の「現行の制約」に、実装と食い違う約束を書かない**（第23回 RG-23-14）。
+  //    v1.8.21 の §7 は、属性の見張り・`characterData`・スクロールの向き・2周目について、
+  //    もう当てはまらない旧仕様を「いまの制約」として並べていた。全文の意味は判定しない。
+  //    **実装から機械で確かめられる約束**だけを、現行の節（7-1）について見る。
+  {
+    const audit = read('AUDIT.md');
+    const s7 = audit.slice(audit.indexOf('## 7. 意図的に直していない既知の制約'),
+                           audit.indexOf('## 8. これまでの監査の履歴'));
+    const cur7 = (/### 7-1\.[^\n]*\n([\s\S]*?)(?=\n### 7-2\.|$)/.exec(s7) || [])[1] || '';
+    check('AUDIT.md §7 が、現行の制約（7-1）を解消済み・旧仕様と分けて書いている',
+      cur7.length > 500 && /### 7-2\./.test(s7) && /### 7-3\./.test(s7),
+      '7-1（現行）・7-2（解消済み）・7-3（旧仕様）の見出しが要る');
+    const PROMISES = [
+      ['属性の変化だけでは再走査しない', /attributes: true,/.test(code),
+       /属性の変化だけでは再走査しない/],
+      ['テキストノードの中身の差し替え（characterData）を追わない', /characterData: true,/.test(code),
+       /テキストノードの中身だけが差し替わる更新を追わない/],
+      ['スクロールで動かせる向きを判別しない', /function scrollAxisNegative\(/.test(code),
+       /スクロールで動かせる向きを判別しない/],
+      // 2周目は「無いこと」が実装なので、廃止を宣言した注記（content.js の runBatch）を手がかりにする
+      ['断定できない語を、まとめ直しの最後に引き受け直す（2周目）',
+       /2周目（断定できない候補の引き受け直し）は\*\*廃止した\*\*/.test(content),
+       /まだどこも引き受けていない語だけを引き受け直す/]
+    ];
+    for (const [name, implemented, re] of PROMISES) {
+      check(`AUDIT.md §7 の現行の制約に、実装と食い違う旧仕様（${name}）が残っていない`,
+        !(implemented && re.test(cur7)), '解消済みか旧仕様の節へ移す（第23回 RG-23-14）');
+    }
+    // 陽性対照: v1.8.21 の §7 #4 の文言を、この探し方が捕まえること
+    check('§7 の旧仕様の探し方が、当時の文言を捕まえる（陽性対照）',
+      PROMISES[0][2].test('| 4 | **`MutationObserver` が属性の変化だけでは再走査しない** | 見張っているのは…'));
+  }
+
   // ⚠️ **内訳を書いたら、その場で合計と足し合わせる。** §8 は第21回まで8行しか無く、
   //    第9回以降が抜けていた（合計 69件のまま）。行が増えても誰も足し算をしていなかった。
   {

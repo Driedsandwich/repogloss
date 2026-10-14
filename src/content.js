@@ -1784,7 +1784,10 @@
   }
 
   const GHOST_GAP = 120;
-  let ghostAt = -1, ghostList = null, ghostMemo = new Map(), ghostFailed = false;
+  // 控え（ghostMemo）は要素を鍵にするので WeakMap にする。SPA の遷移で外れた古い画面の
+  // 要素を、次の判定まで握り続けないため（第23回の是正の点検 R23-REV-01）。
+  let ghostAt = -1, ghostList = null, ghostMemo = new WeakMap(), ghostFailed = false;
+  let paintFailNoted = false;   // 印の実測の例外の記録も1回だけ（同 R23-REV-03）
 
   // ⚠️ **覆いの判定で例外が出ても、印の実測と入口の走査を止めない**（第23回 RG-23-08）。
   // 判定できないときは「覆いなし」（＝覆いと数えない今の既定の側）。記録は1回だけ残す。
@@ -1797,7 +1800,7 @@
   function ghostCovers() {
     const now = performance.now();
     if (ghostList !== null && now - ghostAt < GHOST_GAP) return ghostList;
-    ghostMemo = new Map();
+    ghostMemo = new WeakMap();
     let out = [];
     try {
       const pool = ghostPool();
@@ -3422,7 +3425,9 @@
       // （登録前の印を、押せるまま置き去りにしない → relinquishIcon）。
       let painted = false;
       try { painted = iconIsPainted(icon); }
-      catch (e) { console.error('[iiyaku] 印の実測に失敗。この印は付けません:', e); }
+      catch (e) {
+        if (!paintFailNoted) { paintFailNoted = true; console.error('[iiyaku] 印の実測に失敗。この印は付けません（以後は記録しない）:', e); }
+      }
       if (!painted) {
         if (tip && tipIcons.includes(icon)) hideTip();
         // 先に押せなくしてから手放す（第23回 RG-23-01）。属性の予定は残し、

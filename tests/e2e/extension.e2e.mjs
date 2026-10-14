@@ -35,8 +35,8 @@ import { launchChrome, startTestServer, stageExtension, stageExtensionWith,
          inkAt, innerRect, shadowButtonEval,
          REJECT23_PAGE, HOSTLOOK23_PAGE, FOCUS23_PAGE, FOCUS23_DARK_PAGE, COLOR23_PAGE,
          UNKNOWN23_PAGE, FORATTR23_PAGE, WIDEN23_PAGE,
-         GHOSTVAL23_PAGE, GHOSTSRC23_PAGE, GHOSTSRC23_EXTRA,
-         GHOSTNEST23_PAGE, GHOSTNEST23_EXTRA, GHOSTFLAT23_PAGE, GHOSTFAULT23_PAGE,
+         GHOSTVAL23_PAGE, GHOSTSRC23_PAGE, GHOSTSRC23_EXTRA, GHOSTSTACK23_PAGE,
+         GHOSTNEST23_PAGE, GHOSTNEST23_EXTRA, GHOSTFLAT23_PAGE, GHOSTFAULT23_PAGE, GHOSTPAINT23_PAGE,
          wordRect23, stageExtensionPatched } from './helpers/chrome.mjs';
 
 const PAGE = 'https://github.com/octocat/Hello-World';
@@ -5155,6 +5155,43 @@ test('第23回 RG-23-06: 変数・adopted・@import で宣言した覆いも見�
   await tab.close();
 });
 
+test('第23回 RG-23-07: 重なりのまとまりをまたいで z-index を比べない', async t => {
+  const srv = await startTestServer(GHOSTSTACK23_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  await waitFor('印が付く', async () => await count23(tab, '#h-c .iiyaku-icon'));
+  await sleep(800);
+
+  await t.test('回答の反例 A: 語の側のまとまりが前なら、覆いと数えない', async () => {
+    assert.ok(await wordInk23(cdp, tab, 'a', 'branch') > 0, '前提が崩れている（語が見えていない）');
+    assert.deepEqual(await pair23(tab, 'a'), [1, 0], '見えている語の印を、後ろのまとまりの覆いで落とした');
+  });
+
+  await t.test('回答の反例 B: 前のまとまりの中の負の z-index の子は、覆いと数える', async () => {
+    assert.equal(await wordInk23(cdp, tab, 'b', 'merge'), 0, '前提が崩れている（覆いが語を隠していない）');
+    assert.deepEqual(await pair23(tab, 'b'), [0, 1], '負の値として捨て、0 画素の印を残した');
+  });
+
+  await t.test('【対照】A を入れ替える（覆いのまとまりが前）と、覆いと数える', async () => {
+    assert.equal(await wordInk23(cdp, tab, 'a2', 'commit'), 0, '前提が崩れている');
+    assert.deepEqual(await pair23(tab, 'a2'), [0, 1]);
+  });
+
+  await t.test('【対照】B を入れ替える（後ろのまとまりの中の正の z-index の子）と、覆いと数えない', async () => {
+    assert.ok(await wordInk23(cdp, tab, 'b2', 'fetch') > 0, '前提が崩れている（語が見えていない）');
+    assert.deepEqual(await pair23(tab, 'b2'), [1, 0], '後ろのまとまりの中の正の値を、前と断定した');
+  });
+
+  await t.test('【対照】覆いの無い場面は、前方に付く', async () => {
+    assert.deepEqual(await pair23(tab, 'c'), [1, 0]);
+  });
+
+  await tab.close();
+});
+
 test('第23回 RG-23-08: 600 段の入れ子と、同じ要素に当たる 3,000 の選択子でも、走査が止まらない', async t => {
   const srv = await startTestServer(GHOSTNEST23_PAGE, GHOSTNEST23_EXTRA);
   const chrome = await launchChrome({ port: srv.port });
@@ -5280,6 +5317,42 @@ test('第23回 RG-23-08: 覆いの判定が故障しても、走査は止まら�
     const ours = errs.consoleErrors.filter(m => m.includes('[iiyaku]'));
     assert.equal(ours.length, 1, `記録: ${JSON.stringify(ours)}`);
     assert.match(ours[0], /覆いの判定に失敗/);
+  });
+
+  await tab.close();
+});
+
+test('第23回 RG-23-10: 塗られていない箱は覆いと数えない', async t => {
+  const srv = await startTestServer(GHOSTPAINT23_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  await waitFor('印が付く', async () => await count23(tab, '#h-none .iiyaku-icon'));
+  await sleep(800);
+
+  await t.test('【対照】完全に不透明な覆いは、覆いと数える', async () => {
+    assert.equal(await wordInk23(cdp, tab, 'op', 'branch'), 0, '前提が崩れている（覆いが語を隠していない）');
+    assert.deepEqual(await pair23(tab, 'op'), [0, 1]);
+  });
+
+  for (const [id, word, why] of [
+    ['a01', 'commit', 'alpha 0.01 の地の箱'],
+    ['a50', 'merge', 'alpha 0.5 の地の箱（半透明）'],
+    ['clip', 'fetch', 'clip-path: inset(50%) で空に切り取った箱'],
+    ['filt', 'fork', 'filter: opacity(0) の箱'],
+    ['ovf', 'clone', '高さ 0 の切り取りの中の箱']
+  ]) {
+    await t.test(`${why}は、覆いと数えない`, async () => {
+      assert.ok(await wordInk23(cdp, tab, id, word) > 0, '前提が崩れている（語が見えていない）');
+      assert.deepEqual(await pair23(tab, id), [1, 0], `${why}を覆いと数え、見えている印を落とした`);
+    });
+  }
+
+  await t.test('【対照】後方の箱と、覆いの無い場面は、覆いと数えない', async () => {
+    assert.ok(await wordInk23(cdp, tab, 'back', 'rebase') > 0, '前提が崩れている');
+    assert.deepEqual([await pair23(tab, 'back'), await pair23(tab, 'none')], [[1, 0], [1, 0]]);
   });
 
   await tab.close();

@@ -758,16 +758,18 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     '`.78em` が二重に掛かり、印の中に小さい輪が入れ子で描かれる');
 
   // RG-22-03 当たり判定に映らない覆い
-  // ⚠️ 第23回（RG-23-05・06・08）で、覆いの候補を集める段（ghostSelectorList / ghostPool）を
-  //    分け、印1つにつき手前の覆いを1回だけ求める形（ghostsOver → coveredAt）へ替えた。
+  // ⚠️ 第23回（RG-23-05〜08・10）で、覆いの判定を「候補を集める（ghostSelectorList /
+  //    ghostPool）」「塗りを確かめる（solidCover）」「前後を比べる（coverInFront）」に分け、
+  //    印1つにつき手前の覆いを1回だけ求める形（ghostsOver → coveredAt）へ替えた。
   //    以下の4件は、その形に合わせて見る場所を直した（守る性質は第22回と同じ）。
   const ghostFn = name => (new RegExp(`function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n  \\}`).exec(code) || [''])[0];
   const ghostCoversBody = ghostFn('ghostCovers');
   const ghostSelBody = ghostFn('ghostSelectorList');
   const ghostPoolBody = ghostFn('ghostPool');
   const ghostsOverBody = ghostFn('ghostsOver');
+  const inFrontBody = ghostFn('coverInFront');
   check('覆いの判定の各段を取り出せる（第23回）',
-    [ghostCoversBody, ghostSelBody, ghostPoolBody, ghostsOverBody].every(b => b.length > 0),
+    [ghostCoversBody, ghostSelBody, ghostPoolBody, ghostsOverBody, inFrontBody].every(b => b.length > 0),
     '関数名を変えたなら、この検査も直す');
   check('当たり判定に映らない覆いも見ている（第22回 RG-22-03）',
     /function ghostCovers/.test(code) && /function ghostBlocks/.test(code) &&
@@ -775,9 +777,10 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     /&& !coveredAt\(x, y\)\) exposed\+\+;/.test(code),
     '`pointer-events: none` の不透明な覆いで 0 画素になった印が、正規のまま残る');
   check('覆いは、断定できるものだけ数えている（第22回 RG-22-03）',
-    /if \(GHOST_CLEAR\.test\(cs\.backgroundColor\)\) continue;/.test(ghostCoversBody) &&
+    /if \(colorAlpha\(cs\.backgroundColor\) !== 1\) continue;/.test(ghostCoversBody) &&
     /if \(cs\.position === 'static'\) continue;/.test(ghostCoversBody) &&
-    /if \(!opaqueChain\(el\)\) continue;/.test(ghostCoversBody),
+    /const rect = solidCover\(el, cs, r\);/.test(ghostCoversBody) &&
+    /if \(coverInFront\(g, icon, ghostMemo\)\) out\.push\(g\);/.test(ghostsOverBody),
     '透明な覆い・重なり順の分からない箱まで覆いと数え、読める語が説明されなくなる');
   check('覆いを、点ごとに見ている（第22回 RG-22-03）',
     /for \(const \[fx, fy\] of ICON_PROBES\)[\s\S]{0,700}coveredAt\(x, y\)/.test(code) &&
@@ -804,6 +807,12 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   check('stylesheet の指紋も、adopted（物の番号）と @import 先を混ぜる（第23回 RG-23-06）',
     /function styleFingerprint\(\)[\s\S]*?adoptedSheets\(\)[\s\S]*?sheetSerial\(sheet\)[\s\S]*?importRulesOf\(r\)[\s\S]*?\n  \}/.test(code),
     'adopted を差し替えても（DOM は変わらない）索引が古いまま使い回される');
+  // 第23回 RG-23-07 前後
+  check('z-index の正負だけで前後を断定しない（第23回 RG-23-07）',
+    !/g\.z > 0/.test(code) && !/if \(z < 0\) continue;/.test(code) &&
+    /if \(s\.kind === 'unknown'\) return false;/.test(inFrontBody) &&
+    /if \(topLayerOf\(g\.el\) !== topLayerOf\(icon\)\) return false;/.test(inFrontBody),
+    '別のまとまりの z-index を直接比べ、見える印を落とす／見えない印を残す');
   // 第23回 RG-23-08 処理量と例外
   check('覆いの候補は除重しながら集め、引数展開をせず、数に上限がある（第23回 RG-23-08）',
     !/\.push\(\.\.\./.test(ghostPoolBody + ghostCoversBody + ghostSelBody) &&
@@ -816,6 +825,11 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     /catch \(e\) \{ out = \[\]; noteGhostFailure\(e\); \}/.test(ghostCoversBody) &&
     /catch \(e\) \{ noteGhostFailure\(e\); return \[\]; \}/.test(ghostsOverBody),
     '覆いの判定の例外で、印の実測と入口の走査ごと止まる');
+  // 第23回 RG-23-10 塗り
+  check('塗りを変える描画効果のある箱は、覆いと数えない（第23回 RG-23-10）',
+    /function paintEffect\(s\)/.test(code) &&
+    /if \(paintEffect\(s\)\) return null;/.test(ghostFn('solidCover')),
+    'alpha 0.01・clip-path・filter: opacity(0) の箱を覆いと数え、見えている印を落とす');
 
   // RG-22-04 / RG-22-05 合図の出ない変化
   check('合図の出ない変化を、短い周期で見に行っている（第22回 RG-22-04）',

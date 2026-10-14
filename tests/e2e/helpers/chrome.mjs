@@ -2158,6 +2158,31 @@ export const GHOSTSRC23_EXTRA = {
   '/imp23.css': ['text/css', '#cv-imp{pointer-events:none;z-index:5;background:white}']
 };
 
+/* RG-23-07。z-index は重なりのまとまりをまたいで比べられない（回答の反例 A・B と、
+   前後を入れ替えた対照）。
+     a  … 語の段落が z-index:10 のまとまり、覆いは z-index:1 → 語が前（覆いではない）
+     a2 … 入れ替え: 段落が z-index:1、覆いが z-index:10 → 覆いが前
+     b  … z-index:10 のまとまりの中の z-index:-1 の白い子 → まとまりごと前（覆い）
+     b2 … 入れ替え: z-index:-1 のまとまりの中の z-index:10 の白い子 → まとまりごと後ろ
+     c  … 覆いの無い場面 */
+export const GHOSTSTACK23_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>ghoststack23</title><style>${BASE23}${SLOT23}
+.g10{position:relative;z-index:10}.g1{position:relative;z-index:1}
+#cv-a{z-index:1;background:white;pointer-events:none}
+#cv-a2{z-index:10;background:white;pointer-events:none}
+.front{position:absolute;inset:0;z-index:10;pointer-events:none}
+.front>.neg{position:absolute;inset:0;z-index:-1;background:white}
+.back{position:absolute;inset:0;z-index:-1;pointer-events:none}
+.back>.pos{position:absolute;inset:0;z-index:10;background:white}</style></head><body>
+  <button id="before">before</button>
+  ${slot23('a', 'branch', undefined, 'g10')}
+  ${slot23('a2', 'commit', undefined, 'g1')}
+  ${slot23('b', 'merge', '<div class="front"><div class="neg"></div></div>')}
+  ${slot23('b2', 'fetch', '<div class="back"><div class="pos"></div></div>')}
+  ${slot23('c', 'fork', '')}
+  <button id="after">after</button>
+</body></html>`;
+
 /* RG-23-08。600 段に入れ子になった候補（回答の反例そのまま）。宣言のある規則は少ないので、
    選択子で引いて `none` の根を広げる経路を通る。前方の webhook だけが、ほんとうの不透明な
    覆い（#same）の下にある（入れ子の候補があっても、覆いを見つけられること）。 */
@@ -2228,6 +2253,34 @@ export const GHOSTFAULT23_PAGE = `<!doctype html><html lang="en"><head><meta cha
   ${slot23('f', 'branch')}
   <p id="second">A commit second.</p>
   <p id="third">A merge third.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-23-10。塗られていない箱を覆いと数えない（回答の A・B・C）と、その対照。
+     op   … ふつうの白（覆い）          a01 … alpha 0.01        a50 … alpha 0.5（半透明）
+     clip … clip-path: inset(50%)（空）  filt … filter: opacity(0)
+     ovf  … 高さ 0 の overflow:hidden の中（塗りが切り取られて無い）
+     back … z-index:-1（後方の箱）       none … 覆いの無い場面 */
+export const GHOSTPAINT23_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>ghostpaint23</title><style>${BASE23}${SLOT23}
+.slot>.cv{z-index:5;pointer-events:none}
+#cv-op{background:white}
+#cv-a01{background:rgba(255,255,255,0.01)}
+#cv-a50{background:rgba(255,255,255,0.5)}
+#cv-clip{background:white;clip-path:inset(50%)}
+#cv-filt{background:white;filter:opacity(0)}
+.wrap0{position:absolute;left:0;top:0;width:100%;height:0;overflow:hidden}
+.wrap0>.cv0{position:absolute;left:0;top:0;width:100%;height:40px;z-index:5;background:white;pointer-events:none}
+#cv-back{z-index:-1;background:white}</style></head><body>
+  <button id="before">before</button>
+  ${slot23('op', 'branch')}
+  ${slot23('a01', 'commit')}
+  ${slot23('a50', 'merge')}
+  ${slot23('clip', 'fetch')}
+  ${slot23('filt', 'fork')}
+  ${slot23('ovf', 'clone', '<div class="wrap0"><div class="cv0"></div></div>')}
+  ${slot23('back', 'rebase')}
+  ${slot23('none', 'revert', '')}
   <button id="after">after</button>
 </body></html>`;
 

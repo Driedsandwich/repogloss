@@ -692,10 +692,8 @@
   const isClearColor = c => colorAlpha(c) === 0;
   // 確実に塗るか（読めない形は「塗る」と断定しない＝印の実測では不合格の側）
   const isInkColor = c => { const a = colorAlpha(c); return a !== null && a > 0; };
-  // ⚠️ **覆いの判定だけは、まだ旧来の形で見る**（第23回 RG-23-03 の範囲外）。
-  // 覆いの側は「alpha が 1 のときだけ覆い」へ直す別の是正（RG-23-10）があり、
-  // ここで判定を替えると、その結果まで変わってしまう。関数を分けて、覆いの答えは据え置く。
-  const GHOST_CLEAR = /^rgba\([^)]*,\s*0(\.0+)?\)$/;
+  // 覆いの判定は「alpha がちょうど 1」のときだけ覆いと数える（第23回 RG-23-10 → ghostCovers）。
+  // 読めない形（null）も 1 ではないので、覆いとは数えない（断定しない側）。
 
   // 文字そのものが透明なら読めない（第15回 RG-15-05。実測: `color: transparent` の
   // 語に印が付き、後ろの読める同じ語が説明されなかった）。
@@ -1455,13 +1453,13 @@
   //    それを書いてある要素から候補を引く。宣言が1つも無ければ走査は起きない。
   //    読めない stylesheet が1枚でもあれば見落とすので、そのときだけ全要素を歩くほうへ落とす。
   //
-  // ⚠️ **断定できるものだけを覆いと数える。** 地の色が不透明で、透けておらず、
-  //    位置指定があり、重なり順で印より前に来るもの。画像や gradient で塗られた箱、
-  //    重なり順を推し量れない箱は「覆いではない」側へ倒す（落としすぎると、
-  //    ふつうのページの語が説明されなくなる）。→ 残る限界は AUDIT.md §7。
+  // ⚠️ **断定できるものだけを覆いと数える。** 地の色が完全に不透明で、透けておらず、
+  //    塗りを変える描画効果が無く、位置指定があり、重なり順で印より前と言えるもの。
+  //    画像や gradient で塗られた箱、重なり順を推し量れない箱は「覆いではない」側へ
+  //    倒す（落としすぎると、ふつうのページの語が説明されなくなる）。→ 残る限界は AUDIT.md §7。
   //
-  // 第23回（RG-23-05・06・08）で、候補の集め方と処理量を別の段に分けた
-  // （→ ghostSelectorList / ghostPool）。
+  // 第23回（RG-23-05〜08・10）で、候補の集め方・前後の比べ方・塗りの確かめ方・処理量を
+  // 別々の段に分けた（→ ghostSelectorList / ghostPool / solidCover / coverInFront）。
 
   // ⚠️ **候補は「`pointer-events` を宣言している規則」全部**（第23回 RG-23-05・06）。
   //    以前は宣言の**値**が `none` の規則だけを索引にしていた。索引は指紋（選択子と
@@ -1615,18 +1613,178 @@
     return true;
   }
 
-  // 祖先まで含めて、その箱が透けていないか
-  function opaqueChain(el) {
-    for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
-      const cs = getComputedStyle(n);
-      if (cs.visibility !== 'visible' || cs.display === 'none') return false;
-      if (parseFloat(cs.opacity) !== 1) return false;
+  // ---- 塗り（第23回 RG-23-10） ----
+  // 「地の alpha が 0 でない」では足りなかった。alpha 0.01・`clip-path: inset(50%)`・
+  // `filter: opacity(0)` の箱を覆いと数え、見えている印（語の矩形で 304 画素）を
+  // 落としていた（実測）。外接矩形は塗られている領域そのものではない。
+  // 覆いと数えるのは、**地の alpha がちょうど 1** で、覆いと祖先のどれにも塗りを変える
+  // 描画効果が無く、矩形のとおりに塗られていると言えるときだけ。
+  const isNoneVal = v => !v || v === 'none';
+  function paintEffect(s) {
+    if (!isNoneVal(s.filter) || !isNoneVal(s.clipPath) || !isNoneVal(s.offsetPath)) return true;
+    if (!isNoneVal(s.maskImage) || !isNoneVal(s.webkitMaskImage) ||
+        !isNoneVal(s.webkitMaskBoxImageSource)) return true;
+    if (s.mixBlendMode && s.mixBlendMode !== 'normal') return true;
+    if (s.clip && s.clip !== 'auto' && (s.position === 'absolute' || s.position === 'fixed')) return true;
+    // 回転・傾き・3D の変形は、外接矩形と塗りの形が一致しない（拡大・移動・反転は一致する）
+    if (!isNoneVal(s.rotate)) return true;
+    if (!isNoneVal(s.transform)) {
+      const m = /^matrix\(([^)]*)\)$/.exec(s.transform);
+      if (!m) return true;
+      const v = m[1].split(',');
+      if (parseFloat(v[1]) !== 0 || parseFloat(v[2]) !== 0) return true;
     }
-    return true;
+    return false;
+  }
+  const hasRadius = s => s.borderTopLeftRadius !== '0px' || s.borderTopRightRadius !== '0px' ||
+                         s.borderBottomRightRadius !== '0px' || s.borderBottomLeftRadius !== '0px';
+  // 祖先が中身を切り取るか（overflow・contain: paint）。行内の箱には効かない。
+  const clipsInside = s => s.display !== 'inline' && s.display !== 'contents' &&
+    (s.overflowX !== 'visible' || s.overflowY !== 'visible' ||
+     /\b(paint|strict|content)\b/.test(s.contain || '') || s.contentVisibility === 'auto');
+
+  // 矩形のとおりに塗りつぶされていると言える覆いなら、その矩形を返す（祖先の切り取りで
+  // 狭める）。言えなければ null。祖先の opacity・visibility も見る（旧 opaqueChain）。
+  function solidCover(el, cs, r) {
+    if (hasRadius(cs)) return null;                         // 角は塗られていない
+    // 地の色は、いちばん下の層の background-clip で切られる
+    if (String(cs.backgroundClip).split(',').pop().trim() !== 'border-box') return null;
+    let x1 = r.left, y1 = r.top, x2 = r.right, y2 = r.bottom;
+    for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
+      const s = n === el ? cs : getComputedStyle(n);
+      if (s.visibility !== 'visible' || s.display === 'none') return null;
+      if (parseFloat(s.opacity) !== 1) return null;
+      if (paintEffect(s)) return null;
+      // 祖先の切り取りの外は塗られない。切り取りの縁の内側（padding box）へ狭める。
+      // 包含ブロックの外へ逃げる覆い（fixed など）まで狭めることになるが、それは
+      // 「覆っている範囲を少なく見積もる」向き（＝断定しない側）なので構わない。
+      if (n !== el && n !== document.body && clipsInside(s)) {
+        if (hasRadius(s)) return null;
+        const b = n.getBoundingClientRect();
+        const px = b.left + n.clientLeft, py = b.top + n.clientTop;
+        x1 = Math.max(x1, px); y1 = Math.max(y1, py);
+        x2 = Math.min(x2, px + n.clientWidth); y2 = Math.min(y2, py + n.clientHeight);
+        if (!(x2 > x1 && y2 > y1)) return null;
+      }
+    }
+    // 祖先の content-visibility なども、まとめて聞いておく
+    if (HAS_CHECK_VISIBILITY && !el.checkVisibility(CHECK_VISIBILITY_OPTS)) return null;
+    return { left: x1, top: y1, right: x2, bottom: y2 };
+  }
+
+  // ---- 前後（第23回 RG-23-07） ----
+  // `z-index` は文書全体の1つの順位ではない。以前は覆いの `z < 0` を捨て、`z > 0` なら
+  // 前と断定していたので、両方向に誤っていた（実測）:
+  //   A: `#first{position:relative;z-index:10}` の中の印と、`z-index:1` の固定の覆い。
+  //      印の側のまとまりが前なのに（語の矩形 304 画素）、印は後方へ移された。
+  //   B: `z-index:10` の固定の箱の子の `z-index:-1` の白い覆い。前のまとまりの中の
+  //      負の子なので印は 0 画素なのに、負の値として捨てられ、印が残った。
+  // いまは、覆いと印の**共通の祖先より下**で、それぞれが属するいちばん外側のまとまり
+  // （stacking context を作る祖先）を求め、その層で比べられるときだけ前後を断定する。
+  // 共通の祖先より上は両者で同じなので、比べ方に影響しない。
+  // 作るかどうか読めない性質が枝の上にあれば、覆いと数えない（断定しない側）。
+  //   'yes' … 作る／'no' … 作らない／'unknown' … 読めない
+  const SC_WILL = new Set(['opacity', 'transform', 'translate', 'rotate', 'scale', 'perspective',
+    'filter', 'backdrop-filter', 'clip-path', 'mask', 'mask-image', 'mask-border', '-webkit-mask',
+    '-webkit-mask-image', 'mix-blend-mode', 'isolation', 'offset-path', 'contain']);
+  const NO_SC_WILL = new Set(['auto', 'scroll-position', 'contents']);
+  function stackKind(s, parentDisplay, zApplies) {
+    if (s.display === 'contents') return 'no';              // 箱が無い
+    if (s.position === 'fixed' || s.position === 'sticky' || zApplies) return 'yes';
+    if (parseFloat(s.opacity) < 1) return 'yes';
+    if (!isNoneVal(s.transform) || !isNoneVal(s.translate) || !isNoneVal(s.rotate) ||
+        !isNoneVal(s.scale) || !isNoneVal(s.perspective) || !isNoneVal(s.offsetPath)) return 'yes';
+    if (s.transformStyle === 'preserve-3d') return 'yes';
+    if (!isNoneVal(s.filter) || !isNoneVal(s.backdropFilter) || !isNoneVal(s.clipPath)) return 'yes';
+    if (!isNoneVal(s.maskImage) || !isNoneVal(s.webkitMaskImage) ||
+        !isNoneVal(s.webkitMaskBoxImageSource)) return 'yes';
+    if (s.mixBlendMode && s.mixBlendMode !== 'normal') return 'yes';
+    if (s.isolation === 'isolate') return 'yes';
+    if (/\b(layout|paint|strict|content)\b/.test(s.contain || '')) return 'yes';
+    if (s.contentVisibility === 'auto' || s.contentVisibility === 'hidden') return 'yes';
+    // `container-type: size / inline-size` は Chrome では作る（実測 Chrome 155: 中の
+    // `z-index:-1` の子が、その箱の地より上に描かれた）。それ以外の値は読まない。
+    const ct = s.containerType;
+    if (ct && ct !== 'normal') return /size/.test(ct) ? 'yes' : 'unknown';
+    const will = (s.willChange || 'auto').split(',').map(t => t.trim());
+    if (will.some(t => SC_WILL.has(t))) return 'yes';
+    if (!will.every(t => NO_SC_WILL.has(t))) return 'unknown';
+    if (!isNoneVal(s.viewTransitionName) || !isNoneVal(s.webkitBoxReflect)) return 'unknown';
+    // 位置指定の無い要素の z-index が効くか（flex / grid の子か）は、親の箱が
+    // `display: contents` だと祖父母次第になる。そこは読まない。
+    if (s.zIndex !== 'auto' && parentDisplay === 'contents') return 'unknown';
+    return 'no';
+  }
+  // 要素ごとの重なりの性質。覚え書きは覆いの一覧と同じ間隔で捨てる（→ ghostCovers）。
+  //   kind … stackKind／z … 効いている z-index（auto・効かないときは 0）
+  //   pos … 位置指定があるか／order … flex・grid の `order` で並べ替えられているか
+  function stackInfo(el, memo) {
+    let v = memo.get(el);
+    if (v) return v;
+    const s = getComputedStyle(el);
+    const p = el.parentElement;
+    const pd = p ? getComputedStyle(p).display : 'block';
+    const item = /flex|grid/.test(pd);                     // flex / grid の子は z-index が効く
+    const pos = s.position !== 'static';
+    const zApplies = s.zIndex !== 'auto' && (pos || item);
+    v = { kind: stackKind(s, pd, zApplies), z: zApplies ? (parseInt(s.zIndex, 10) || 0) : 0,
+          pos, order: item && s.order !== '0' };
+    memo.set(el, v);
+    return v;
+  }
+  // 最上層（top layer）に出た要素の中かどうか。違えば、ここでの比べ方は当てはまらない。
+  const TOP_LAYER_SEL = [':modal', ':popover-open', ':fullscreen'].filter(s => {
+    try { return CSS.supports(`selector(${s})`); } catch (e) { return false; }
+  }).join(',');
+  const topLayerOf = el => { try { return TOP_LAYER_SEL ? el.closest(TOP_LAYER_SEL) : null; } catch (e) { return null; } };
+
+  // 覆い g が、印より手前に描かれていると断定できるか
+  function coverInFront(g, icon, memo) {
+    if (topLayerOf(g.el) !== topLayerOf(icon)) return false;
+    // 覆いの側の祖先に番号を振り、印の側から上って最初に当たったところが共通の祖先
+    const upC = new Map();
+    let k = 0;
+    for (let n = g.el; n && n !== document.documentElement; n = n.parentElement) upC.set(n, k++);
+    let lca = k;                                            // 当たらなければ <html>
+    const iBranch = [];
+    for (let n = icon; n && n !== document.documentElement; n = n.parentElement) {
+      const at = upC.get(n);
+      if (at !== undefined) { lca = at; break; }
+      iBranch.push(n);
+    }
+    if (lca === 0 || iBranch.length === 0) return false;     // 一方が他方を含む＝覆いではない
+    // それぞれの枝で、いちばん外側のまとまり。無ければ要素そのもの。
+    let x = g.el, y = null, yPos = null;
+    let n = g.el;
+    for (let i = 0; i < lca; i++, n = n.parentElement) {
+      const s = stackInfo(n, memo);
+      if (s.kind === 'unknown') return false;
+      if (s.kind === 'yes') x = n;
+    }
+    for (const m of iBranch) {
+      const s = stackInfo(m, memo);
+      if (s.kind === 'unknown') return false;
+      if (s.kind === 'yes') y = m;
+      if (!yPos && s.pos) yPos = m;
+    }
+    // まとまりの無い印は、いちばん近い位置指定の祖先と一緒に描かれる（z-index:auto の層）。
+    // それも無ければ、ふつうの流れの中（負の層より上、位置指定の層より下）。
+    if (!y) y = yPos;
+    const sx = stackInfo(x, memo);
+    const rank = s => (s.z < 0 ? 0 : s.z > 0 ? 3 : 2);
+    const rx = rank(sx);
+    if (!y) return rx >= 2;                                 // ふつうの流れ（層 1）との比べ
+    const sy = stackInfo(y, memo);
+    const ry = rank(sy);
+    if (rx !== ry) return rx > ry;
+    if (sx.z !== sy.z) return sx.z > sy.z;
+    // 同じ層・同じ z-index なら、文書順で後のものが上。並べ替えられていれば読まない。
+    if (sx.order || sy.order) return false;
+    return !!(y.compareDocumentPosition(x) & Node.DOCUMENT_POSITION_FOLLOWING);
   }
 
   const GHOST_GAP = 120;
-  let ghostAt = -1, ghostList = null, ghostFailed = false;
+  let ghostAt = -1, ghostList = null, ghostMemo = new Map(), ghostFailed = false;
 
   // ⚠️ **覆いの判定で例外が出ても、印の実測と入口の走査を止めない**（第23回 RG-23-08）。
   // 判定できないときは「覆いなし」（＝覆いと数えない今の既定の側）。記録は1回だけ残す。
@@ -1639,6 +1797,7 @@
   function ghostCovers() {
     const now = performance.now();
     if (ghostList !== null && now - ghostAt < GHOST_GAP) return ghostList;
+    ghostMemo = new Map();
     let out = [];
     try {
       const pool = ghostPool();
@@ -1648,13 +1807,11 @@
           if (cs.pointerEvents !== 'none') continue;            // ほとんどの要素はここで終わる
           if (isOurNode(el) || ownedIcons.has(el)) continue;   // 自分の持ち物は覆いに数えない
           if (cs.position === 'static') continue;               // 重なり順を推し量れない
-          if (GHOST_CLEAR.test(cs.backgroundColor)) continue;     // 地が透明＝断定しない
-          const z = cs.zIndex === 'auto' ? 0 : (parseInt(cs.zIndex, 10) || 0);
-          if (z < 0) continue;                                    // 後ろに敷いてある
+          if (colorAlpha(cs.backgroundColor) !== 1) continue;   // 地が完全に不透明なときだけ
           const r = el.getBoundingClientRect();
           if (!(r.width > 0 && r.height > 0)) continue;
-          if (!opaqueChain(el)) continue;
-          out.push({ el, r, z });
+          const rect = solidCover(el, cs, r);
+          if (rect) out.push({ el, r: rect });
         }
       }
     } catch (e) { out = []; noteGhostFailure(e); }
@@ -1662,7 +1819,7 @@
     return out;
   }
 
-  // 印の矩形に掛かる覆いのうち、印より手前のもの（印1つにつき1回求める）
+  // 印の矩形に掛かる覆いのうち、印より手前と断定できるもの（印1つにつき1回求める）
   function ghostsOver(icon, b) {
     try {
       const list = ghostCovers();
@@ -1670,9 +1827,7 @@
       const out = [];
       for (const g of list) {
         if (g.r.right <= b.left || g.r.left >= b.right || g.r.bottom <= b.top || g.r.top >= b.bottom) continue;
-        if (g.el === icon || g.el.contains(icon) || icon.contains(g.el)) continue;
-        // 重なり順の指定が無いときは、**後から来たほうが上**に描かれる
-        if (g.z > 0 || (icon.compareDocumentPosition(g.el) & Node.DOCUMENT_POSITION_FOLLOWING)) out.push(g);
+        if (coverInFront(g, icon, ghostMemo)) out.push(g);
       }
       return out;
     } catch (e) { noteGhostFailure(e); return []; }

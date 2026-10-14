@@ -2812,7 +2812,21 @@
     if (icon.getAttribute('role') === 'button') setOwnAttr(icon, 'aria-expanded', v);
   }
 
+  // 吹き出しへ移る途中の隙間で閉じない（第23回 RG-23-15）。
+  // 吹き出しは印から 6px 離して置く（placeTip）。⚠️ 以前は、その隙間の本文へカーソルが
+  // 入った瞬間（印の下端から +0.5px・実測）に閉じていたので、カーソルを吹き出しへ
+  // 移して長い説明を読むことができなかった（WCAG 1.4.13 の hoverable）。
+  // 印・入口・吹き出しを囲む矩形の中へ**本物のカーソルが**移ったときだけ、短い猶予の
+  // あとに閉じる。印か吹き出しへ戻れば取り消す。矩形の外へ移ったとき、Escape・
+  // フォーカスの移動・印の退役・OFF では、これまでどおり即時に閉じる（hideTip が猶予を消す）。
+  const TIP_GRACE_MS = 250;
+  let tipCloseTimer = null;
+  function cancelTipClose() {
+    if (tipCloseTimer !== null) { clearTimeout(tipCloseTimer); tipCloseTimer = null; }
+  }
+
   function hideTip() {
+    cancelTipClose();
     if (tipDescribed) { removeDescribedBy(tipDescribed, TIP_ID); tipDescribed = null; }
     for (const ic of tipIcons) setExpanded(ic, 'false');
     if (tip) { removeOwn(tip); tip = null; }
@@ -2869,6 +2883,8 @@
   // icons: 出す説明のもと（複数可）／anchor: 位置の基準／describe: 説明を結びつける相手
   function showTip(icons, anchor, describe) {
     if (!enabled || !icons || icons.length === 0) return;
+    // 同じ説明を出し直すときも、待っている「閉じる」は取り消す（印へ戻ってきた）
+    cancelTipClose();
     if (tip && tipAnchor === anchor && requestKey(tipIcons) === requestKey(icons)) return;
     hideTip();
 
@@ -2927,31 +2943,84 @@
     return !!(el && tip && (el === tip || tip.contains(el)));
   };
 
+  // 印・入口・吹き出しを囲む矩形（4px 広げる）。印から吹き出しへ向かう道すじは、
+  // 両者の外接矩形の中に収まる。座標は viewport（吹き出しは position: fixed）。
+  function inTipCorridor(x, y) {
+    if (!tip || !tipAnchor || !tipAnchor.isConnected) return false;
+    if (typeof x !== 'number' || typeof y !== 'number') return false;
+    const P = 4;
+    let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
+    for (const el of [tipAnchor, tip, tipDescribed]) {
+      if (!el || !el.isConnected) continue;
+      const q = el.getBoundingClientRect();
+      l = Math.min(l, q.left); t = Math.min(t, q.top);
+      r = Math.max(r, q.right); b = Math.max(b, q.bottom);
+    }
+    return x >= l - P && x <= r + P && y >= t - P && y <= b + P;
+  }
+
+  // カーソルが印（入口）と吹き出しの外へ出た。
+  // ⚠️ 猶予を与えるのは、**移った先の要素があり**（relatedTarget。ウィンドウの外から
+  // 来た／出たときは null）、その位置が上の矩形の中のときだけ。ページの script が
+  // 座標なしで送る合成の mouseover / mouseout（clientX = clientY = 0）は、矩形の外として
+  // これまでどおり即時に閉じる。
+  function leaveTip(e) {
+    if (!tip) return;
+    if (e && e.relatedTarget && inTipCorridor(e.clientX, e.clientY)) {
+      if (tipCloseTimer === null) {          // 矩形の中で要素をまたいでも延長しない
+        const which = tip;
+        tipCloseTimer = setTimeout(() => {
+          tipCloseTimer = null;
+          if (tip === which) hideTip();
+        }, TIP_GRACE_MS);
+      }
+      return;
+    }
+    hideTip();
+  }
+
+  // Escape で閉じたときにフォーカスがあった相手（第23回の3群目）。
+  // ⚠️ Chrome 155（headless）では、最初の Escape でウィンドウが一瞬 blur して戻り、
+  // **同じ印へ focusout → focusin が来る**（実測: keydown の約 75〜100ms 後に
+  // focusout（relatedTarget = null・document.hasFocus() = false）→ window の blur →
+  // visibilitychange hidden → window の focus → focusin）。focusin は説明を出すので、
+  // Escape で閉じた吹き出しが出直していた。同じ相手へ戻っただけの focusin では出さない。
+  // 忘れるのは、別の要素へフォーカスが移ったとき（body を含む）・Escape 以外の
+  // キーが押されたとき・マウスで印に乗ったとき。Enter・Space・クリック・hover で
+  // 明示的に開くのは妨げない。
+  let escClosedAt = null;
+
   function bindTip() {
     // 印以外の場所へカーソルが移ったら消す。mouseout だけに頼ると、
     // 表示中に印が DOM から消えた場合（GitHub の再描画など）に
     // mouseout が来ず、ツールチップが residual として残る。
     document.addEventListener('mouseover', e => {
-      if (inTooltip(e.target)) return;   // 吹き出しの上に来ただけなら消さない
+      if (inTooltip(e.target)) { cancelTipClose(); return; }   // 吹き出しの上に来たら閉じない
       const req = requestFrom(e.target);
-      if (req) show(req); else hideTip();
+      if (req) { escClosedAt = null; show(req); } else leaveTip(e);
     }, true);
     document.addEventListener('mouseout', e => {
       // 吹き出しへカーソルを移す途中で消さない（長い説明を読めるようにする）
       if (inTooltip(e.relatedTarget) || requestFrom(e.relatedTarget)) return;
-      if (requestFrom(e.target)) hideTip();
+      if (requestFrom(e.target)) leaveTip(e);
     }, true);
 
     // キーボード。Tab で入口に止まったら出し、離れたら消す。
     document.addEventListener('focusin', e => {
+      // Escape で閉じた相手へ、ウィンドウの出入りなどで戻ってきただけなら出さない
+      if (escClosedAt !== null && asElement(e.target) === escClosedAt) return;
+      escClosedAt = null;
       const req = requestFrom(e.target);
       if (req) show(req); else hideTip();
     }, true);
     document.addEventListener('focusout', e => {
+      // 文書の中で別の場所へ移った（移り先が要素か、文書がフォーカスを保ったまま body へ）
+      if (escClosedAt !== null && (e.relatedTarget || document.hasFocus())) escClosedAt = null;
       if (requestFrom(e.target)) hideTip();
     }, true);
     document.addEventListener('keydown', e => {
-      if (e.key === 'Escape') { if (tip) hideTip(); return; }
+      if (e.key === 'Escape') { escClosedAt = asElement(e.target); if (tip) hideTip(); return; }
+      escClosedAt = null;
       const el = asElement(e.target);
       if (!el || !ownedIcons.has(el)) return;   // ページ側の同名 class には反応しない
       if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
@@ -4268,8 +4337,10 @@
       // `dispatchEvent(new MouseEvent('click'))` で押せてしまう。実測: ページ側の
       // script から `.click()` を1回呼ぶだけで表示が「解説 OFF」に変わり、
       // **別のタブを開いてもそのまま OFF だった**（＝保存まで届いていた）。
-      // ブラウザが起こした操作だけ `isTrusted` が真になる。実際のマウス操作・
-      // Enter / Space・支援技術による activation はどれも真なので、そのまま通る。
+      // ブラウザが起こした操作だけ `isTrusted` が真になる。実際のマウス操作と
+      // Enter / Space は真になり、そのまま通る（E2E で確かめた）。支援技術による
+      // activation も真になるはずだが、**実機（NVDA・VoiceOver）では未確認**
+      // （AUDIT.md §7 #1 と同じ扱い）。DOM 仕様では `.click()` は trusted にならない。
       // ⚠️ この門は**設定を変える経路だけ**に掛ける。見え方を測り直すための
       // 受け身の合図（カーソル・フォーカス・スクロール）へ広げてはいけない。
       // 合成された変化でも「見えるようになった」ことは本当に起きているため。

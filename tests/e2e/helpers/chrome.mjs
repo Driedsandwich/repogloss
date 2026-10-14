@@ -2311,3 +2311,55 @@ export function stageExtensionPatched(edit) {
   writeFileSync(p, after);
   return dir;
 }
+
+/* ===================== 第23回監査（v1.8.21）の反例・3群目 ===================== */
+
+/* RG-23-15。吹き出しは印から 6px 下に離れて出る。その隙間を本物のカーソルで通る。
+   下に余白を置き、吹き出しが印の真下に出るようにする（印の中ほどから真下へ動けば入れる）。 */
+export const TIPGAP23_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>tipgap23</title><style>html,body{margin:0;background:white;color:black;font:16px Arial}
+ p{margin:40px} .spacer{height:600px}</style></head><body>
+  <button id="before">start</button>
+  <p id="first">A branch here.</p>
+  <div class="spacer"></div>
+  <button id="after">after</button>
+</body></html>`;
+
+/* ページの世界で、吹き出しの出入りと入力の時刻を控える（第23回 RG-23-15・3群目の Escape）。
+   CDP の往復の遅さに左右されずに「何 ms で閉じたか」を測るため、時刻はページ側で取る。 */
+export async function tipRecorder23(page) {
+  // 2回目以降は控えを空にするだけ（見張りを重ねると同じ出来事が2回ずつ並ぶ）
+  return await page.evaluate(`(() => {
+    window.__tip23 = [];
+    window.__tip23t0 = performance.now();
+    if (window.__tip23on) return true;
+    window.__tip23on = true;
+    const L = (k, o) => window.__tip23.push([Math.round((performance.now() - window.__tip23t0) * 10) / 10, k, o || '']);
+    window.addEventListener('keydown', e => L('key', e.key), true);
+    // mouseout（印から出た）は mouseover（次の要素へ入った）より先に来る
+    window.addEventListener('mouseout', e => L('out', (e.target && (e.target.id || e.target.tagName)) || ''), true);
+    window.addEventListener('mouseover', e => L('over', (e.target && (e.target.id || e.target.tagName)) || ''), true);
+    window.addEventListener('blur', e => { if (e.target === window) L('win-blur'); }, true);
+    window.addEventListener('focus', e => { if (e.target === window) L('win-focus'); }, true);
+    new MutationObserver(rs => { for (const r of rs) {
+      for (const n of r.addedNodes) if (n.nodeType === 1 && n.matches('.iiyaku-tooltip[data-iiyaku-owner]')) L('tip+');
+      for (const n of r.removedNodes) if (n.nodeType === 1 && n.matches('.iiyaku-tooltip[data-iiyaku-owner]')) L('tip-');
+    } }).observe(document.body, { childList: true });
+    return true; })()`);
+}
+
+/* closed shadow root の中の button へ、CDP でフォーカスを移す（キーを押さずに）。
+   ページの世界からは closed の中へ届かないので、pierce した DOM から引く。 */
+export async function focusShadowButton23(cdp, page, hostSel) {
+  await cdp.send('DOM.enable', {}, page.sessionId);
+  const { root } = await cdp.send('DOM.getDocument', { depth: -1, pierce: true }, page.sessionId);
+  const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: hostSel }, page.sessionId);
+  if (!nodeId) throw new Error(`host が無い: ${hostSel}`);
+  const { node } = await cdp.send('DOM.describeNode', { nodeId, depth: -1, pierce: true }, page.sessionId);
+  let btn = null;
+  const walk = n => { if (!btn && n.localName === 'button') btn = n; (n.children || []).forEach(walk); };
+  for (const sr of node.shadowRoots || []) walk(sr);
+  if (!btn) throw new Error(`shadow の中に button が無い: ${hostSel}`);
+  await cdp.send('DOM.focus', { backendNodeId: btn.backendNodeId }, page.sessionId);
+}
+

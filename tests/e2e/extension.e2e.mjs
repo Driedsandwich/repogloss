@@ -37,7 +37,8 @@ import { launchChrome, startTestServer, stageExtension, stageExtensionWith,
          UNKNOWN23_PAGE, FORATTR23_PAGE, WIDEN23_PAGE,
          GHOSTVAL23_PAGE, GHOSTSRC23_PAGE, GHOSTSRC23_EXTRA, GHOSTSTACK23_PAGE,
          GHOSTNEST23_PAGE, GHOSTNEST23_EXTRA, GHOSTFLAT23_PAGE, GHOSTFAULT23_PAGE, GHOSTPAINT23_PAGE,
-         wordRect23, stageExtensionPatched } from './helpers/chrome.mjs';
+         wordRect23, stageExtensionPatched,
+         TIPGAP23_PAGE, tipRecorder23, focusShadowButton23 } from './helpers/chrome.mjs';
 
 const PAGE = 'https://github.com/octocat/Hello-World';
 
@@ -5353,6 +5354,213 @@ test('第23回 RG-23-10: 塗られていない箱は覆いと数えない', asyn
   await t.test('【対照】後方の箱と、覆いの無い場面は、覆いと数えない', async () => {
     assert.ok(await wordInk23(cdp, tab, 'back', 'rebase') > 0, '前提が崩れている');
     assert.deepEqual([await pair23(tab, 'back'), await pair23(tab, 'none')], [[1, 0], [1, 0]]);
+  });
+
+  await tab.close();
+});
+
+/* ===================== 第23回監査（v1.8.21）の反例・3群目 ===================== */
+/* 吹き出し（RG-23-15）と、Escape で閉じた吹き出しが出直す件（監査の外・本体が見つけた）。
+   どちらも**直す前の v1.8.21 で落ちる**ことを確かめてある。対照は【対照】。 */
+
+const tips23 = tab => count23(tab, '.iiyaku-tooltip[data-iiyaku-owner]');
+// その点に何があるか（吹き出し／印／それ以外）。隙間を本当に通ったかを、こちらの計算でなく
+// ブラウザの当たり判定で確かめる。
+const kindAt23 = (tab, x, y) => tab.evaluate(`(() => { const e = document.elementFromPoint(${x}, ${y});
+  if (!e) return 'none';
+  if (e.closest('.iiyaku-tooltip[data-iiyaku-owner]')) return 'tip';
+  if (e.closest('.iiyaku-icon[data-iiyaku-owner]')) return 'icon';
+  return 'other'; })()`);
+// ページの世界で控えた時刻から、ある入力のあと最初に吹き出しが消えるまでの ms
+// （kinds は 'key' / 'out' / 'over' のどれか、または配列）
+const closeLag23 = async (tab, kinds, value) => {
+  const log = await tab.evaluate(`window.__tip23`);
+  const ks = [].concat(kinds);
+  let at = null;
+  for (const [ms, k, o] of log) {
+    if (at === null && ks.includes(k) && (value === undefined || o === value)) at = ms;
+    else if (at !== null && k === 'tip-') return Math.round((ms - at) * 10) / 10;
+  }
+  return null;
+};
+
+test('第23回 RG-23-15: 印から吹き出しへ、隙間を通って移っても閉じない', async t => {
+  const srv = await startTestServer(TIPGAP23_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  await waitFor('印が付く', async () => await count23(tab, '#first .iiyaku-icon'));
+  await sleep(600);
+  await tipRecorder23(tab);
+
+  const icon = await rectOf23(tab, '#first .iiyaku-icon');
+  const cx = Math.round(icon.x + icon.w / 2), cy = Math.round(icon.y + icon.h / 2);
+  const gy = Math.round(icon.y + icon.h) + 3;          // 印の下端から 3px 下（隙間の途中）
+  const onIcon = async () => {
+    await mouse23(cdp, tab, cx, cy);
+    await waitFor('印に乗ると吹き出しが出る', async () => await tips23(tab) === 1);
+  };
+  const away = async () => {
+    await mouse23(cdp, tab, 5, 5);
+    await waitFor('吹き出しが閉じる', async () => await tips23(tab) === 0, { timeout: 3000 });
+  };
+
+  await t.test('1px ずつ真下へ動かすと、隙間を通って吹き出しの中まで、吹き出しは出たまま', async () => {
+    await onIcon();
+    const tr = await rectOf23(tab, '.iiyaku-tooltip[data-iiyaku-owner]');
+    assert.ok(tr.y >= icon.y + icon.h + 3, `前提: 吹き出しが印の下に離れて出ていない: ${JSON.stringify({ icon, tr })}`);
+    assert.ok(cx > tr.x + 1 && cx < tr.x + tr.w - 1, `前提: 真下へ動かしても吹き出しに入らない: ${JSON.stringify({ cx, tr })}`);
+    const path = [];
+    for (let y = cy; y <= Math.ceil(tr.y) + 6; y++) {
+      await mouse23(cdp, tab, cx, y);
+      path.push({ y, kind: await kindAt23(tab, cx, y), tips: await tips23(tab) });
+    }
+    assert.equal(path[0].kind, 'icon', `前提: 印の上から動き出していない: ${JSON.stringify(path[0])}`);
+    assert.equal(path[path.length - 1].kind, 'tip', `前提: 吹き出しの中まで来ていない: ${JSON.stringify(path.slice(-3))}`);
+    // ⚠️ 隙間を飛び越えるだけの入力で成功扱いにしない。印でも吹き出しでもない点を
+    //    実際に何度か通ったことを、当たり判定で確かめる（6px の隙間なら 5〜6 点）。
+    const gap = path.filter(p => p.kind === 'other');
+    assert.ok(gap.length >= 3, `隙間を通っていない（飛び越えている）: ${JSON.stringify(path)}`);
+    const lost = path.find(p => p.tips !== 1);
+    assert.equal(lost, undefined,
+      `途中で吹き出しが閉じた: ${JSON.stringify(lost)}（隙間の y: ${gap.map(p => p.y).join(',')}）`);
+    await sleep(600);
+    assert.equal(await tips23(tab), 1, '吹き出しの中に居るのに、猶予の後に閉じた');
+    await away();
+  });
+
+  await t.test('【対照】隙間で止まったままなら、猶予の後に閉じる（閉じ忘れない）', async () => {
+    await onIcon();
+    await mouse23(cdp, tab, cx, gy);
+    assert.equal(await kindAt23(tab, cx, gy), 'other', '前提: 隙間の点ではない');
+    await sleep(700);
+    assert.equal(await tips23(tab), 0, '隙間で止まったのに、吹き出しが閉じない');
+  });
+
+  await t.test('【対照】印から、印と吹き出しを囲む矩形の外へ動かすと、待たずに閉じる', async () => {
+    await onIcon();
+    await tipRecorder23(tab);                            // 控えを新しくする
+    await mouse23(cdp, tab, 5, cy);
+    assert.equal(await kindAt23(tab, 5, cy), 'other', '前提: 外の点ではない');
+    await waitFor('閉じる', async () => await tips23(tab) === 0, { timeout: 3000 });
+    const lag = await closeLag23(tab, ['out', 'over']);
+    assert.ok(lag !== null && lag < 100, `矩形の外へ出てから閉じるまで ${lag}ms（猶予を広く掛けすぎ）`);
+  });
+
+  await t.test('【対照】猶予の時計は、そのあとフォーカスで出した吹き出しを閉じない', async () => {
+    await tab.evaluate(`document.getElementById('before').focus(); true`);
+    await onIcon();
+    await mouse23(cdp, tab, cx, gy);                     // 閉じる時計が動き出す
+    await pressKey(cdp, tab.sessionId, 'Tab');           // 同じ印へフォーカス（実キー）
+    assert.ok(await tab.evaluate(`!!(document.activeElement && document.activeElement.closest('#first'))`),
+      '前提: Tab で印に止まっていない');
+    await sleep(700);
+    assert.equal(await tips23(tab), 1, 'フォーカスで出ている吹き出しを、カーソルの猶予が閉じた');
+    await tab.evaluate(`document.getElementById('before').focus(); true`);
+    await away();
+  });
+
+  // ⚠️ Escape は**最後に**押す。Chrome 155（headless）では最初の Escape でウィンドウが一瞬 blur し、
+  //    そのあと visibilityState が hidden のまま残って、カーソルの入力が数秒遅れて届く
+  //    （実測: 次の mouseMoved が約 5 秒後に mouseover になった）。後ろの小試験を巻き込まない。
+  await t.test('猶予のあいだに Escape を押すと、待たずに閉じる', async () => {
+    await onIcon();
+    await mouse23(cdp, tab, cx, gy);
+    assert.equal(await tips23(tab), 1, '前提: 隙間へ入った瞬間に閉じた（猶予が無い）');
+    await pressKey(cdp, tab.sessionId, 'Escape');
+    await waitFor('閉じる', async () => await tips23(tab) === 0, { timeout: 3000 });
+    // ⚠️ 時刻はページの世界で控えた値で比べる（CDP の往復の遅さを混ぜない）
+    const lag = await closeLag23(tab, 'key', 'Escape');
+    assert.ok(lag !== null && lag < 100, `Escape から閉じるまで ${lag}ms（猶予 250ms を待っている）`);
+    await mouse23(cdp, tab, 5, 5);
+  });
+
+
+  await tab.close();
+});
+
+test('Escape で閉じた吹き出しは、同じ印へフォーカスが戻っただけでは出直さない（第23回の3群目）', async t => {
+  /*
+   * ⚠️ 実測（Chrome 155.0.8059.80・headless）: 最初の Escape の約 75〜100ms 後に、ウィンドウが
+   *    一瞬 blur して戻り、**同じ印へ focusout → focusin** が来る。focusin は説明を出すので、
+   *    v1.8.21 では Escape で閉じた吹き出しが出直していた（第21回 RG-21-06 の小試験が
+   *    タグの製品でも落ちる）。CI の Chrome で同じことが起きるかは、この試験の記録で分かる。
+   */
+  const srv = await startTestServer(SHADOW21_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  await waitFor('印が付く', async () => await count23(tab, '#src .iiyaku-icon'));
+  await sleep(600);
+  await tipRecorder23(tab);
+  const onSrc = () => tab.evaluate(`!!(document.activeElement && document.activeElement.closest('#src'))`);
+
+  await t.test('Tab で止まって開き、Escape で閉じたら、閉じたまま（実キー送信）', async () => {
+    const hit = await tabUntil(cdp, tab, `el.closest && el.closest('#src')`);
+    assert.ok(hit, 'Tab で印に止まれない');
+    await sleep(200);
+    assert.equal(await tips23(tab), 1, '前提: Tab で止まっても説明が出ない');
+    await pressKey(cdp, tab.sessionId, 'Escape');
+    await sleep(200);
+    const at200 = await tips23(tab);
+    await sleep(600);
+    const at800 = await tips23(tab);
+    const log = await tab.evaluate(`window.__tip23.map(x => x[1]).join(' ')`);
+    assert.ok(await onSrc(), `前提: フォーカスが印から動いた（同じ相手へ戻る場面になっていない）: ${log}`);
+    assert.deepEqual([at200, at800], [0, 0], `Escape で閉じた吹き出しが出直した（記録: ${log}）`);
+  });
+
+  await t.test('【対照】Escape の後でも、Enter で開ける', async () => {
+    // 状態をそろえる。直す前の版では、上の小試験で吹き出しが出直したままなので、
+    // もう一度 Escape で閉じる（2回目の Escape では、ウィンドウの出入りは起きない）。
+    await pressKey(cdp, tab.sessionId, 'Escape');
+    await sleep(300);
+    assert.equal(await tips23(tab), 0, '前提: 閉じた状態にならない');
+    assert.ok(await onSrc(), '前提: フォーカスが印に無い');
+    await pressKey(cdp, tab.sessionId, 'Enter');
+    await sleep(200);
+    assert.equal(await tips23(tab), 1, 'Escape の後に Enter で開けない');
+    await pressKey(cdp, tab.sessionId, 'Escape');
+    await sleep(300);
+    assert.equal(await tips23(tab), 0, '2回目の Escape で閉じない');
+  });
+
+  await t.test('【対照】Escape の後に別の要素へ移って戻れば、また focus で出る（キー）', async () => {
+    await pressKey(cdp, tab.sessionId, 'Tab');               // 次の印（commit）へ
+    await sleep(200);
+    assert.ok(!(await onSrc()), '前提: 別の要素へ移っていない');
+    await pressKey(cdp, tab.sessionId, 'Tab', { shift: true }); // branch の印へ戻る
+    await sleep(200);
+    assert.ok(await onSrc(), '前提: 印へ戻っていない');
+    assert.equal(await tips23(tab), 1, '別の要素へ移って戻ったのに、focus で説明が出ない');
+    await pressKey(cdp, tab.sessionId, 'Escape');
+    await sleep(300);
+    assert.equal(await tips23(tab), 0);
+  });
+
+  await t.test('【対照】キーを押さずに別の要素へフォーカスを移して戻っても、また出る', async () => {
+    // キーで忘れる経路と分けるため、フォーカスの移動は CDP / ページの script で行う
+    await tab.evaluate(`document.getElementById('after').focus(); true`);
+    await sleep(100);
+    await focusShadowButton23(cdp, tab, '#src .iiyaku-icon');
+    await sleep(200);
+    assert.ok(await onSrc(), '前提: 印へ戻っていない');
+    assert.equal(await tips23(tab), 1, 'フォーカスが別の要素を経て戻ったのに、説明が出ない');
+    await pressKey(cdp, tab.sessionId, 'Escape');
+    await sleep(300);
+    assert.equal(await tips23(tab), 0);
+  });
+
+  await t.test('【対照】Escape の後でも、マウスで印に乗れば出る', async () => {
+    const r = await rectOf23(tab, '#src .iiyaku-icon');
+    await mouse23(cdp, tab, Math.round(r.x + r.w / 2), Math.round(r.y + r.h / 2));
+    await sleep(200);
+    assert.equal(await tips23(tab), 1, 'Escape の後、マウスで乗っても説明が出ない');
+    await mouse23(cdp, tab, 2, 400);
   });
 
   await tab.close();

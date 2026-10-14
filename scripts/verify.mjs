@@ -931,6 +931,25 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     /schedule\(\{ deep: true, periodic: true \}\)/.test(code) &&
     /if \(!periodic\) extSerial\+\+;/.test(code),
     '何も変わらないページで、入れて・測って・外すが周期ごとに続く（自己通知の輪）');
+  // RG-23-15 吹き出しへ移る途中の隙間で閉じない（取り消せる短い猶予）
+  check('吹き出しへ移る途中の隙間では、猶予のあとに閉じる（第23回 RG-23-15）',
+    /const TIP_GRACE_MS = \d+;/.test(code) && /function inTipCorridor\(x, y\) \{/.test(code) &&
+    /function leaveTip\(e\) \{/.test(code) &&
+    /if \(e && e\.relatedTarget && inTipCorridor\(e\.clientX, e\.clientY\)\) \{/.test(code) &&
+    /if \(req\) \{ escClosedAt = null; show\(req\); \} else leaveTip\(e\);/.test(code) &&
+    /if \(requestFrom\(e\.target\)\) leaveTip\(e\);/.test(code),
+    '印の下端から 0.5px の隙間へ入った瞬間に閉じ、吹き出しの中まで移れない');
+  check('猶予は、印か吹き出しへ戻れば取り消し、閉じるときは必ず消す（第23回 RG-23-15）',
+    /function hideTip\(\) \{\s*cancelTipClose\(\);/.test(code) &&
+    /if \(inTooltip\(e\.target\)\) \{ cancelTipClose\(\); return; \}/.test(code) &&
+    /function showTip\(icons, anchor, describe\) \{[\s\S]{0,200}?cancelTipClose\(\);/.test(code),
+    'Escape・フォーカスの移動・退役・OFF のあとに、古い時計が吹き出しを閉じに来る（または戻っても閉じる）');
+  // 第23回の3群目（監査の外）: Escape で閉じた吹き出しが、同じ印への focusin で出直していた
+  check('Escape で閉じた相手へ戻っただけの focusin では、吹き出しを出し直さない',
+    /if \(e\.key === 'Escape'\) \{ escClosedAt = asElement\(e\.target\);/.test(code) &&
+    /if \(escClosedAt !== null && asElement\(e\.target\) === escClosedAt\) return;/.test(code) &&
+    /if \(escClosedAt !== null && \(e\.relatedTarget \|\| document\.hasFocus\(\)\)\) escClosedAt = null;/.test(code),
+    'ウィンドウが一瞬 blur して戻ると（Chrome 155 の headless では最初の Escape で起きる）、閉じた吹き出しが出直す');
   // RG-19-02 mandatory な吸い寄せでは、止まれない位置を到達可能としない
   check('吸い寄せのある軸を見ている',
     /function snapAxes/.test(code) && /mandatory/.test(code) && /snapX/.test(code) && /snapY/.test(code),

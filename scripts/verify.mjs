@@ -358,8 +358,11 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
 
 /* ---------- 退役で所有を取り消しているか（RG-11-02） ---------- */
 {
+  // 第23回 RG-23-01 で、所有を手放す経路を `relinquishIcon` の1か所へまとめた
+  // （登録前の取り消しが、押せる実体を畳まないまま手放していたため）。
   check('退役のときに、印の所有を取り消している',
-    /ownedIcons\.delete\(rec\.icon\)/.test(content),
+    /relinquishIcon\(rec\.icon\);/.test(content) &&
+    /function relinquishIcon\(icon[\s\S]{0,200}?ownedIcons\.delete\(icon\);/.test(content),
     'ページが退役した領域を戻すと、古い印が正規のまま生き返る');
   check('記録の不変条件に、合言葉の値が入っている',
     /rec\.icon\.getAttribute\('data-iiyaku-owner'\) !== UID/.test(content),
@@ -669,14 +672,28 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   const hoverList22 = (/const HOVER_SIGNALS = \[([\s\S]*?)\];/.exec(code) || [, ''])[1];
   const subscribes22 = t => hoverList22.includes(`'${t}'`);
   // RG-22-01 退役した印の中身を失効させる
+  // ⚠️ 第23回 RG-23-01 で、所有を手放す口を `relinquishIcon` の1か所へまとめた。
+  //    見たいのは「退役（retireGloss）がその口を通り、その口が先に畳む」という性質。
   check('退役するとき、shadow の中の押せる実体も畳んでいる（第22回 RG-22-01）',
     /function deactivateShadowIcon/.test(code) &&
-    /deactivateShadowIcon\(rec\.icon\);/.test(code),
+    /function relinquishIcon\(icon, \{ keepExpectations = false \} = \{\}\) \{\s*\n\s*deactivateShadowIcon\(icon\);/.test(code) &&
+    /relinquishIcon\(rec\.icon\);/.test(code),
     'ページが使い回した節点の中で、古い押せる点が生き続ける');
   check('畳むのは、DOM に繋がっているかに関わらず行う（第22回 RG-22-01）',
     // 所有の取り消しと同じ場所（`isConnected` の判定より前）で畳んでいること
-    /expectedAttrs\.delete\(rec\.icon\);[\s\S]{0,400}deactivateShadowIcon\(rec\.icon\);[\s\S]{0,80}if \(rec\.icon\.isConnected\)/.test(code),
+    /relinquishIcon\(rec\.icon\);\s*\n\s*if \(rec\.icon\.isConnected\)/.test(code),
     'ページが外して持っていた印を戻すと、中の button が生き返る');
+  // RG-23-01 登録前の取り消し（入れて測って引き取る）も、同じ口を通る
+  check('挿入を取り消すときも、押せる実体を先に畳んでいる（第23回 RG-23-01）',
+    /relinquishIcon\(icon, \{ keepExpectations: true \}\);[\s\S]{0,120}removeOwn\(icon\);/.test(code),
+    'ページの observer が引き取られた印を受け取ると、押せる解説が2つになり Tab で止まる');
+  check('所有を手放す口は1か所だけ（第23回 RG-23-01）',
+    (code.match(/ownedIcons\.delete\(/g) || []).length === 1 &&
+    /function relinquishIcon[\s\S]{0,200}?ownedIcons\.delete\(icon\);/.test(code),
+    '別の経路が、中の button を畳まずに所有だけを手放す');
+  check('畳んだ root から、自分の stylesheet も外している（第23回 RG-23-01）',
+    /function deactivateShadowIcon[\s\S]{0,1200}?root\.adoptedStyleSheets = \[\];/.test(code),
+    '使い回された本文の入れ物に、`:host` の inline-flex・左余白・vertical-align が残る');
   check('畳むとき、押せなくしてから取り除いている（第22回 RG-22-01）',
     /btn\.disabled = true;[\s\S]{0,200}btn\.tabIndex = -1;[\s\S]{0,300}btn\.remove\(\);/.test(code),
     '取り除きに失敗したとき、Tab の停止点だけが残る');
@@ -799,10 +816,31 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     !/rects\.some\(r => inClip\(r\)/.test(code),
     '`pull request` の `pull` だけ見えていても用語全体を可視と答える');
   // RG-19-01 印そのものも、切り取りの中に描かれていること（実物を測る）
+  // ⚠️ 第23回 RG-23-01 で、測る途中の例外も「描かれていない」として引き取る形にした
   check('入れた印が描かれているかを、実物で測っている',
-    /function iconIsPainted/.test(code) && /if \(!iconIsPainted\(icon\)\) \{/.test(code) &&
+    /function iconIsPainted/.test(code) &&
+    /try \{ painted = iconIsPainted\(icon\); \}/.test(code) && /if \(!painted\) \{/.test(code) &&
     /if \(!iconIsPainted\(rec\.icon\)\) return false;/.test(code),
     '語は読めても、印だけが切り取りの外に出て見えない停止点になる');
+  // RG-23-04 新規・保持・使用済みのキーを、同じ契約（確実に見える）にそろえる
+  check('既にある印も、確実に見えるときだけ説明済みとする（第23回 RG-23-04）',
+    /isVisibleOccurrence\(rec\.termNode\.parentElement, rec\.termNode, start, rec\.splitOffset\) !== true\) return false;/.test(code) &&
+    /if \(chain\.paintUnknown\) return false;/.test(code) &&
+    /if \(reachable\(b, chain\) !== true\) return false;/.test(code) &&
+    /for \(const t of chain\.tests\) if \(t\(b\) !== true\) return false;/.test(code),
+    "文字列 'unknown' は真なので、断定できない印がキーと停止点を持ったまま残る");
+  // RG-23-11 入れて測って引き取った語を、処理済みにしない（ただし出し入れを繰り返さない）
+  check('挿入を見送った語を、処理済みのまま残していない（第23回 RG-23-11）',
+    /if \(!painted\) \{[\s\S]{0,900}?handled\.delete\(cur\);/.test(code) &&
+    /if \(!nodeRejected\) markHandled\(node\);/.test(code) &&
+    !/applyIconSemantics\(icon, placement\);\s*\n\s*markHandled\(cur\);/.test(code),
+    '場所が広がっても、その語は二度と試されない');
+  check('引き取った語は、状態が変わるまで入れ直さない（第23回 RG-23-11）',
+    /if \(holdRejected\(node\)\) \{ rememberLatent\(node\); return false; \}/.test(code) &&
+    /if \(expectedAdds\.has\(n\)\) \{ expectedAdds\.delete\(n\); continue; \}/.test(code) &&
+    /schedule\(\{ deep: true, periodic: true \}\)/.test(code) &&
+    /if \(!periodic\) extSerial\+\+;/.test(code),
+    '何も変わらないページで、入れて・測って・外すが周期ごとに続く（自己通知の輪）');
   // RG-19-02 mandatory な吸い寄せでは、止まれない位置を到達可能としない
   check('吸い寄せのある軸を見ている',
     /function snapAxes/.test(code) && /mandatory/.test(code) && /snapX/.test(code) && /snapY/.test(code),

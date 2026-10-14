@@ -1890,3 +1890,134 @@ export async function putGhostCover(page, sel, style) {
     return 'ok';
   })()`);
 }
+
+/* ===================== 第23回監査（v1.8.21）の反例・1群目 ===================== */
+
+/* 矩形の中の**色の分かれ方**を測る（第23回 RG-23-02）。
+   `pixelsAt` は白でない画素を数えるだけなので、「白地に白で消えた印」と「白地に
+   描かれた印」は見分けられても、「青地に青で "i" が溶けた印」とは見分けられない。
+   ここでは次を返す:
+     colors … 量子化した色（各成分 8 段）のうち、画素の 5% 以上を占めるものの数。
+              "i" と地が別の色なら 2 以上になる
+     spread … 輝度の最大と最小の差（0〜255）
+     far    … 輝度が `ref`（その場の地の輝度）から 60 以上離れた画素の数
+   ⚠️ 印は 14px 四方しか無いので、**拡大して撮る**（`scale`）。1倍では "i" の縦棒が
+      1〜2 画素で、なめらか表示の中間色に埋もれる。 */
+export async function inkAt(cdp, page, r, { scale = 4, ref = 255 } = {}) {
+  const clip = { x: r.x, y: r.y, width: Math.max(1, r.w), height: Math.max(1, r.h), scale };
+  const { data } = await cdp.send('Page.captureScreenshot', { format: 'png', clip }, page.sessionId);
+  return await page.evaluate(`(async () => {
+    const img = new Image();
+    img.src = 'data:image/png;base64,${data}';
+    await img.decode();
+    const c = document.createElement('canvas');
+    c.width = img.width; c.height = img.height;
+    const g = c.getContext('2d');
+    g.drawImage(img, 0, 0);
+    const d = g.getImageData(0, 0, c.width, c.height).data;
+    const bins = new Map();
+    let lo = 255, hi = 0, far = 0, nonwhite = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      const y = 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+      if (y < lo) lo = y;
+      if (y > hi) hi = y;
+      if (Math.abs(y - ${ref}) >= 60) far++;
+      if (d[i] < 250 || d[i + 1] < 250 || d[i + 2] < 250) nonwhite++;
+      const k = (d[i] >> 5) + ',' + (d[i + 1] >> 5) + ',' + (d[i + 2] >> 5);
+      bins.set(k, (bins.get(k) || 0) + 1);
+    }
+    const total = d.length / 4;
+    const colors = [...bins.values()].filter(n => n >= total * 0.05).length;
+    return { total, nonwhite, colors, spread: Math.round(hi - lo), far };
+  })()`);
+}
+
+/* 印の**中ほど**（外接矩形の内側 60%）。輪の外の白い角を混ぜずに、"i" と地だけを見る。 */
+export function innerRect(r, k = 0.6) {
+  return { x: r.x + r.w * (1 - k) / 2, y: r.y + r.h * (1 - k) / 2, w: r.w * k, h: r.h * k };
+}
+
+const BASE23 = 'html,body{background:#fff;color:#000;margin:0;font:16px/1.6 monospace}';
+
+/* RG-23-01。挿入した印を描かれていないとして引き取り、ページの observer がそれを
+   受け取って本文の入れ物に使い回す（回答の反例そのまま）。 */
+export const REJECT23_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>reject23</title><style>${BASE23}
+ #first .iiyaku-icon { opacity: 0 !important; }</style></head><body>
+  <button id="before">before</button>
+  <p id="first">A branch first.</p>
+  <p id="second">A branch second.</p>
+  <div id="sink"></div>
+  <script>
+    window.__events = [];
+    const observer = new MutationObserver(records => {
+      for (const record of records) {
+        for (const node of record.removedNodes) {
+          if (node.nodeType !== 1 || !node.matches('.iiyaku-icon')) continue;
+          observer.disconnect();
+          for (const attr of [...node.attributes]) node.removeAttribute(attr.name);
+          node.id = 'reused';
+          node.textContent = 'PAGE CONTENT';
+          document.querySelector('#sink').append(node);
+          window.__events.push('reused');
+          return;
+        }
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  </script>
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-23-01 の後段。登録済みの印を退役させ、ページが host を本文に使い回したとき、
+   拡張の `:host` の装飾が残らないか。ふつうの span を対照に置く。 */
+export const HOSTLOOK23_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>hostlook23</title><style>${BASE23}</style></head><body>
+  <button id="before">before</button>
+  <p id="first">A branch first.</p>
+  <p id="second">A branch second.</p>
+  <p><span id="ctlspan">plain</span></p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-23-04。既にある印の場所が、あとから「断定できない」状態（解けない filter）になる。
+   対照: 最初から filter の語（新しい候補は見送る）。印だけに filter を掛ける枝も置く。 */
+export const UNKNOWN23_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>unknown23</title><style>${BASE23}
+ #c1{filter:url(#zero)}
+ #p1 .iiyaku-icon{filter:url(#zero)}</style></head><body>
+  <svg width="0" height="0" style="position:absolute"><defs><filter id="zero"><feFlood flood-opacity="0"/></filter></defs></svg>
+  <button id="before">before</button>
+  <p id="first">A branch first.</p>
+  <p id="second">A branch second.</p>
+  <p id="c1">A commit first.</p>
+  <p id="c2">A commit second.</p>
+  <p id="p1">A merge first.</p>
+  <p id="p2">A merge second.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-23-11。語は枠に収まるが、直後の印は枠の外（＝入れて測って引き取る）。
+   あとで枠が広がったら付くこと。CSSOM の値だけで広げる枝（合図が出ない）も置く。
+   ページの observer が印の出し入れを数える（自己通知の輪を外から見る）。 */
+export const WIDEN23_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>widen23</title><style>${BASE23}</style>
+<style id="s11">#first{font:16px monospace;width:6ch;white-space:nowrap;overflow:hidden}
+ #cssom{font:16px monospace;width:6ch;white-space:nowrap;overflow:hidden}</style></head><body>
+  <script>
+    window.__ev = [];
+    new MutationObserver(rs => {
+      for (const r of rs) {
+        for (const n of r.addedNodes)
+          if (n.nodeType === 1 && n.classList && n.classList.contains('iiyaku-icon')) __ev.push('add:' + (n.parentNode && n.parentNode.id));
+        for (const n of r.removedNodes)
+          if (n.nodeType === 1 && n.classList && n.classList.contains('iiyaku-icon')) __ev.push('rm:' + r.target.id);
+      }
+    }).observe(document.documentElement, { childList: true, subtree: true });
+  </script>
+  <button id="before">before</button>
+  <p id="first">branch</p>
+  <p id="cssom">commit</p>
+  <p id="hid" style="display:none">merge</p>
+  <button id="after">after</button>
+</body></html>`;

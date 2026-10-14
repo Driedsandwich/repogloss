@@ -1518,17 +1518,25 @@
     return false;
   }
 
+  // ⚠️ **ここは「確実に描かれている」ときだけ真**（第23回 RG-23-04）。
+  // 以前は形・到達性の 'unknown' を `false` と区別して通し、解けない描画効果
+  // （`chain.paintUnknown`）も見ていなかった。新しい候補は 'unknown' を見送るのに
+  // （→ visibleHits）、**既にある印**は 'unknown' のまま残っていた——実測: 前方に印が
+  // 付いたあとで段落へ `filter: url(#zero)` を掛けると、印は 0 画素なのに
+  // `checkVisibility()` は true・当たり判定は host を返し、Tab で止まり続けた。
+  // 新規・保持・使用済みのキーを同じ契約（confirmed-visible）にそろえる（→ AUDIT.md §7 #25）。
   function iconIsPainted(icon) {
     const chain = paintChain(icon, 'none');
     if (chain.hidden) return false;
+    if (chain.paintUnknown) return false;          // 解けない描画効果＝断定できない
     if (rectIsEmpty(chain.clip)) return false;
     const b = icon.getBoundingClientRect();
     if (!(b.width > 0 && b.height > 0)) return false;
     const c = chain.clip;
     if (c && !(Math.min(b.right, c.x2) - Math.max(b.left, c.x1) > 1 &&
                Math.min(b.bottom, c.y2) - Math.max(b.top, c.y1) > 1)) return false;
-    if (reachable(b, chain) === false) return false;
-    for (const t of chain.tests) if (t(b) === false) return false;
+    if (reachable(b, chain) !== true) return false;
+    for (const t of chain.tests) if (t(b) !== true) return false;
     // ⑤ 印そのものの見え方。ページ側の `!important` でも消される。
     const cs = getComputedStyle(icon);
     if (cs.visibility !== 'visible' || cs.display === 'none') return false;
@@ -1765,6 +1773,8 @@
     // 2,500段落の祖先を隠す／戻すを繰り返す試験では、ここが費用の大半だった。
     // 可視でないだけの節点は**印を付けない**が処理済みにもしない（あとで見えたら注記する）。
     if (!matcher.test(v)) { markHandled(node); return false; }
+    // 入れて測って引き取った語は、状態が変わるまで入れ直さない（第23回 RG-23-11）
+    if (holdRejected(node)) { rememberLatent(node); return false; }
     // 可視性は**一致した語の範囲**で見る。親要素まるごとで測ると、同じ親に
     // 見えている文字が1つでもあるだけで、切り取りの外の語まで可視と答える。
     if (visibleHits(node, el).length > 0) return true;
@@ -1985,6 +1995,12 @@
   // 正規の印を外したことに気づけなくなる（実測: 説明が約2秒間0個になり、
   // 暇なときの確認が来るまで戻らなかった）。作ったのが自分でも、外したのは相手でありうる。
   const expectedRemovals = new WeakSet();
+  // 入れて測って引き取った印（第23回 RG-23-11）。入れた記録が見張りに届くのは
+  // 引き取った**あと**なので、その1回だけを自分の変更として受け取る。受け取らないと
+  // 「ページが何かを足した」として見え方まで測り直すまとめ直しが走り、そこでまた
+  // 入れて測って引き取る——という自己通知の輪ができる。1回で消すので、ページが
+  // 同じ節点をあとで本文へ戻したとき（実測: 名札を剥がして使い回す）はふつうに数える。
+  const expectedAdds = new WeakSet();
 
   function removeOwn(node) {
     if (!node) return;
@@ -2245,6 +2261,11 @@
   // light DOM の側（class・data 属性・操作性）は `stripOwnIdentity` が落とすが、
   // shadow の中はページからも自分の走査からも見えないので、ここで明示的に畳む。
   // ⚠️ **`<slot>` は残す。** 外すとページが入れた本文が描かれなくなる（第21回の実測）。
+  // ⚠️ **その root から、自分の stylesheet も外す**（第23回 RG-23-01）。button を外しても
+  // `:host` の規則は残るので、使い回された本文の入れ物が `display:inline-flex`・左余白 4px・
+  // `vertical-align:middle` のままだった（実測。ふつうの `<span>` は inline・0px・baseline）。
+  // stylesheet は全部の印で1枚を共有しているので、**中身は消さずに、この root の
+  // `adoptedStyleSheets` からだけ外す**（中身を消すと現役の印まで絵を失う）。
   function deactivateShadowIcon(host) {
     const btn = iconButton.get(host);
     const desc = iconDesc.get(host);
@@ -2260,6 +2281,27 @@
       btn.remove();
     }
     if (desc) { desc.textContent = ''; desc.remove(); }
+    const root = iconShadow.get(host);
+    if (root) { try { root.adoptedStyleSheets = []; } catch (e) { /* 見た目だけの話 */ } }
+  }
+
+  // 印の所有を手放す。**どの経路でも、ここ1か所を通す**（第23回 RG-23-01）。
+  //
+  // ⚠️ 第22回で直したのは「登録済みの退役」（retireGloss）だけだった。挿入した直後に
+  // 描かれていないと分かって引き取る経路（annotate）は、まだ記録へ入る前なので
+  // retireGloss が回収できず、**中の button が生きたまま**ページへ渡っていた。実測:
+  // ページの observer が外された印を受け取り、名札を剥がして本文の入れ物に使うと、
+  // 「「branch」の解説」という押せる button が2個になり、その節点で実際に Tab が止まった。
+  // 登録済みの退役・登録前の取り消し・切断済みのどれでも、**先に押せなくしてから**
+  // 所有の記録を消す。DOM に繋がっているかは条件にしない（→ retireGloss の注記）。
+  //   keepExpectations … 自分が書いた属性の予定を残す（挿入して測って引き取った印。
+  //                      その書き込みの記録はまだ見張りに届いていないので、予定と
+  //                      突き合わせて自分の変更として受け取らせる → RG-23-11）
+  function relinquishIcon(icon, { keepExpectations = false } = {}) {
+    deactivateShadowIcon(icon);
+    ownedIcons.delete(icon);
+    iconTrigger.delete(icon);
+    if (!keepExpectations) expectedAttrs.delete(icon);
   }
 
   // その印の「押せる実体」。shadow を使わない場合は host 自身。
@@ -2729,7 +2771,15 @@
     // 記録した語の範囲で見る。印の親要素まるごとで測ると、同じ親の別の文字が
     // 見えているだけで「まだ読める」と答えてしまう。
     const start = rec.splitOffset - rec.term.length;
-    if (!isVisibleOccurrence(rec.termNode.parentElement, rec.termNode, start, rec.splitOffset)) return false;
+    // ⚠️ **`=== true` で見る**（第23回 RG-23-04）。`isVisibleOccurrence` は
+    // true / false / 'unknown' を返し、文字列 'unknown' は真として評価される。
+    // `!isVisibleOccurrence(...)` と書いていたので、新しい候補は 'unknown' を見送るのに
+    // （→ visibleHits）、**既にある印は 'unknown' のまま説明済みとして残っていた**
+    // （実測: 前方の段落へ後から `filter: url(#zero)` を掛けると、印は 0 画素のまま
+    // 前方に残り、Tab で止まり、後方の読める同じ語は説明されなかった）。
+    // 断定できない間はキーも停止点も持たない。節点は控えに入るので、確実に読める
+    // 状態へ戻れば、そこでまた拾う（→ AUDIT.md §7 #25）。
+    if (isVisibleOccurrence(rec.termNode.parentElement, rec.termNode, start, rec.splitOffset) !== true) return false;
     const now = resolvePlacement(rec.parent);
     if (now.kind !== rec.placementKind) return false;
     if (rec.placementKind === 'hosted') {
@@ -2771,14 +2821,11 @@
     // 所有をその場で取り消す。取り消さないと、ページが退役した領域を保持していて
     // あとから DOM へ戻したとき、その印が「自分の正規の印」のまま生き返る
     // （実測: 同じ語の、押せる印が2つ並んだ）。
-    ownedIcons.delete(rec.icon);
-    iconTrigger.delete(rec.icon);
-    expectedAttrs.delete(rec.icon);
     // 中の押せる実体も、ここで畳む（第22回 RG-22-01）。
     // ⚠️ **DOM に繋がっているかを条件にしない。** ページが外して持っていた印を
     // あとから戻すことがあり、そのとき中の button が生き返る。所有を取り消すのと
-    // 同じ場所で、同じ回数だけ畳む。
-    deactivateShadowIcon(rec.icon);
+    // 同じ場所で、同じ回数だけ畳む（→ relinquishIcon。登録前の取り消しも同じ口を通る）。
+    relinquishIcon(rec.icon);
     if (rec.icon.isConnected) {
       // その印について説明を出している最中なら、先に閉じる
       if (tip && tipIcons.includes(rec.icon)) hideTip();
@@ -2827,6 +2874,61 @@
     return scanInner(document.body);
   }
 
+  /* ---------- 5-3. 入れて測って引き取った語（第23回 RG-23-11） ---------- */
+  // 印を入れたが描かれていなかった（切り取りの外・ページの CSS で消された など）語は、
+  // **処理済みにしない**。以前は描画の確認より前に `markHandled` しており、引き取った
+  // あとも処理済みのまま控えに入れていた。控えの見直しは処理済みの節点を捨てるので、
+  // 「あとで試す控え」と「もう見ない印」が同じ節点に付いていた（実測: 幅 6ch の
+  // `overflow:hidden` の枠で語は収まるが印は枠の外。枠を 20ch に広げて 5 秒待っても印 0）。
+  //
+  // ⚠️ ただし、処理済みを外すだけでは**入れて・測って・外すを繰り返す**。控えの見直しは
+  // 400ms ごとに回るので、何も変わっていないページで印の出し入れが続き、ページ側の
+  // observer にも毎回それが届く。そこで、引き取ったときの状態を控え、**変わったときだけ**
+  // 入れ直す。見る状態は次のとおり（入れる前に測れるものだけ。印そのものは入れないと測れない）:
+  //   extSerial … ページ側の変化の合図（DOM・属性・stylesheet・画面・操作・遷移）の通し番号。
+  //               周期の見直しと、自分が出し入れした印の記録では進まない
+  //   語の矩形・祖先の切り取り・描画効果・テーマ色 … CSSOM の値だけの書き換えのように
+  //               合図の出ない変化でも、印の置き場所が変わればここが変わる
+  //   stylesheet の枚数と形の指紋 … 印を名指しする規則の追加・削除
+  // 変わっていても、ページの observer と押し合いにならないよう、入れ直しの間隔は
+  // 引き取るたびに倍にする（400ms から 30 秒まで）。入れて描かれれば記録は消す。
+  // ⚠️ 残る限界: 印を名指しする規則の**値だけ**を CSSOM で書き換えた変化（語の場所も
+  // 合図も変わらない）は、次にページ側の合図が来るまで入れ直さない。
+  const rejected = new WeakMap();        // Text → { sig, at, gap }
+  const REJECT_GAP = 400;
+  const REJECT_GAP_MAX = 30000;
+
+  function rejectSig(node) {
+    const el = node.parentElement;
+    if (!el) return '';
+    const r = document.createRange();
+    r.selectNodeContents(node);
+    const b = r.getBoundingClientRect();
+    const ch = paintChain(el, 'none');
+    const c = ch.clip;
+    const cs = getComputedStyle(el);
+    let s = extSerial + '|' + styleSerial + '|' + printVal + '|' +
+      [b.left, b.top, b.right, b.bottom].map(Math.round).join(',') + '|' +
+      (c ? [c.x1, c.y1, c.x2, c.y2].map(Math.round).join(',') : '-') + '|' +
+      (ch.hidden ? 'h' : '') + (ch.paintUnknown ? 'u' : '') + ch.tests.length + '|' + cs.color;
+    for (const v of THEME_VARS) s += '' + cs.getPropertyValue(v).trim();
+    return s;
+  }
+
+  function noteRejected(node) {
+    const prev = rejected.get(node);
+    const gap = prev ? Math.min(REJECT_GAP_MAX, prev.gap * 2) : REJECT_GAP;
+    rejected.set(node, { sig: rejectSig(node), at: performance.now(), gap });
+  }
+
+  // まだ入れ直さない（＝前に引き取ったときから何も変わっていない／間を置いている）か
+  function holdRejected(node) {
+    const r = rejected.get(node);
+    if (!r) return false;
+    if (performance.now() - r.at < r.gap) return true;
+    return rejectSig(node) === r.sig;
+  }
+
   /* ---------- 6. 注記 ---------- */
   // 1つのテキストノードに含まれる一致すべてへ注記する。
   //
@@ -2868,6 +2970,7 @@
     let cur = node;        // いま扱っている節点（用語で終わる左側になる）
     let consumed = 0;      // cur の先頭が、元の文字列の何文字目にあたるか
     let added = 0;
+    let nodeRejected = false;   // 先頭の一致を引き取った＝node を処理済みにしない
     for (const hit of hits) {
       const at = hit.end - consumed;
       // 用語が末尾ちょうどで終わるときは割らない。割ると空の節点が1つ増え、
@@ -2881,24 +2984,36 @@
       const icon = makeIcon(hit.key, hit.match, DICT[hit.key]);
       parent.insertBefore(icon, tail ?? cur.nextSibling);
       applyIconSemantics(icon, placement);                  // 入った場所を見てから決める
-      markHandled(cur);
       // ⚠️ **入れてから、その印が本当に描かれているかを測る**（第19回 RG-19-01）。
       // 語が読めても、直後に入る印だけが切り取りの外へ出ることがある（実測:
       // 負の inset で外へ広げた枠と `overflow-clip-margin` の枠で、印の5点すべてが
       // 印に当たらない＝描かれていないのに `tabIndex:0` で Tab の順路に入っていた）。
       // 場所は**予測しない**——一度「用語の直後に 1.4em」と見積もって判定へ入れたが、
       // 35°回した形の中で外れた。入れて測り、描かれていなければ引き取る。
-      // その語はこの世代では諦め、控えへ戻す（形が変われば入り直せる）。
-      if (!iconIsPainted(icon)) {
+      // 測る途中で例外になったときも、描かれていると断定できないので引き取る
+      // （登録前の印を、押せるまま置き去りにしない → relinquishIcon）。
+      let painted = false;
+      try { painted = iconIsPainted(icon); }
+      catch (e) { console.error('[iiyaku] 印の実測に失敗。この印は付けません:', e); }
+      if (!painted) {
         if (tip && tipIcons.includes(icon)) hideTip();
-        ownedIcons.delete(icon); iconTrigger.delete(icon); expectedAttrs.delete(icon);
+        // 先に押せなくしてから手放す（第23回 RG-23-01）。属性の予定は残し、
+        // 入れた記録は1回だけ自分の変更として受け取る（→ 見張りの expectedAdds）。
+        relinquishIcon(icon, { keepExpectations: true });
+        expectedAdds.add(icon);
         removeOwn(icon);
         if (placement.kind === 'hosted') releaseTriggerIfUnused(placement.trigger);
+        // **処理済みにしない**（第23回 RG-23-11）。割った右側は処理済みにしてあるので外す。
+        handled.delete(cur);
+        if (cur === node) nodeRejected = true;
+        noteRejected(cur);
         rememberLatent(cur);
         if (!tail) break;
         cur = tail; consumed = hit.end;
         continue;
       }
+      markHandled(cur);
+      rejected.delete(cur);
       // 実際に挿入できたものだけ、作ったものと一緒に控える。
       // termNode は用語を末尾に含む節点。片づけのとき、これを走査対象へ戻す。
       // tailNode は自分が作った右側（作らなかったときは null）。控えるのは
@@ -2914,7 +3029,7 @@
       cur = tail;
       consumed = hit.end;
     }
-    markHandled(node);
+    if (!nodeRejected) markHandled(node);
     return added;
   }
 
@@ -3073,7 +3188,12 @@
   // （isSelfMutation / isOurNode）。読まれない旗を残すと、守っているつもりの
   // 不変条件が実際には誰も見ていない、という状態になる。
 
-  function schedule({ deep = false, root = null } = {}) {
+  // ページ側の変化の合図の通し番号（第23回 RG-23-11）。周期の見直しでは進めない。
+  // 入れて測って引き取った語を、いつ入れ直してよいかの目安にする（→ holdRejected）。
+  let extSerial = 0;
+
+  function schedule({ deep = false, root = null, periodic = false } = {}) {
+    if (!periodic) extSerial++;
     if (deep) wantDeep = true;
     if (root) pendingRoots.add(root);
     if (batchScheduled) return;
@@ -3161,8 +3281,13 @@
   }
 
   const observer = new MutationObserver(muts => {
-    // 複製された「自分のふり」は、走査より前に取り除く
-    for (const mu of muts) for (const n of mu.addedNodes) sanitizeClones(n);
+    // 複製された「自分のふり」は、走査より前に取り除く。
+    // ⚠️ 入れて測って引き取った印（もう外れている）は見ない。見ると「合言葉つきの
+    // 空の複製」として `removeOwn` に掛け、外れている節点の削除予定だけが残る（第23回 RG-23-11）。
+    for (const mu of muts) for (const n of mu.addedNodes) {
+      if (expectedAdds.has(n) && !n.isConnected) continue;
+      sanitizeClones(n);
+    }
     // DOM が変わった＝見え方の状態が変わりうる（第19回 RG-19-08）
     bumpEpoch();
     dropStates();
@@ -3201,6 +3326,7 @@
       // 割ったことが原因だと切り分けられた）。
       for (const n of mu.addedNodes) {
         if (expectedSplit.has(n)) { expectedSplit.delete(n); continue; }
+        if (expectedAdds.has(n)) { expectedAdds.delete(n); continue; }   // 入れて引き取った印
         if (!isOurNode(n)) { deep = true; roots.push(n); }
       }
       // 外れた節点は「自分が外す直前に控えたか」だけで判定する。作ったのが自分でも、
@@ -3608,7 +3734,8 @@
       // 書き換え）を拾うためにある。世代が進まないと「同じ世代で見た」として飛ばされ、
       // その変化に永久に気づかない（実測: 2,100件の控えのある見本と、上限で
       // こぼれた候補の見本が、どちらも後から見えた語を見つけられなくなった）。
-      const run = () => { bumpEpoch(); dropStates(); schedule({ deep: true }); scheduleIdleCheck(); };
+      // 周期の見直しは「ページが変わった」合図ではない（→ extSerial）
+      const run = () => { bumpEpoch(); dropStates(); schedule({ deep: true, periodic: true }); scheduleIdleCheck(); };
       if (canIdle) requestIdleCallback(run, { timeout: IDLE_GAP });
       else run();
     }, IDLE_GAP);

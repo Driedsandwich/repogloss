@@ -2768,6 +2768,11 @@ async function quietWindow23(tab, { fast = true } = {}) {
   const i0 = (await ticks()).idle || 0;
   await waitFor('暇なときの確認が1回まわる', async () => ((await ticks()).idle || 0) > i0,
     { timeout: 8000, interval: 10 });
+  // タイマーが鳴っても、中身（requestIdleCallback）はあとで走る。中身が走り終わるまで待たないと、
+  // 混んだ機械では中身が直後の窓に重なり、別の経路の印を数えてしまう（main の CI で実測）。
+  // 中身の終わりで次のタイマーを掛け直すので、ここから 2 秒は暇なときの確認が来ない。
+  await waitFor('暇なときの確認の中身が走り終わる', async () => (await ticks()).idlePending !== true,
+    { timeout: 8000, interval: 10 });
   if (!fast) return;
   await sleep(50);
   const f0 = (await ticks()).fast || 0;

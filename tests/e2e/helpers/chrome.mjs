@@ -614,9 +614,18 @@ export const CLIPZERO_PAGE = `<!doctype html><html lang="en"><head><meta charset
   <div id="nonzero" class="box">A merge shown.</div><p id="nonzero-later">A merge later.</p>
 </body></html>`;
 
-export function startTestServer(html = REPO_PAGE) {
+/* extra … 道のり -> [content-type, 中身]。見本が `@import` で読む CSS などを同じ源から出す
+   （第23回 RG-23-06。別の源から読むと読めない stylesheet になり、全要素を歩く経路が
+   偶然救ってしまうので、同じ源に置く）。それ以外の道のりは、どれも見本の HTML を返す。 */
+export function startTestServer(html = REPO_PAGE, extra = {}) {
   const { key, cert } = makeCert();
   const server = https.createServer({ key, cert }, (req, res) => {
+    const hit = extra[(req.url || '').split('?')[0]];
+    if (hit) {
+      res.setHeader('content-type', hit[0]);
+      res.end(hit[1]);
+      return;
+    }
     res.setHeader('content-type', 'text/html; charset=utf-8');
     res.end(html);
   });
@@ -662,8 +671,17 @@ export class Cdp {
         clearTimeout(timer);   // 応答が来たタイマーを残すと、終了まで待たされる
         if (m.error) reject(new Error(`${m.error.message} (${JSON.stringify(m.error)})`));
         else resolve(m.result);
+      } else if (m.method && this.listeners) {
+        // 通知（例外・console など）。聞いている試験にだけ渡す（第23回 RG-23-08）
+        for (const f of this.listeners) { try { f(m); } catch (e) { /* 聞き手の失敗は無視 */ } }
       }
     }
+  }
+  /* CDP の通知を受け取る（`Runtime.exceptionThrown`・`Runtime.consoleAPICalled` など）。
+     返り値を呼ぶと外れる。 */
+  onEvent(fn) {
+    (this.listeners ||= new Set()).add(fn);
+    return () => this.listeners.delete(fn);
   }
   rejectAll(err) {
     for (const [, { reject, timer }] of this.pending) { clearTimeout(timer); reject(err); }
@@ -2088,3 +2106,155 @@ export const WIDEN23_PAGE = `<!doctype html><html lang="en"><head><meta charset=
   <p id="hid" style="display:none">merge</p>
   <button id="after">after</button>
 </body></html>`;
+
+/* ===================== 第23回監査（v1.8.21）の反例・2群目（覆いの判定） ===================== */
+
+/* 覆いの場面を1つずつ「枠」に入れる。枠は位置指定だけ（重なりのまとまりは作らない）、
+   覆いは枠いっぱいの絶対配置。前方の語（h-…）は枠の中、後方の同じ語（l-…）は枠の外。
+   覆いと数えれば [前方, 後方] = [0, 1]、数えなければ [1, 0]。
+   ⚠️ 枠と覆いの共通の規則には `pointer-events` を書かない。どの経路で宣言されたかを
+      場面ごとに分けて試すため（RG-23-05・06）。 */
+const SLOT23 = '.slot{position:relative}.slot>.cv{position:absolute;inset:0}';
+const slot23 = (id, word, inner = `<div class="cv" id="cv-${id}"></div>`, pcls = '') =>
+  `<div class="slot" id="s-${id}"><p id="h-${id}"${pcls ? ` class="${pcls}"` : ''}>A ${word} ${id}.</p>${inner}</div>
+  <p id="l-${id}">A ${word} ${id} later.</p>`;
+
+/* RG-23-05。宣言の値だけを CSSOM で `auto → none` に変える。対照は、初めから `none` で
+   `visibility` だけを変える覆い（初めから索引に入っている）。 */
+export const GHOSTVAL23_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>ghostval23</title><style>${BASE23}${SLOT23}</style>
+<style id="cv-css">#cv-val{z-index:5;background:white;pointer-events:auto;visibility:hidden}
+#cv-ctl{z-index:5;background:white;pointer-events:none;visibility:hidden}</style></head><body>
+  <button id="before">before</button>
+  ${slot23('val', 'branch')}
+  ${slot23('ctl', 'commit')}
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-23-06。宣言が変数・document の adoptedStyleSheets・`@import` 先にある覆い。
+   ⚠️ **読めない stylesheet を1枚も置かない**（全要素を歩く経路が偶然救わない形）。
+   import 先は同じ源から出す（→ GHOSTSRC23_EXTRA）。対照は `<style>` に直書きの覆い。
+   `late` は、あとで adopted の一覧を差し替える（DOM は変わらない）ときに出る覆い。 */
+export const GHOSTSRC23_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>ghostsrc23</title><style>${BASE23}${SLOT23}
+#cv-var{--pe:none;pointer-events:var(--pe);z-index:5;background:white}
+#cv-lit{pointer-events:none;z-index:5;background:white}
+#cv-late{z-index:5;background:white;display:none}</style>
+<style>@import url("/imp23.css");</style></head><body>
+  <button id="before">before</button>
+  ${slot23('var', 'branch')}
+  ${slot23('adopt', 'commit')}
+  ${slot23('imp', 'merge')}
+  ${slot23('lit', 'fetch')}
+  ${slot23('late', 'fork')}
+  <button id="after">after</button>
+  <script>
+    const s = new CSSStyleSheet();
+    s.replaceSync('#cv-adopt{pointer-events:none;z-index:5;background:white}');
+    document.adoptedStyleSheets = [s];
+  </script>
+</body></html>`;
+export const GHOSTSRC23_EXTRA = {
+  '/imp23.css': ['text/css', '#cv-imp{pointer-events:none;z-index:5;background:white}']
+};
+
+/* RG-23-08。600 段に入れ子になった候補（回答の反例そのまま）。宣言のある規則は少ないので、
+   選択子で引いて `none` の根を広げる経路を通る。前方の webhook だけが、ほんとうの不透明な
+   覆い（#same）の下にある（入れ子の候補があっても、覆いを見つけられること）。 */
+export const GHOSTNEST23_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>ghostnest23</title><style>${BASE23}
+.nest{pointer-events:none}
+#same{position:fixed;left:0;top:0;width:100%;height:60px;z-index:20;background:white;pointer-events:none}
+#top{height:80px}</style></head><body>
+  <div id="top"><p id="h-same">A webhook same.</p></div>
+  <button id="before">before</button>
+  <p id="first">A branch first.</p>
+  <p id="second">A commit second.</p>
+  <p id="third">A merge third.</p>
+  <p id="l-same">A webhook same later.</p>
+  <button id="after">after</button>
+  <div id="same"></div>
+  <script>
+    let parent = document.body;
+    for (let i = 0; i < 600; i++) {
+      const c = document.createElement('div'); c.className = 'nest'; parent.append(c); parent = c;
+    }
+  </script>
+</body></html>`;
+
+/* RG-23-08。同じ要素（#same）に当たる 3,000 の選択子。選択子が多いので、引かずに全部の
+   要素を歩く経路を通る。同じ源の別の道のりで出す（→ GHOSTNEST23_EXTRA）。 */
+const SAME23_RULES = Array.from({ length: 3000 }, (_, i) => `#same:not(.k${i}){pointer-events:none}`).join('\n');
+export const GHOSTMANY23_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>ghostmany23</title><style>${BASE23}
+#same{position:fixed;left:0;top:0;width:100%;height:60px;z-index:20;background:white}
+#top{height:80px}
+${SAME23_RULES}</style></head><body>
+  <div id="top"><p id="h-same">A webhook same.</p></div>
+  <button id="before">before</button>
+  <p id="first">A branch first.</p>
+  <p id="second">A commit second.</p>
+  <p id="third">A merge third.</p>
+  <p id="l-same">A webhook same later.</p>
+  <button id="after">after</button>
+  <div id="same"></div>
+</body></html>`;
+export const GHOSTNEST23_EXTRA = { '/octocat/many': ['text/html; charset=utf-8', GHOSTMANY23_PAGE] };
+
+/* RG-23-08。平坦に並んだ 30,000 個の候補（どれも `pointer-events: none`）。上限を超える。 */
+export const GHOSTFLAT23_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>ghostflat23</title><style>${BASE23}
+.flat{pointer-events:none}</style></head><body>
+  <button id="before">before</button>
+  <p id="first">A branch first.</p>
+  <p id="second">A commit second.</p>
+  <p id="third">A merge third.</p>
+  <button id="after">after</button>
+  <div id="flat"></div>
+  <script>
+    const box = document.getElementById('flat');
+    const f = document.createDocumentFragment();
+    for (let i = 0; i < 30000; i++) { const e = document.createElement('i'); e.className = 'flat'; f.append(e); }
+    box.append(f);
+  </script>
+</body></html>`;
+
+/* RG-23-08。覆いの判定そのものが故障したとき（試験用に content.js へ故障を差し込む）。
+   前方の branch には、ほんとうの不透明な覆いを置いておく。 */
+export const GHOSTFAULT23_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>ghostfault23</title><style>${BASE23}${SLOT23}
+#cv-f{z-index:5;background:white;pointer-events:none}</style></head><body>
+  <button id="before">before</button>
+  ${slot23('f', 'branch')}
+  <p id="second">A commit second.</p>
+  <p id="third">A merge third.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* 語そのものの矩形（その語の文字だけ）。覆いが本当に語を隠しているか／見えているかの前提に使う。 */
+export async function wordRect23(page, sel, word) {
+  return await page.evaluate(`(() => {
+    const p = document.querySelector(${JSON.stringify(sel)});
+    if (!p) return null;
+    const w = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+    for (let n = w.nextNode(); n; n = w.nextNode()) {
+      const i = n.nodeValue.indexOf(${JSON.stringify(word)});
+      if (i < 0) continue;
+      const r = document.createRange(); r.setStart(n, i); r.setEnd(n, i + ${word.length});
+      const b = r.getBoundingClientRect();
+      return { x: b.x, y: b.y, w: b.width, h: b.height };
+    }
+    return null; })()`);
+}
+
+/* 配布物を並べたうえで、**試験のためだけに** content.js を書き換える（故障の差し込み）。
+   書き換えが当たらなければ例外にする（何も変えずに通る試験にしない）。 */
+export function stageExtensionPatched(edit) {
+  const dir = stageExtension();
+  const p = join(dir, 'src', 'content.js');
+  const before = readFileSync(p, 'utf8');
+  const after = edit(before);
+  if (after === before) throw new Error('content.js の書き換えが当たらなかった');
+  writeFileSync(p, after);
+  return dir;
+}

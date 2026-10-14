@@ -1451,44 +1451,168 @@
   //    判別には使えない。
   //
   // ⚠️ **全要素を歩いて集める形も採らなかった。** 実測で 10,000要素あたり 6〜13ms。
-  //    代わりに、`pointer-events: none` を**宣言している規則の選択子**と、
-  //    `style` 属性にそう書いてある要素から候補を引く。宣言が1つも無ければ走査は
-  //    起きない（ふつうのページはここで終わる）。読めない stylesheet が1枚でもあれば
-  //    見落とすので、そのときだけ全要素を歩くほうへ落とす。
+  //    代わりに、`pointer-events` を**宣言している規則の選択子**と、`style` 属性に
+  //    それを書いてある要素から候補を引く。宣言が1つも無ければ走査は起きない。
+  //    読めない stylesheet が1枚でもあれば見落とすので、そのときだけ全要素を歩くほうへ落とす。
   //
   // ⚠️ **断定できるものだけを覆いと数える。** 地の色が不透明で、透けておらず、
   //    位置指定があり、重なり順で印より前に来るもの。画像や gradient で塗られた箱、
   //    重なり順を推し量れない箱は「覆いではない」側へ倒す（落としすぎると、
   //    ふつうのページの語が説明されなくなる）。→ 残る限界は AUDIT.md §7。
-  const PE_NONE_INLINE = /(^|[;\s])pointer-events\s*:\s*none/i;
-  let ghostSelSerial = -1, ghostSelPrint = -1, ghostSelectors = null, ghostSelWalk = false;
+  //
+  // 第23回（RG-23-05・06・08）で、候補の集め方と処理量を別の段に分けた
+  // （→ ghostSelectorList / ghostPool）。
+
+  // ⚠️ **候補は「`pointer-events` を宣言している規則」全部**（第23回 RG-23-05・06）。
+  //    以前は宣言の**値**が `none` の規則だけを索引にしていた。索引は指紋（選択子と
+  //    宣言の本数）が変わるまで使い回すので、CSSOM で値だけを `auto → none` に変えた
+  //    覆いは索引に入らず、5 秒後も見落とされていた（実測: 印の画素 104 → 0 のまま
+  //    前方 1・後方 0）。値が `var(--pe)` の宣言も、生の値が `none` と一致しないので
+  //    落ちていた。いまは値を問わずに候補へ入れ、`none` かどうかは**計算済みの値**で決める。
+  //    `style` 属性も同じく「`pointer-events` と書いてあれば候補」（値は計算済みの値で見る）。
+  const PE_INLINE_SEL = '[style*="pointer-events" i]';
+  // 指紋は宣言の**本数**しか見ないので、同じ本数のまま別の宣言へ差し替えられると
+  // 索引は古いまま残る。索引を作り直す間隔にも上限を置く（周期の見直しと同じ 2 秒）。
+  const GHOST_SEL_TTL = 2000;
+  let ghostSelSerial = -1, ghostSelPrint = -1, ghostSelAt = -1, ghostSelectors = null, ghostSelWalk = false;
+
+  // 文書に効く stylesheet（第23回 RG-23-06）。`document.styleSheets` には、document の
+  // adoptedStyleSheets（`new CSSStyleSheet()` を代入しただけの規則。DOM に何も出ない）が
+  // 入らない。⚠️ `@import` 先は、規則を辿る途中で積む（→ importRulesOf）。
+  const HAS_ADOPTED = typeof Document !== 'undefined' && 'adoptedStyleSheets' in Document.prototype;
+  function adoptedSheets() {
+    if (!HAS_ADOPTED) return [];
+    try { return Array.from(document.adoptedStyleSheets || []); } catch (e) { return []; }
+  }
+  // `@import` の読み込み先の規則（`CSSImportRule` だけが `styleSheet` を持つ）。
+  // ⚠️ `r.cssRules` では辿れない。読めない import 先は例外を投げる（呼ぶ側で扱う）。
+  // 読み込み前・失敗した import は `styleSheet` が null で、辿る規則も無い。
+  const importRulesOf = r => (r.styleSheet ? r.styleSheet.cssRules : null);
+
+  // 入れ子の規則の選択子を、文書から引ける形へ直す。Chrome は入れ子の選択子を
+  // `& .b`・`&:hover`・`& > .c` と `&` つきで返す（実測 Chrome 155）。そのまま
+  // `querySelectorAll` へ渡すと `&` は `:scope`（＝`<html>`）になり、`&:hover` は
+  // `<html>` だけを指す——親の選択子で置き換える。`@scope` の中は解かない（null）。
+  function ruleSelector(r) {
+    let p = r.parentRule;
+    while (p && typeof p.selectorText !== 'string') {
+      if ('start' in p && 'end' in p) return null;          // @scope の中
+      p = p.parentRule;
+    }
+    if (!p) return r.selectorText;
+    const up = ruleSelector(p);
+    if (up === null) return null;
+    const own = r.selectorText;
+    return own.includes('&') ? own.replace(/&/g, ':is(' + up + ')') : ':is(' + up + ') ' + own;
+  }
 
   function ghostSelectorList() {
     const print = styleFingerprint();
-    if (ghostSelectors !== null && ghostSelSerial === styleSerial && ghostSelPrint === print) {
+    const now = performance.now();
+    if (ghostSelectors !== null && ghostSelSerial === styleSerial && ghostSelPrint === print &&
+        now - ghostSelAt < GHOST_SEL_TTL) {
       return ghostSelectors;
     }
-    ghostSelSerial = styleSerial; ghostSelPrint = print;
-    const sels = [];
+    ghostSelSerial = styleSerial; ghostSelPrint = print; ghostSelAt = now;
+    const sels = new Set();
     let walk = false, seen = 0;
-    for (const sheet of document.styleSheets) {
+    sheets: for (const sheet of [...document.styleSheets, ...adoptedSheets()]) {
       let rules;
-      try { rules = sheet.cssRules; } catch (e) { walk = true; continue; }   // 読めない
+      try { rules = sheet.cssRules; } catch (e) { walk = true; break; }   // 読めない＝どのみち全部歩く
       if (!rules) continue;
       const stack = [rules];
       while (stack.length) {
         for (const r of stack.pop()) {
-          if (++seen > RULE_SCAN_MAX) { walk = true; stack.length = 0; break; }
-          if (r.selectorText && r.style && r.style.getPropertyValue('pointer-events') === 'none') {
-            sels.push(r.selectorText);
+          if (++seen > RULE_SCAN_MAX) { walk = true; break sheets; }
+          const st = r.style;
+          if (st && st.getPropertyValue('pointer-events') !== '') {
+            // 選択子の無い場所（`@keyframes` の中・入れ子の宣言だけの塊）や `@scope` の中は、
+            // どの要素に効くかを引けない。見落とさないよう全要素を歩くほうへ落とす。
+            const sel = typeof r.selectorText === 'string' ? ruleSelector(r) : null;
+            if (sel === null) { walk = true; break sheets; }
+            sels.add(sel);
+          }
+          if ('styleSheet' in r) {
+            let inner;
+            try { inner = importRulesOf(r); } catch (e) { walk = true; break sheets; }  // 読めない import 先
+            if (inner) stack.push(inner);
           }
           if (r.cssRules) stack.push(r.cssRules);
         }
       }
     }
     ghostSelWalk = walk;
-    ghostSelectors = sels;
-    return sels;
+    ghostSelectors = walk ? [] : [...sels];
+    return ghostSelectors;
+  }
+
+  // ⚠️ **集める数と手間に上限を置き、超えたら断定しない**（第23回 RG-23-08）。
+  //    以前は候補ごとに子孫を `inner.push(...querySelectorAll('*'))` で展開してから
+  //    除重していた。600 段の入れ子では同じ子孫を約 18 万回積み、`pool.push(...inner)` の
+  //    引数展開で `RangeError: Maximum call stack size exceeded` になり、最初の走査が
+  //    止まって後ろの語に印が付かなかった（実測）。
+  //    いまは引数展開を使わず、`pointer-events` が計算済みで `none` の根だけを、
+  //    既に広げた根の中へは入らずに1回ずつ広げる。集めた数が上限を超えたら、
+  //    覆いは「無い」と答える（＝覆いと数えない側。今の既定）。
+  // ⚠️ **選択子が多いときは、引くより歩くほうが安い**（実測 Chrome 155・ページ側で、
+  //    中央値）。全部の要素を歩いて計算済みの `pointer-events` を読むのは 1要素あたり
+  //    約 0.25µs（10,000要素で 2.2〜2.6ms・40,000要素で 10〜11ms）。選択子で1つずつ引くと
+  //    1要素・1選択子あたり約 3ns（20 個を 10,000要素から 0.6ms・32 個を 40,000要素から
+  //    3.6〜3.9ms）。手間は「選択子の数 × 要素の数」で増えるので、選択子が多い・要素が
+  //    多いときは歩く。第22回で「全要素を歩く形は採らない」としたのは宣言がほとんど無い
+  //    ページの話で、そこは選択子で引く（宣言が無ければ `style` 属性の1回だけで終わる）。
+  // ⚠️ **まとめて1回で引かない。** 1つの選択子の一覧にすると、選択子ごとの速い道が
+  //    使われず約 3 倍遅い（20 個・10,000要素で 1.7ms 対 0.6ms）。
+  const GHOST_POOL_MAX = 20000;        // 歩く・集める要素の上限
+  const GHOST_SEL_WALK = 64;           // これより多い選択子は、引かずに歩く
+  const GHOST_MATCH_MAX = 2000000;     // （選択子の数＋1）× 要素の数の上限（超えたら歩く）
+
+  // 覆いの候補（要素の並び。重複なし）。多すぎて断定しないときは null。
+  function ghostPool() {
+    const sels = ghostSelectorList();
+    const all = document.getElementsByTagName('*');
+    if (ghostSelWalk || sels.length > GHOST_SEL_WALK ||
+        (sels.length + 1) * all.length > GHOST_MATCH_MAX) {
+      return all.length > GHOST_POOL_MAX ? null : all;
+    }
+    // 選択子はページの持ち物。読めない形が混じっても、その1つだけを捨てる。
+    const pool = new Set();
+    const add = list => { for (const el of list) pool.add(el); return pool.size <= GHOST_POOL_MAX; };
+    for (const sel of sels) {
+      let hit;
+      try { hit = document.querySelectorAll(sel); } catch (e) { continue; }
+      if (!add(hit)) return null;
+    }
+    if (!add(document.querySelectorAll(PE_INLINE_SEL))) return null;
+    // `pointer-events` は継承する。`none` の根の中も候補に入れる。
+    const seeds = Array.from(pool);
+    const done = new Set();            // 中まで広げた根
+    const reached = new Set();         // 広げる途中で歩いた要素（その枝はもう歩いてある）
+    for (const el of seeds) {
+      if (!el.firstElementChild || done.has(el) || reached.has(el)) continue;
+      if (getComputedStyle(el).pointerEvents !== 'none') continue;
+      if (!spreadInto(el, pool, done, reached)) return null;
+    }
+    return pool;
+  }
+  // 根の子孫を候補へ足す。**既に広げた根の中へは入らない**（入れ子の根を何度も広げない）。
+  // 外側の根の中にある根は `reached` で飛ばし、内側の根を先に広げていたときは、外側を
+  // 広げる途中でその枝を飛ばす。どちらの順でも、各要素は1回しか歩かない。
+  function spreadInto(root, pool, done, reached) {
+    let n = root.firstElementChild;
+    while (n) {
+      const skip = done.has(n);
+      if (!skip) {
+        pool.add(n); reached.add(n);
+        if (pool.size > GHOST_POOL_MAX) return false;
+      }
+      if (!skip && n.firstElementChild) { n = n.firstElementChild; continue; }
+      while (n !== root && !n.nextElementSibling) n = n.parentElement;
+      if (n === root) break;
+      n = n.nextElementSibling;
+    }
+    done.add(root);
+    return true;
   }
 
   // 祖先まで含めて、その箱が透けていないか
@@ -1502,60 +1626,62 @@
   }
 
   const GHOST_GAP = 120;
-  let ghostAt = -1, ghostList = null;
+  let ghostAt = -1, ghostList = null, ghostFailed = false;
+
+  // ⚠️ **覆いの判定で例外が出ても、印の実測と入口の走査を止めない**（第23回 RG-23-08）。
+  // 判定できないときは「覆いなし」（＝覆いと数えない今の既定の側）。記録は1回だけ残す。
+  function noteGhostFailure(e) {
+    if (ghostFailed) return;
+    ghostFailed = true;
+    console.error('[iiyaku] 覆いの判定に失敗。覆いなしとして続けます:', e);
+  }
 
   function ghostCovers() {
     const now = performance.now();
     if (ghostList !== null && now - ghostAt < GHOST_GAP) return ghostList;
-    const out = [];
-    const sels = ghostSelectorList();
-    let pool = [];
-    if (ghostSelWalk) pool = [...document.querySelectorAll('*')];
-    else {
-      if (sels.length) {
-        // 選択子はページの持ち物。1つでも読めない形が混じると全部が落ちるので、
-        // まとめて渡さず、落ちたぶんだけ捨てる。
-        for (const s of sels) {
-          try { pool.push(...document.querySelectorAll(s)); } catch (e) { /* 読めない選択子 */ }
+    let out = [];
+    try {
+      const pool = ghostPool();
+      if (pool !== null) {
+        for (const el of pool) {
+          const cs = getComputedStyle(el);
+          if (cs.pointerEvents !== 'none') continue;            // ほとんどの要素はここで終わる
+          if (isOurNode(el) || ownedIcons.has(el)) continue;   // 自分の持ち物は覆いに数えない
+          if (cs.position === 'static') continue;               // 重なり順を推し量れない
+          if (GHOST_CLEAR.test(cs.backgroundColor)) continue;     // 地が透明＝断定しない
+          const z = cs.zIndex === 'auto' ? 0 : (parseInt(cs.zIndex, 10) || 0);
+          if (z < 0) continue;                                    // 後ろに敷いてある
+          const r = el.getBoundingClientRect();
+          if (!(r.width > 0 && r.height > 0)) continue;
+          if (!opaqueChain(el)) continue;
+          out.push({ el, r, z });
         }
       }
-      for (const el of document.querySelectorAll('[style]')) {
-        if (PE_NONE_INLINE.test(el.getAttribute('style') || '')) pool.push(el);
-      }
-      // `pointer-events` は継承する。当たった要素の中も候補に入れる。
-      const inner = [];
-      for (const el of pool) if (el.firstElementChild) inner.push(...el.querySelectorAll('*'));
-      pool.push(...inner);
-    }
-    const seen = new Set();
-    for (const el of pool) {
-      if (seen.has(el)) continue;
-      seen.add(el);
-      if (isOurNode(el) || ownedIcons.has(el)) continue;      // 自分の持ち物は覆いに数えない
-      const cs = getComputedStyle(el);
-      if (cs.pointerEvents !== 'none') continue;
-      if (cs.position === 'static') continue;                 // 重なり順を推し量れない
-      if (GHOST_CLEAR.test(cs.backgroundColor)) continue;     // 地が透明＝断定しない
-      const z = cs.zIndex === 'auto' ? 0 : (parseInt(cs.zIndex, 10) || 0);
-      if (z < 0) continue;                                    // 後ろに敷いてある
-      const r = el.getBoundingClientRect();
-      if (!(r.width > 0 && r.height > 0)) continue;
-      if (!opaqueChain(el)) continue;
-      out.push({ el, r, z });
-    }
+    } catch (e) { out = []; noteGhostFailure(e); }
     ghostAt = now; ghostList = out;
     return out;
   }
 
-  // その点が、当たり判定に映らない覆いで塞がれているか
-  function ghostBlocks(icon, x, y) {
-    const list = ghostCovers();
-    for (const g of list) {
-      if (x < g.r.left || x >= g.r.right || y < g.r.top || y >= g.r.bottom) continue;
-      if (g.el === icon || g.el.contains(icon) || icon.contains(g.el)) continue;
-      if (g.z > 0) return true;
-      // 重なり順の指定が無いときは、**後から来たほうが上**に描かれる
-      if (icon.compareDocumentPosition(g.el) & Node.DOCUMENT_POSITION_FOLLOWING) return true;
+  // 印の矩形に掛かる覆いのうち、印より手前のもの（印1つにつき1回求める）
+  function ghostsOver(icon, b) {
+    try {
+      const list = ghostCovers();
+      if (list.length === 0) return list;
+      const out = [];
+      for (const g of list) {
+        if (g.r.right <= b.left || g.r.left >= b.right || g.r.bottom <= b.top || g.r.top >= b.bottom) continue;
+        if (g.el === icon || g.el.contains(icon) || icon.contains(g.el)) continue;
+        // 重なり順の指定が無いときは、**後から来たほうが上**に描かれる
+        if (g.z > 0 || (icon.compareDocumentPosition(g.el) & Node.DOCUMENT_POSITION_FOLLOWING)) out.push(g);
+      }
+      return out;
+    } catch (e) { noteGhostFailure(e); return []; }
+  }
+
+  // その点が、手前の覆いで塞がれているか
+  function ghostBlocks(front, x, y) {
+    for (const g of front) {
+      if (x >= g.r.left && x < g.r.right && y >= g.r.top && y < g.r.bottom) return true;
     }
     return false;
   }
@@ -1622,6 +1748,10 @@
     // （残る限界）。そのときは覆いを判定しない側へ倒す（→ AUDIT.md §7）。
     if (cs.pointerEvents === 'none') return true;
     let inView = 0, exposed = 0;
+    // 印より手前の覆いは、要るとき（最前面が印だった点があるとき）に1回だけ求める。
+    // ⚠️ 求める途中で例外が出ても「覆いなし」で返る（第23回 RG-23-08 → ghostsOver）。
+    let front = null;
+    const coveredAt = (x, y) => ghostBlocks(front || (front = ghostsOver(icon, b)), x, y);
     for (const [fx, fy] of ICON_PROBES) {
       const x = b.left + b.width * fx, y = b.top + b.height * fy;
       if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) continue;
@@ -1632,7 +1762,7 @@
       // は印を返し続ける。点ごとに見るので、**部分的な覆いでは残りの点が露出と数えられ**、
       // 「全面が覆われている」とは判定されない。
       const hit = document.elementFromPoint(x, y);
-      if (hit && (hit === icon || icon.contains(hit)) && !ghostBlocks(icon, x, y)) exposed++;
+      if (hit && (hit === icon || icon.contains(hit)) && !coveredAt(x, y)) exposed++;
     }
     if (inView > 0 && exposed === 0 && visibleNow(b, chain)) return false;   // 全面が覆われている
     return true;
@@ -3506,12 +3636,25 @@
     for (let i = 0; i < s.length; i++) h = (h * 33 ^ s.charCodeAt(i)) >>> 0;
     return h;
   }
+  // stylesheet そのものの番号（初めて見た順）。中身ではなく物の同一性だけを表す。
+  const sheetIds = new WeakMap();
+  let sheetSeq = 0;
+  function sheetSerial(sheet) {
+    let id = sheetIds.get(sheet);
+    if (id === undefined) { id = ++sheetSeq; sheetIds.set(sheet, id); }
+    return id;
+  }
   function styleFingerprint() {
     const now = performance.now();
     if (printVal !== -1 && now - printAt < PRINT_GAP) return printVal;
     let h = 2166136261, seen = 0;
-    for (const sheet of document.styleSheets) {
+    // ⚠️ **document の adoptedStyleSheets と `@import` 先も混ぜる**（第23回 RG-23-06）。
+    // adopted は差し替えても DOM に何も出ない（見張りにも styleSerial にも届かない）。
+    // 同じ形の stylesheet へ差し替えられても気づくよう、**物そのものの番号**も混ぜる。
+    const adopted = adoptedSheets();
+    for (const sheet of [...document.styleSheets, ...adopted]) {
       h = (h * 33 ^ 0x9e37) >>> 0;                       // 枚の区切り
+      if (adopted.includes(sheet)) h = (h * 33 ^ sheetSerial(sheet)) >>> 0;
       let rules;
       try { rules = sheet.cssRules; } catch (e) { h = hashStr(h, 'opaque'); continue; }
       if (!rules) continue;
@@ -3533,6 +3676,11 @@
           // 足すと、カーソルを動かしているあいだ 20% を使うことになる。
           // 値だけの書き換えは、下の「短い周期の見直し」（→ scheduleFastCheck）が拾う。
           if (r.style) h = (h * 33 ^ r.style.length) >>> 0;
+          if ('styleSheet' in r) {                           // @import の読み込み先
+            let inner = null;
+            try { inner = importRulesOf(r); } catch (e) { h = hashStr(h, 'opaque'); }
+            if (inner) stack.push(inner);
+          }
           if (r.cssRules) stack.push(r.cssRules);
         }
       }

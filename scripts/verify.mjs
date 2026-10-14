@@ -758,24 +758,64 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     '`.78em` が二重に掛かり、印の中に小さい輪が入れ子で描かれる');
 
   // RG-22-03 当たり判定に映らない覆い
+  // ⚠️ 第23回（RG-23-05・06・08）で、覆いの候補を集める段（ghostSelectorList / ghostPool）を
+  //    分け、印1つにつき手前の覆いを1回だけ求める形（ghostsOver → coveredAt）へ替えた。
+  //    以下の4件は、その形に合わせて見る場所を直した（守る性質は第22回と同じ）。
+  const ghostFn = name => (new RegExp(`function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n  \\}`).exec(code) || [''])[0];
+  const ghostCoversBody = ghostFn('ghostCovers');
+  const ghostSelBody = ghostFn('ghostSelectorList');
+  const ghostPoolBody = ghostFn('ghostPool');
+  const ghostsOverBody = ghostFn('ghostsOver');
+  check('覆いの判定の各段を取り出せる（第23回）',
+    [ghostCoversBody, ghostSelBody, ghostPoolBody, ghostsOverBody].every(b => b.length > 0),
+    '関数名を変えたなら、この検査も直す');
   check('当たり判定に映らない覆いも見ている（第22回 RG-22-03）',
     /function ghostCovers/.test(code) && /function ghostBlocks/.test(code) &&
-    /&& !ghostBlocks\(icon, x, y\)\) exposed\+\+;/.test(code),
+    /const coveredAt = \(x, y\) => ghostBlocks\(front \|\| \(front = ghostsOver\(icon, b\)\), x, y\);/.test(code) &&
+    /&& !coveredAt\(x, y\)\) exposed\+\+;/.test(code),
     '`pointer-events: none` の不透明な覆いで 0 画素になった印が、正規のまま残る');
-  // ⚠️ 覆いの側の透明の判定は、第23回 RG-23-03 では据え置いた（`GHOST_CLEAR`）。
   check('覆いは、断定できるものだけ数えている（第22回 RG-22-03）',
-    /if \(GHOST_CLEAR\.test\(cs\.backgroundColor\)\) continue;/.test(code) &&
-    /if \(cs\.position === 'static'\) continue;/.test(code) &&
-    /if \(!opaqueChain\(el\)\) continue;/.test(code),
+    /if \(GHOST_CLEAR\.test\(cs\.backgroundColor\)\) continue;/.test(ghostCoversBody) &&
+    /if \(cs\.position === 'static'\) continue;/.test(ghostCoversBody) &&
+    /if \(!opaqueChain\(el\)\) continue;/.test(ghostCoversBody),
     '透明な覆い・重なり順の分からない箱まで覆いと数え、読める語が説明されなくなる');
   check('覆いを、点ごとに見ている（第22回 RG-22-03）',
-    /for \(const \[fx, fy\] of ICON_PROBES\)[\s\S]{0,600}ghostBlocks\(icon, x, y\)/.test(code),
+    /for \(const \[fx, fy\] of ICON_PROBES\)[\s\S]{0,700}coveredAt\(x, y\)/.test(code) &&
+    /function ghostBlocks\(front, x, y\)/.test(code),
     '部分的な覆いを「全面が覆われている」と誤判定する');
   check('覆いの候補を、宣言のある規則から引いている（第22回 RG-22-03）',
     /function ghostSelectorList/.test(code) &&
-    /getPropertyValue\('pointer-events'\) === 'none'/.test(code) &&
-    /if \(ghostSelWalk\) pool = \[\.\.\.document\.querySelectorAll\('\*'\)\];/.test(code),
-    '毎回すべての要素を歩くと、10,000要素で 6〜13ms 掛かる');
+    /st\.getPropertyValue\('pointer-events'\) !== ''/.test(ghostSelBody) &&
+    /const all = document\.getElementsByTagName\('\*'\);/.test(ghostPoolBody) &&
+    /if \(ghostSelWalk \|\| sels\.length > GHOST_SEL_WALK \|\|/.test(ghostPoolBody),
+    '宣言の少ないページで毎回すべての要素を歩く／宣言の多いページで選択子を引き続けて重くなる');
+
+  // 第23回 RG-23-05・06 候補の集め方
+  check('覆いの候補は、値を問わず `pointer-events` を宣言した規則から引く（第23回 RG-23-05）',
+    !/getPropertyValue\('pointer-events'\) === 'none'/.test(code) &&
+    /const PE_INLINE_SEL = '\[style\*="pointer-events" i\]';/.test(code) &&
+    /now - ghostSelAt < GHOST_SEL_TTL/.test(ghostSelBody),
+    'CSSOM で値だけを auto → none に変えた覆いが、索引に入らないまま見落とされる');
+  check('覆いの候補は、adopted と @import 先も辿る（第23回 RG-23-06）',
+    /\.\.\.document\.styleSheets, \.\.\.adoptedSheets\(\)/.test(ghostSelBody) &&
+    /importRulesOf\(r\)/.test(ghostSelBody) &&
+    /document\.adoptedStyleSheets/.test(code),
+    '変数・document の adoptedStyleSheets・@import 先で宣言した覆いを見落とす');
+  check('stylesheet の指紋も、adopted（物の番号）と @import 先を混ぜる（第23回 RG-23-06）',
+    /function styleFingerprint\(\)[\s\S]*?adoptedSheets\(\)[\s\S]*?sheetSerial\(sheet\)[\s\S]*?importRulesOf\(r\)[\s\S]*?\n  \}/.test(code),
+    'adopted を差し替えても（DOM は変わらない）索引が古いまま使い回される');
+  // 第23回 RG-23-08 処理量と例外
+  check('覆いの候補は除重しながら集め、引数展開をせず、数に上限がある（第23回 RG-23-08）',
+    !/\.push\(\.\.\./.test(ghostPoolBody + ghostCoversBody + ghostSelBody) &&
+    /const GHOST_POOL_MAX = \d+;/.test(code) &&
+    /\(sels\.length \+ 1\) \* all\.length > GHOST_MATCH_MAX/.test(ghostPoolBody) &&
+    /if \(!el\.firstElementChild \|\| done\.has\(el\) \|\| reached\.has\(el\)\) continue;/.test(ghostPoolBody) &&
+    /const skip = done\.has\(n\);/.test(ghostFn('spreadInto')),
+    '600 段の入れ子で RangeError になり、最初の走査が止まる');
+  check('覆いの判定の例外は「覆いなし」へ倒す（第23回 RG-23-08）',
+    /catch \(e\) \{ out = \[\]; noteGhostFailure\(e\); \}/.test(ghostCoversBody) &&
+    /catch \(e\) \{ noteGhostFailure\(e\); return \[\]; \}/.test(ghostsOverBody),
+    '覆いの判定の例外で、印の実測と入口の走査ごと止まる');
 
   // RG-22-04 / RG-22-05 合図の出ない変化
   check('合図の出ない変化を、短い周期で見に行っている（第22回 RG-22-04）',

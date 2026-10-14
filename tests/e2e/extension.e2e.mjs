@@ -34,7 +34,10 @@ import { launchChrome, startTestServer, stageExtension, stageExtensionWith,
          TRUST22_PAGE, iconPixels, pixelsAt, putGhostCover, CPU_THROTTLE,
          inkAt, innerRect, shadowButtonEval,
          REJECT23_PAGE, HOSTLOOK23_PAGE, FOCUS23_PAGE, FOCUS23_DARK_PAGE, COLOR23_PAGE,
-         UNKNOWN23_PAGE, FORATTR23_PAGE, WIDEN23_PAGE } from './helpers/chrome.mjs';
+         UNKNOWN23_PAGE, FORATTR23_PAGE, WIDEN23_PAGE,
+         GHOSTVAL23_PAGE, GHOSTSRC23_PAGE, GHOSTSRC23_EXTRA,
+         GHOSTNEST23_PAGE, GHOSTNEST23_EXTRA, GHOSTFLAT23_PAGE, GHOSTFAULT23_PAGE,
+         wordRect23, stageExtensionPatched } from './helpers/chrome.mjs';
 
 const PAGE = 'https://github.com/octocat/Hello-World';
 
@@ -5008,6 +5011,275 @@ test('第23回 RG-23-11: 挿入を見送った語は、場所が広がれば付�
   await t.test('【対照】語ごと隠れていた節点は、見えれば付く（控えの経路）', async () => {
     await tab.evaluate(`document.getElementById('hid').style.display = ''; true`);
     await waitFor('見えた語に印が付く', async () => await n('hid') === 1, { timeout: 2500 });
+  });
+
+  await tab.close();
+});
+
+/* ===================== 第23回監査（v1.8.21）・2群目（覆いの判定） ===================== */
+/*
+ * 見本は「枠」ごとに1場面（→ helpers の slot23）。前方の語 h-<id> は枠の中、後方の同じ語
+ * l-<id> は枠の外。覆いと数えれば [前方, 後方] = [0, 1]、数えなければ [1, 0]。
+ * 覆いが本当に語を隠しているか（0 画素）／語が本当に見えているか（白でない画素がある）を
+ * **画面の画素で**前提として確かめてから、印の数を見る（判定式の言い換えにしない）。
+ */
+const pair23 = (tab, id) => tab.evaluate(`['h-${id}', 'l-${id}']
+  .map(i => document.getElementById(i).querySelectorAll('.iiyaku-icon').length)`);
+// 条件が成り立つまで見る。成り立たなくても最後の値を返す（理由は assert で出す）
+async function settle23(fn, ok, ms) {
+  const t0 = Date.now();
+  let v = await fn();
+  while (!ok(v) && Date.now() - t0 < ms) { await sleep(200); v = await fn(); }
+  return v;
+}
+// その語の矩形の、白でない画素の数
+async function wordInk23(cdp, tab, id, word) {
+  const r = await wordRect23(tab, `#h-${id}`, word);
+  return r ? (await pixelsAt(cdp, tab, r)).nonwhite : null;
+}
+// 例外と console.error を集める（content script の分も届く）
+function collectErrors23(cdp) {
+  const exceptions = [], consoleErrors = [];
+  const off = cdp.onEvent(m => {
+    if (m.method === 'Runtime.exceptionThrown') {
+      const d = m.params.exceptionDetails || {};
+      exceptions.push(String((d.exception && d.exception.description) || d.text || '').slice(0, 300));
+    }
+    if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') {
+      consoleErrors.push((m.params.args || []).map(a => a.value ?? a.description ?? '').join(' ').slice(0, 300));
+    }
+  });
+  return { exceptions, consoleErrors, off };
+}
+
+test('第23回 RG-23-05: CSSOM で値だけを none に変えた覆いにも気づく', async t => {
+  const srv = await startTestServer(GHOSTVAL23_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  await waitFor('前方に印が付く', async () =>
+    await count23(tab, '#h-val .iiyaku-icon') && await count23(tab, '#h-ctl .iiyaku-icon'));
+  await sleep(600);
+
+  await t.test('前提: 覆いは隠れていて、どちらも前方に付いている', async () => {
+    assert.deepEqual([await pair23(tab, 'val'), await pair23(tab, 'ctl')], [[1, 0], [1, 0]]);
+  });
+
+  // 選択子・規則の数・宣言の数を変えずに、値だけを書き換える（DOM も属性も変わらない）
+  const changed = await tab.evaluate(`(() => {
+    const rs = document.getElementById('cv-css').sheet.cssRules;
+    rs[0].style.pointerEvents = 'none'; rs[0].style.visibility = 'visible';
+    rs[1].style.visibility = 'visible';
+    const a = getComputedStyle(document.getElementById('cv-val'));
+    const b = getComputedStyle(document.getElementById('cv-ctl'));
+    return [a.pointerEvents, a.visibility, b.pointerEvents, b.visibility]; })()`);
+
+  await t.test('値だけを auto → none に変えた覆いでも、後方の読める語へ移る', async () => {
+    assert.deepEqual(changed, ['none', 'visible', 'none', 'visible'], '見本の書き換えが効いていない');
+    const v = await settle23(() => pair23(tab, 'val'), p => p[1] === 1, 8000);
+    assert.equal(await wordInk23(cdp, tab, 'val', 'branch'), 0, '前提が崩れている（覆いが語を隠していない）');
+    assert.deepEqual(v, [0, 1], '値だけを変えた覆いを見落とし、0 画素の印が前方に残っている');
+  });
+
+  await t.test('【対照】初めから none の覆い（visibility だけを変える）も、後方へ移る', async () => {
+    assert.equal(await wordInk23(cdp, tab, 'ctl', 'commit'), 0, '前提が崩れている（覆いが語を隠していない）');
+    assert.deepEqual(await settle23(() => pair23(tab, 'ctl'), p => p[1] === 1, 8000), [0, 1]);
+  });
+
+  await tab.close();
+});
+
+test('第23回 RG-23-06: 変数・adopted・@import で宣言した覆いも見る（読めない stylesheet の無い見本）', async t => {
+  const srv = await startTestServer(GHOSTSRC23_PAGE, GHOSTSRC23_EXTRA);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  await waitFor('印が付く', async () =>
+    await count23(tab, '#l-lit .iiyaku-icon') && await count23(tab, '#h-late .iiyaku-icon'));
+  await sleep(800);
+
+  await t.test('前提: 読めない stylesheet が無く、3つの経路の規則が効いている', async () => {
+    const v = await tab.evaluate(`(() => {
+      const sheets = [...document.styleSheets];
+      const readable = sheets.every(s => { try { return !!s.cssRules; } catch (e) { return false; } });
+      const imp = sheets.flatMap(s => [...s.cssRules]).find(r => 'styleSheet' in r);
+      const cs = id => getComputedStyle(document.getElementById(id));
+      const ids = ['cv-var', 'cv-adopt', 'cv-imp', 'cv-lit'];
+      return { readable, importRules: imp && imp.styleSheet ? imp.styleSheet.cssRules.length : -1,
+               adopted: document.adoptedStyleSheets.length,
+               pe: ids.map(i => cs(i).pointerEvents), bg: ids.map(i => cs(i).backgroundColor) }; })()`);
+    assert.equal(v.readable, true, '読めない stylesheet がある（全要素を歩く経路が救ってしまう）');
+    assert.equal(v.importRules, 1, '@import 先が読み込まれていない');
+    assert.equal(v.adopted, 1, 'adoptedStyleSheets が効いていない');
+    assert.deepEqual(v.pe, ['none', 'none', 'none', 'none'], JSON.stringify(v));
+    assert.deepEqual(v.bg, Array(4).fill('rgb(255, 255, 255)'), JSON.stringify(v));
+  });
+
+  for (const [id, word, why] of [
+    ['var', 'branch', '値が var(--pe) の宣言'],
+    ['adopt', 'commit', 'document の adoptedStyleSheets の規則'],
+    ['imp', 'merge', '@import 先の規則']
+  ]) {
+    await t.test(`${why}による覆いでも、後方の読める語へ移る`, async () => {
+      assert.equal(await wordInk23(cdp, tab, id, word), 0, '前提が崩れている（覆いが語を隠していない）');
+      assert.deepEqual(await pair23(tab, id), [0, 1], `${why}による覆いを見落とし、0 画素の印が残っている`);
+    });
+  }
+
+  await t.test('【対照】<style> に直書きした覆いも、後方へ移る', async () => {
+    assert.equal(await wordInk23(cdp, tab, 'lit', 'fetch'), 0, '前提が崩れている');
+    assert.deepEqual(await pair23(tab, 'lit'), [0, 1]);
+  });
+
+  await t.test('adopted の一覧を差し替えるだけ（DOM は変わらない）でも、覆いに気づく', async () => {
+    assert.deepEqual(await pair23(tab, 'late'), [1, 0], '前提が崩れている（初めから覆われている）');
+    const v = await tab.evaluate(`(() => {
+      const o = new MutationObserver(() => {});
+      o.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+      const s = new CSSStyleSheet();
+      s.replaceSync('#cv-late{display:block;pointer-events:none}');
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, s];
+      const records = o.takeRecords().length;
+      o.disconnect();
+      return { records, pe: getComputedStyle(document.getElementById('cv-late')).pointerEvents }; })()`);
+    assert.deepEqual(v, { records: 0, pe: 'none' }, '見本が DOM を変えている／覆いが効いていない');
+    const p = await settle23(() => pair23(tab, 'late'), q => q[1] === 1, 8000);
+    assert.equal(await wordInk23(cdp, tab, 'late', 'fork'), 0, '前提が崩れている');
+    assert.deepEqual(p, [0, 1], '差し替えた adopted の覆いに気づかず、0 画素の印が残っている');
+  });
+
+  await tab.close();
+});
+
+test('第23回 RG-23-08: 600 段の入れ子と、同じ要素に当たる 3,000 の選択子でも、走査が止まらない', async t => {
+  const srv = await startTestServer(GHOSTNEST23_PAGE, GHOSTNEST23_EXTRA);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  const errs = collectErrors23(cdp);
+  t.after(async () => { errs.off(); chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const three = tab => tab.evaluate(`['first', 'second', 'third']
+    .map(id => document.getElementById(id).querySelectorAll('.iiyaku-icon').length)`);
+
+  // 1枚目: 回答の反例そのまま（`.nest{pointer-events:none}` の 600 段）
+  const tab = await openPage(cdp, PAGE);
+  await waitFor('拡張が動き出す', async () =>
+    await tab.evaluate(`document.querySelectorAll('.iiyaku-toggle').length`));
+  await sleep(2500);   // 暇なときの確認を1周
+
+  await t.test('前提: 600 段の入れ子がある', async () => {
+    assert.equal(await tab.evaluate(`document.querySelectorAll('.nest').length`), 600);
+  });
+
+  await t.test('3語とも説明される（最初の走査が例外で止まらない）', async () => {
+    assert.deepEqual(await three(tab), [1, 1, 1]);
+  });
+
+  await t.test('入れ子の候補があっても、ほんとうの覆いは見つける', async () => {
+    assert.equal(await wordInk23(cdp, tab, 'same', 'webhook'), 0, '前提が崩れている（覆いが語を隠していない）');
+    assert.deepEqual(await pair23(tab, 'same'), [0, 1]);
+  });
+  await tab.close();
+
+  // 2枚目: 同じ要素に当たる 3,000 の選択子
+  const tab2 = await openPage(cdp, 'https://github.com/octocat/many');
+  await waitFor('拡張が動き出す', async () =>
+    await tab2.evaluate(`document.querySelectorAll('.iiyaku-toggle').length`));
+  await sleep(2500);
+
+  await t.test('同じ要素に当たる 3,000 の選択子でも、3語とも説明され、覆いは見つける', async () => {
+    assert.equal(await tab2.evaluate(`document.styleSheets[0].cssRules.length`) > 3000, true, '前提が崩れている');
+    assert.deepEqual(await three(tab2), [1, 1, 1]);
+    assert.equal(await wordInk23(cdp, tab2, 'same', 'webhook'), 0, '前提が崩れている（覆いが語を隠していない）');
+    assert.deepEqual(await pair23(tab2, 'same'), [0, 1]);
+  });
+
+  await t.test('例外も、覆いの判定の失敗も記録されない（2枚とも）', async () => {
+    assert.deepEqual(errs.exceptions, [], '例外が出た');
+    assert.deepEqual(errs.consoleErrors.filter(m => m.includes('[iiyaku]')), [], '失敗が記録された');
+  });
+
+  await tab2.close();
+});
+
+test('第23回 RG-23-08: 平坦な 30,000 の候補でも、1回の見直しで全部は測らない', async t => {
+  const srv = await startTestServer(GHOSTFLAT23_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  const errs = collectErrors23(cdp);
+  t.after(async () => { errs.off(); chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', {
+    path: stageExtensionWith({ 'timing-probe.js': 'tests/e2e/timing-probe.js' },
+      js => ['timing-probe.js', ...js]) });
+  const tab = await openPage(cdp, PAGE);
+  const probe = n => tab.evaluate(`localStorage.getItem(${JSON.stringify('rg-' + n)})`);
+  const three = () => tab.evaluate(`['first', 'second', 'third']
+    .map(id => document.getElementById(id).querySelectorAll('.iiyaku-icon').length)`);
+  await waitFor('3語とも付く', async () => (await three()).every(n => n === 1), { timeout: 30000 });
+
+  await t.test('計る仕掛けが効いている（陽性対照）', async () => {
+    assert.equal(await probe('time-selftest'), '1', '予約を包めていない');
+    assert.equal(JSON.parse(await probe('wrapped') || '{}').getComputedStyle, true,
+      'getComputedStyle を数える包みが効いていない');
+  });
+
+  await t.test('暇なときの確認でも、1回の見直しで候補を全部は測らない', async () => {
+    /*
+     * 時間ではなく**1回の見直しで呼んだ getComputedStyle の数**で見る（→ RG-13-06 と同じ考え方。
+     * 壁時計は機械の忙しさを含む）。候補を全部測れば1回で 30,000 を超える。集める数が
+     * 上限（20,000）を超えたら「断定しない」に倒すので、候補を1つずつ測ることはない。
+     */
+    await tab.evaluate(`localStorage.setItem('rg-reset', '1'); true`);
+    await sleep(5000);   // 暇なときの確認を2周
+    const g = JSON.parse(await probe('work') || '{}').getComputedStyle || [];
+    assert.ok(g.length > 0, '1回も測れていない');
+    assert.ok(Math.max(...g) > 0, '仕事量が全部 0＝数えられていない（上限の検査が素通りする）');
+    assert.ok(Math.max(...g) < 10000,
+      `1回の見直しで getComputedStyle を ${Math.max(...g)} 回呼んだ（候補 30,000）`);
+    assert.deepEqual(await three(), [1, 1, 1], '見直しのあいだに印が外れた');
+  });
+
+  await t.test('例外が記録されない', async () => {
+    assert.deepEqual(errs.exceptions, []);
+    assert.deepEqual(errs.consoleErrors.filter(m => m.includes('[iiyaku]')), []);
+  });
+
+  await tab.close();
+});
+
+test('第23回 RG-23-08: 覆いの判定が故障しても、走査は止まらず「覆いなし」で続ける', async t => {
+  const srv = await startTestServer(GHOSTFAULT23_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  const errs = collectErrors23(cdp);
+  t.after(async () => { errs.off(); chrome.kill(); await srv.close(); });
+  // 試験のためだけに、覆いの判定の入口で必ず例外を投げる形へ書き換えて読み込む
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtensionPatched(js => js.replace(
+    'function ghostCovers() {',
+    "function ghostCovers() { throw new Error('rg-test: 覆いの判定の故障');")) });
+  const tab = await openPage(cdp, PAGE);
+  await waitFor('拡張が動き出す', async () =>
+    await tab.evaluate(`document.querySelectorAll('.iiyaku-toggle').length`));
+  await sleep(2500);   // 暇なときの確認を1周（保持の再検証でも呼ばれる）
+
+  await t.test('覆いの無い語は説明される（入口の走査が止まらない）', async () => {
+    assert.deepEqual(await tab.evaluate(`['second', 'third']
+      .map(id => document.getElementById(id).querySelectorAll('.iiyaku-icon').length)`), [1, 1]);
+  });
+
+  await t.test('判定できない覆いは「覆いなし」として扱う（覆いと数えない既定の側）', async () => {
+    assert.deepEqual(await pair23(tab, 'f'), [1, 0]);
+  });
+
+  await t.test('例外は外へ漏れず、失敗の記録は1回だけ', async () => {
+    assert.deepEqual(errs.exceptions, [], '例外が外へ漏れた');
+    const ours = errs.consoleErrors.filter(m => m.includes('[iiyaku]'));
+    assert.equal(ours.length, 1, `記録: ${JSON.stringify(ours)}`);
+    assert.match(ours[0], /覆いの判定に失敗/);
   });
 
   await tab.close();

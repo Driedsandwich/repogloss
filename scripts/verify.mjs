@@ -358,8 +358,11 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
 
 /* ---------- 退役で所有を取り消しているか（RG-11-02） ---------- */
 {
+  // 第23回 RG-23-01 で、所有を手放す経路を `relinquishIcon` の1か所へまとめた
+  // （登録前の取り消しが、押せる実体を畳まないまま手放していたため）。
   check('退役のときに、印の所有を取り消している',
-    /ownedIcons\.delete\(rec\.icon\)/.test(content),
+    /relinquishIcon\(rec\.icon\);/.test(content) &&
+    /function relinquishIcon\(icon[\s\S]{0,200}?ownedIcons\.delete\(icon\);/.test(content),
     'ページが退役した領域を戻すと、古い印が正規のまま生き返る');
   check('記録の不変条件に、合言葉の値が入っている',
     /rec\.icon\.getAttribute\('data-iiyaku-owner'\) !== UID/.test(content),
@@ -669,14 +672,28 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
   const hoverList22 = (/const HOVER_SIGNALS = \[([\s\S]*?)\];/.exec(code) || [, ''])[1];
   const subscribes22 = t => hoverList22.includes(`'${t}'`);
   // RG-22-01 退役した印の中身を失効させる
+  // ⚠️ 第23回 RG-23-01 で、所有を手放す口を `relinquishIcon` の1か所へまとめた。
+  //    見たいのは「退役（retireGloss）がその口を通り、その口が先に畳む」という性質。
   check('退役するとき、shadow の中の押せる実体も畳んでいる（第22回 RG-22-01）',
     /function deactivateShadowIcon/.test(code) &&
-    /deactivateShadowIcon\(rec\.icon\);/.test(code),
+    /function relinquishIcon\(icon, \{ keepExpectations = false \} = \{\}\) \{\s*\n\s*deactivateShadowIcon\(icon\);/.test(code) &&
+    /relinquishIcon\(rec\.icon\);/.test(code),
     'ページが使い回した節点の中で、古い押せる点が生き続ける');
   check('畳むのは、DOM に繋がっているかに関わらず行う（第22回 RG-22-01）',
     // 所有の取り消しと同じ場所（`isConnected` の判定より前）で畳んでいること
-    /expectedAttrs\.delete\(rec\.icon\);[\s\S]{0,400}deactivateShadowIcon\(rec\.icon\);[\s\S]{0,80}if \(rec\.icon\.isConnected\)/.test(code),
+    /relinquishIcon\(rec\.icon\);\s*\n\s*if \(rec\.icon\.isConnected\)/.test(code),
     'ページが外して持っていた印を戻すと、中の button が生き返る');
+  // RG-23-01 登録前の取り消し（入れて測って引き取る）も、同じ口を通る
+  check('挿入を取り消すときも、押せる実体を先に畳んでいる（第23回 RG-23-01）',
+    /relinquishIcon\(icon, \{ keepExpectations: true \}\);[\s\S]{0,120}removeOwn\(icon\);/.test(code),
+    'ページの observer が引き取られた印を受け取ると、押せる解説が2つになり Tab で止まる');
+  check('所有を手放す口は1か所だけ（第23回 RG-23-01）',
+    (code.match(/ownedIcons\.delete\(/g) || []).length === 1 &&
+    /function relinquishIcon[\s\S]{0,200}?ownedIcons\.delete\(icon\);/.test(code),
+    '別の経路が、中の button を畳まずに所有だけを手放す');
+  check('畳んだ root から、自分の stylesheet も外している（第23回 RG-23-01）',
+    /function deactivateShadowIcon[\s\S]{0,1200}?root\.adoptedStyleSheets = \[\];/.test(code),
+    '使い回された本文の入れ物に、`:host` の inline-flex・左余白・vertical-align が残る');
   check('畳むとき、押せなくしてから取り除いている（第22回 RG-22-01）',
     /btn\.disabled = true;[\s\S]{0,200}btn\.tabIndex = -1;[\s\S]{0,300}btn\.remove\(\);/.test(code),
     '取り除きに失敗したとき、Tab の停止点だけが残る');
@@ -690,14 +707,44 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     /const SHADOW_FG = '--rg-fg';/.test(code) &&
     /--rg-fg/.test(css22) && /--rg-bg/.test(css22),
     'ページが `--fgColor-accent: transparent` を置くと、印が 0 画素になる');
+  // ⚠️ 第23回 RG-23-03 で、透明の判定を `rgba(…, 0)` の正規表現から、alpha を読む関数へ替えた。
   check('押せる実体の塗りを、実測してから決めている（第22回 RG-22-02）',
     /btn\.style\.removeProperty\(SHADOW_FG\);/.test(code) &&
-    /if \(!TRANSPARENT\.test\(getComputedStyle\(btn\)\.color\)\) return;/.test(code),
+    /const fgOk = isInkColor\(fg\);/.test(code) &&
+    /if \(fgOk && groundOk\) return;/.test(code),
     '塗れているのに上書きすると、テーマ追従が失われる');
   check('印の実測が、押せる実体のほうも見ている（第22回 RG-22-02）',
     /const target = focusTargetOf\(icon\);/.test(code) &&
-    /TRANSPARENT\.test\(ts\.color\) && TRANSPARENT\.test\(ts\.borderTopColor\) &&/.test(code),
+    /\[ts\.color, ts\.borderTopColor, ts\.backgroundColor\]\.some\(isInkColor\)/.test(code),
     'host だけ見ても、shadow の中が 0 画素かは分からない');
+  // RG-23-03 透明の判定は alpha を読む。読めない形を「塗れている」と断定しない
+  check('透明の判定が、計算済みの色の alpha を読んでいる（第23回 RG-23-03）',
+    /function colorAlpha\(c\)/.test(code) &&
+    /const isInkColor = c => \{ const a = colorAlpha\(c\); return a !== null && a > 0; \};/.test(code) &&
+    !/\bTRANSPARENT\b/.test(code),
+    '`color(srgb 0 0 0 / 0)` や `oklch(… / 0)` を「透明でない」と読み、0 画素の印が残る');
+  check('塗り直しの鍵に、button が実際に読む変数を入れている（第23回 RG-23-03）',
+    /const SHADOW_VARS = \[SHADOW_FG, SHADOW_BG\];/.test(code) &&
+    /for \(const v of SHADOW_VARS\) seen \+=/.test(code),
+    '祖先へ後から `--rg-fg: transparent` を置かれても、鍵が変わらず塗り直しを飛ばす');
+  // RG-23-02 hover / focus で、字と地を別の名前で持つ（currentColor を地に使わない）
+  {
+    const shadowCss = (/\/\* ===== RG_SHADOW_BEGIN =====[\s\S]*?\/\* ===== RG_SHADOW_END ===== \*\//.exec(css22) || [''])[0];
+    const shadowRules = shadowCss.replace(/\/\*[\s\S]*?\*\//g, '');
+    check('shadow の中で、hover / focus の地と字を別の色にしている（第23回 RG-23-02）',
+      // ふだんの枠の `currentColor`（＝印の色）は正しい。見るのは地と outline だけ
+      shadowRules.length > 0 && !/background-color:\s*currentColor/i.test(shadowRules) &&
+      !/outline:[^;]*currentColor/i.test(shadowRules) &&
+      /button:hover,\s*\nbutton:focus-visible \{[^}]*background-color: var\(--rg-ink\);[^}]*color: var\(--rg-ground\);/.test(shadowRules) &&
+      /button:focus-visible \{[^}]*outline: 2px solid var\(--rg-ink\);/.test(shadowRules),
+      'currentColor は「いまの color」なので、地も字も outline も同じ色になり、白地に白で消える');
+    check('shadow の中にも、動きを減らす設定を効かせている（第23回 RG-23-02）',
+      /@media \(prefers-reduced-motion: reduce\) \{\s*button \{\s*transition: none;/.test(shadowRules),
+      'light DOM 側の媒体規則は shadow の中まで届かない');
+    check('shadow のある印は、hover でも light DOM の host が地を描かない（第23回 RG-23-02）',
+      /:not\(\[data-iiyaku-for\]\):not\(\[role\]\):hover,\s*\n[^{]*:not\(\[data-iiyaku-for\]\):not\(\[role\]\):focus-visible \{\s*background-color: transparent;/.test(css22),
+      'host が印の色の円を描き、中の button の絵と重なる');
+  }
   // ⚠️ v1.8.20 は light DOM 側の絵をそのまま残していたので、輪が二重になり
   //    "i" が箱の外へはみ出していた（v1.8.21 で実測・撮影して直した）
   check('shadow のある印は、light DOM 側で絵を描かない（v1.8.21）',
@@ -711,23 +758,78 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     '`.78em` が二重に掛かり、印の中に小さい輪が入れ子で描かれる');
 
   // RG-22-03 当たり判定に映らない覆い
+  // ⚠️ 第23回（RG-23-05〜08・10）で、覆いの判定を「候補を集める（ghostSelectorList /
+  //    ghostPool）」「塗りを確かめる（solidCover）」「前後を比べる（coverInFront）」に分け、
+  //    印1つにつき手前の覆いを1回だけ求める形（ghostsOver → coveredAt）へ替えた。
+  //    以下の4件は、その形に合わせて見る場所を直した（守る性質は第22回と同じ）。
+  const ghostFn = name => (new RegExp(`function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n  \\}`).exec(code) || [''])[0];
+  const ghostCoversBody = ghostFn('ghostCovers');
+  const ghostSelBody = ghostFn('ghostSelectorList');
+  const ghostPoolBody = ghostFn('ghostPool');
+  const ghostsOverBody = ghostFn('ghostsOver');
+  const inFrontBody = ghostFn('coverInFront');
+  check('覆いの判定の各段を取り出せる（第23回）',
+    [ghostCoversBody, ghostSelBody, ghostPoolBody, ghostsOverBody, inFrontBody].every(b => b.length > 0),
+    '関数名を変えたなら、この検査も直す');
   check('当たり判定に映らない覆いも見ている（第22回 RG-22-03）',
     /function ghostCovers/.test(code) && /function ghostBlocks/.test(code) &&
-    /&& !ghostBlocks\(icon, x, y\)\) exposed\+\+;/.test(code),
+    /const coveredAt = \(x, y\) => ghostBlocks\(front \|\| \(front = ghostsOver\(icon, b\)\), x, y\);/.test(code) &&
+    /&& !coveredAt\(x, y\)\) exposed\+\+;/.test(code),
     '`pointer-events: none` の不透明な覆いで 0 画素になった印が、正規のまま残る');
   check('覆いは、断定できるものだけ数えている（第22回 RG-22-03）',
-    /if \(TRANSPARENT\.test\(cs\.backgroundColor\)\) continue;/.test(code) &&
-    /if \(cs\.position === 'static'\) continue;/.test(code) &&
-    /if \(!opaqueChain\(el\)\) continue;/.test(code),
+    /if \(colorAlpha\(cs\.backgroundColor\) !== 1\) continue;/.test(ghostCoversBody) &&
+    /if \(cs\.position === 'static'\) continue;/.test(ghostCoversBody) &&
+    /const rect = solidCover\(el, cs, r\);/.test(ghostCoversBody) &&
+    /if \(coverInFront\(g, icon, ghostMemo\)\) out\.push\(g\);/.test(ghostsOverBody),
     '透明な覆い・重なり順の分からない箱まで覆いと数え、読める語が説明されなくなる');
   check('覆いを、点ごとに見ている（第22回 RG-22-03）',
-    /for \(const \[fx, fy\] of ICON_PROBES\)[\s\S]{0,600}ghostBlocks\(icon, x, y\)/.test(code),
+    /for \(const \[fx, fy\] of ICON_PROBES\)[\s\S]{0,700}coveredAt\(x, y\)/.test(code) &&
+    /function ghostBlocks\(front, x, y\)/.test(code),
     '部分的な覆いを「全面が覆われている」と誤判定する');
   check('覆いの候補を、宣言のある規則から引いている（第22回 RG-22-03）',
     /function ghostSelectorList/.test(code) &&
-    /getPropertyValue\('pointer-events'\) === 'none'/.test(code) &&
-    /if \(ghostSelWalk\) pool = \[\.\.\.document\.querySelectorAll\('\*'\)\];/.test(code),
-    '毎回すべての要素を歩くと、10,000要素で 6〜13ms 掛かる');
+    /st\.getPropertyValue\('pointer-events'\) !== ''/.test(ghostSelBody) &&
+    /const all = document\.getElementsByTagName\('\*'\);/.test(ghostPoolBody) &&
+    /if \(ghostSelWalk \|\| sels\.length > GHOST_SEL_WALK \|\|/.test(ghostPoolBody),
+    '宣言の少ないページで毎回すべての要素を歩く／宣言の多いページで選択子を引き続けて重くなる');
+
+  // 第23回 RG-23-05・06 候補の集め方
+  check('覆いの候補は、値を問わず `pointer-events` を宣言した規則から引く（第23回 RG-23-05）',
+    !/getPropertyValue\('pointer-events'\) === 'none'/.test(code) &&
+    /const PE_INLINE_SEL = '\[style\*="pointer-events" i\]';/.test(code) &&
+    /now - ghostSelAt < GHOST_SEL_TTL/.test(ghostSelBody),
+    'CSSOM で値だけを auto → none に変えた覆いが、索引に入らないまま見落とされる');
+  check('覆いの候補は、adopted と @import 先も辿る（第23回 RG-23-06）',
+    /\.\.\.document\.styleSheets, \.\.\.adoptedSheets\(\)/.test(ghostSelBody) &&
+    /importRulesOf\(r\)/.test(ghostSelBody) &&
+    /document\.adoptedStyleSheets/.test(code),
+    '変数・document の adoptedStyleSheets・@import 先で宣言した覆いを見落とす');
+  check('stylesheet の指紋も、adopted（物の番号）と @import 先を混ぜる（第23回 RG-23-06）',
+    /function styleFingerprint\(\)[\s\S]*?adoptedSheets\(\)[\s\S]*?sheetSerial\(sheet\)[\s\S]*?importRulesOf\(r\)[\s\S]*?\n  \}/.test(code),
+    'adopted を差し替えても（DOM は変わらない）索引が古いまま使い回される');
+  // 第23回 RG-23-07 前後
+  check('z-index の正負だけで前後を断定しない（第23回 RG-23-07）',
+    !/g\.z > 0/.test(code) && !/if \(z < 0\) continue;/.test(code) &&
+    /if \(s\.kind === 'unknown'\) return false;/.test(inFrontBody) &&
+    /if \(topLayerOf\(g\.el\) !== topLayerOf\(icon\)\) return false;/.test(inFrontBody),
+    '別のまとまりの z-index を直接比べ、見える印を落とす／見えない印を残す');
+  // 第23回 RG-23-08 処理量と例外
+  check('覆いの候補は除重しながら集め、引数展開をせず、数に上限がある（第23回 RG-23-08）',
+    !/\.push\(\.\.\./.test(ghostPoolBody + ghostCoversBody + ghostSelBody) &&
+    /const GHOST_POOL_MAX = \d+;/.test(code) &&
+    /\(sels\.length \+ 1\) \* all\.length > GHOST_MATCH_MAX/.test(ghostPoolBody) &&
+    /if \(!el\.firstElementChild \|\| done\.has\(el\) \|\| reached\.has\(el\)\) continue;/.test(ghostPoolBody) &&
+    /const skip = done\.has\(n\);/.test(ghostFn('spreadInto')),
+    '600 段の入れ子で RangeError になり、最初の走査が止まる');
+  check('覆いの判定の例外は「覆いなし」へ倒す（第23回 RG-23-08）',
+    /catch \(e\) \{ out = \[\]; noteGhostFailure\(e\); \}/.test(ghostCoversBody) &&
+    /catch \(e\) \{ noteGhostFailure\(e\); return \[\]; \}/.test(ghostsOverBody),
+    '覆いの判定の例外で、印の実測と入口の走査ごと止まる');
+  // 第23回 RG-23-10 塗り
+  check('塗りを変える描画効果のある箱は、覆いと数えない（第23回 RG-23-10）',
+    /function paintEffect\(s\)/.test(code) &&
+    /if \(paintEffect\(s\)\) return null;/.test(ghostFn('solidCover')),
+    'alpha 0.01・clip-path・filter: opacity(0) の箱を覆いと数え、見えている印を落とす');
 
   // RG-22-04 / RG-22-05 合図の出ない変化
   check('合図の出ない変化を、短い周期で見に行っている（第22回 RG-22-04）',
@@ -760,6 +862,65 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     check('AUDIT.md §7 の番号が重複していない',
       nums.length > 0 && dup.length === 0,
       dup.length ? `重複: ${dup.join(', ')}` : '§7 の行を1つも読めていない');
+  }
+
+  // ⚠️ **AUDIT.md の中の「§N」は、実在する節を指す**（第23回 RG-23-14）。
+  //    §7 #5 と §9 が「§5」を指していたが、§5 は無かった（見出しは §4 の次が §6）。
+  //    別の文書の節（`STORE_LISTING.md` §3-4 など）は、直前にその文書名を書いたものだけ外す。
+  {
+    const audit = read('AUDIT.md');
+    const ids = new Set([...audit.matchAll(/^#{2,4}\s+(\d+(?:-\d+[a-z]?)*)\.\s/gm)].map(m => m[1]));
+    const refsIn = (text, known) => {
+      const body = text.replace(/```[\s\S]*?```/g, '');
+      const out = [];
+      for (const m of body.matchAll(/§(\d+(?:-\d+[a-z]?)*)/g)) {
+        const before = body.slice(Math.max(0, m.index - 24), m.index);
+        if (/\.md[`)\]]*\)?\s*$/.test(before)) continue;           // 別の文書の節
+        if (!known.has(m[1])) out.push(m[1]);
+      }
+      return out;
+    };
+    const missing = refsIn(audit, ids);
+    check('AUDIT.md の「§N」が、実在する節を指している（第23回 RG-23-14）',
+      ids.size > 5 && missing.length === 0,
+      `無い節: ${[...new Set(missing)].join(', ') || '（節の見出しを読めていない）'}`);
+    // 陽性対照: 第23回の指摘どおりの形（§5 を指すが §5 の見出しは無い）を捕まえること
+    check('無い節への参照を探す検査が、実際に捕まえる（陽性対照）',
+      refsIn('転記欄は §5 のとおり。[`STORE_LISTING.md`](STORE_LISTING.md) §3-4 も見る。',
+             new Set(['4', '6'])).join() === '5');
+  }
+
+  // ⚠️ **§7 の「現行の制約」に、実装と食い違う約束を書かない**（第23回 RG-23-14）。
+  //    v1.8.21 の §7 は、属性の見張り・`characterData`・スクロールの向き・2周目について、
+  //    もう当てはまらない旧仕様を「いまの制約」として並べていた。全文の意味は判定しない。
+  //    **実装から機械で確かめられる約束**だけを、現行の節（7-1）について見る。
+  {
+    const audit = read('AUDIT.md');
+    const s7 = audit.slice(audit.indexOf('## 7. 意図的に直していない既知の制約'),
+                           audit.indexOf('## 8. これまでの監査の履歴'));
+    const cur7 = (/### 7-1\.[^\n]*\n([\s\S]*?)(?=\n### 7-2\.|$)/.exec(s7) || [])[1] || '';
+    check('AUDIT.md §7 が、現行の制約（7-1）を解消済み・旧仕様と分けて書いている',
+      cur7.length > 500 && /### 7-2\./.test(s7) && /### 7-3\./.test(s7),
+      '7-1（現行）・7-2（解消済み）・7-3（旧仕様）の見出しが要る');
+    const PROMISES = [
+      ['属性の変化だけでは再走査しない', /attributes: true,/.test(code),
+       /属性の変化だけでは再走査しない/],
+      ['テキストノードの中身の差し替え（characterData）を追わない', /characterData: true,/.test(code),
+       /テキストノードの中身だけが差し替わる更新を追わない/],
+      ['スクロールで動かせる向きを判別しない', /function scrollAxisNegative\(/.test(code),
+       /スクロールで動かせる向きを判別しない/],
+      // 2周目は「無いこと」が実装なので、廃止を宣言した注記（content.js の runBatch）を手がかりにする
+      ['断定できない語を、まとめ直しの最後に引き受け直す（2周目）',
+       /2周目（断定できない候補の引き受け直し）は\*\*廃止した\*\*/.test(content),
+       /まだどこも引き受けていない語だけを引き受け直す/]
+    ];
+    for (const [name, implemented, re] of PROMISES) {
+      check(`AUDIT.md §7 の現行の制約に、実装と食い違う旧仕様（${name}）が残っていない`,
+        !(implemented && re.test(cur7)), '解消済みか旧仕様の節へ移す（第23回 RG-23-14）');
+    }
+    // 陽性対照: v1.8.21 の §7 #4 の文言を、この探し方が捕まえること
+    check('§7 の旧仕様の探し方が、当時の文言を捕まえる（陽性対照）',
+      PROMISES[0][2].test('| 4 | **`MutationObserver` が属性の変化だけでは再走査しない** | 見張っているのは…'));
   }
 
   // ⚠️ **内訳を書いたら、その場で合計と足し合わせる。** §8 は第21回まで8行しか無く、
@@ -799,10 +960,55 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     !/rects\.some\(r => inClip\(r\)/.test(code),
     '`pull request` の `pull` だけ見えていても用語全体を可視と答える');
   // RG-19-01 印そのものも、切り取りの中に描かれていること（実物を測る）
+  // ⚠️ 第23回 RG-23-01 で、測る途中の例外も「描かれていない」として引き取る形にした
   check('入れた印が描かれているかを、実物で測っている',
-    /function iconIsPainted/.test(code) && /if \(!iconIsPainted\(icon\)\) \{/.test(code) &&
+    /function iconIsPainted/.test(code) &&
+    /try \{ painted = iconIsPainted\(icon\); \}/.test(code) && /if \(!painted\) \{/.test(code) &&
     /if \(!iconIsPainted\(rec\.icon\)\) return false;/.test(code),
     '語は読めても、印だけが切り取りの外に出て見えない停止点になる');
+  // RG-23-04 新規・保持・使用済みのキーを、同じ契約（確実に見える）にそろえる
+  check('既にある印も、確実に見えるときだけ説明済みとする（第23回 RG-23-04）',
+    /isVisibleOccurrence\(rec\.termNode\.parentElement, rec\.termNode, start, rec\.splitOffset\) !== true\) return false;/.test(code) &&
+    /if \(chain\.paintUnknown\) return false;/.test(code) &&
+    /if \(reachable\(b, chain\) !== true\) return false;/.test(code) &&
+    /for \(const t of chain\.tests\) if \(t\(b\) !== true\) return false;/.test(code),
+    "文字列 'unknown' は真なので、断定できない印がキーと停止点を持ったまま残る");
+  // RG-23-09 見た目の見分けに使う属性を、記録と突き合わせる
+  check('data-iiyaku-for を、配置の記録と突き合わせている（第23回 RG-23-09）',
+    /\} else if \(rec\.icon\.hasAttribute\('data-iiyaku-for'\)\) \{/.test(code) &&
+    /rec\.icon\.getAttribute\('data-iiyaku-for'\) !== forId\) return false;/.test(code),
+    '単独の印へ足すだけで二重の輪と2つ目の "i" が戻り、装飾の印から消すと描かれなくなる');
+  // RG-23-11 入れて測って引き取った語を、処理済みにしない（ただし出し入れを繰り返さない）
+  check('挿入を見送った語を、処理済みのまま残していない（第23回 RG-23-11）',
+    /if \(!painted\) \{[\s\S]{0,900}?handled\.delete\(cur\);/.test(code) &&
+    /if \(!nodeRejected\) markHandled\(node\);/.test(code) &&
+    !/applyIconSemantics\(icon, placement\);\s*\n\s*markHandled\(cur\);/.test(code),
+    '場所が広がっても、その語は二度と試されない');
+  check('引き取った語は、状態が変わるまで入れ直さない（第23回 RG-23-11）',
+    /if \(holdRejected\(node\)\) \{ rememberLatent\(node\); return false; \}/.test(code) &&
+    /if \(expectedAdds\.has\(n\)\) \{ expectedAdds\.delete\(n\); continue; \}/.test(code) &&
+    /schedule\(\{ deep: true, periodic: true \}\)/.test(code) &&
+    /if \(!periodic\) extSerial\+\+;/.test(code),
+    '何も変わらないページで、入れて・測って・外すが周期ごとに続く（自己通知の輪）');
+  // RG-23-15 吹き出しへ移る途中の隙間で閉じない（取り消せる短い猶予）
+  check('吹き出しへ移る途中の隙間では、猶予のあとに閉じる（第23回 RG-23-15）',
+    /const TIP_GRACE_MS = \d+;/.test(code) && /function inTipCorridor\(x, y\) \{/.test(code) &&
+    /function leaveTip\(e\) \{/.test(code) &&
+    /if \(e && e\.relatedTarget && inTipCorridor\(e\.clientX, e\.clientY\)\) \{/.test(code) &&
+    /if \(req\) \{ escClosedAt = null; show\(req\); \} else leaveTip\(e\);/.test(code) &&
+    /if \(requestFrom\(e\.target\)\) leaveTip\(e\);/.test(code),
+    '印の下端から 0.5px の隙間へ入った瞬間に閉じ、吹き出しの中まで移れない');
+  check('猶予は、印か吹き出しへ戻れば取り消し、閉じるときは必ず消す（第23回 RG-23-15）',
+    /function hideTip\(\) \{\s*cancelTipClose\(\);/.test(code) &&
+    /if \(inTooltip\(e\.target\)\) \{ cancelTipClose\(\); return; \}/.test(code) &&
+    /function showTip\(icons, anchor, describe\) \{[\s\S]{0,200}?cancelTipClose\(\);/.test(code),
+    'Escape・フォーカスの移動・退役・OFF のあとに、古い時計が吹き出しを閉じに来る（または戻っても閉じる）');
+  // 第23回の3群目（監査の外）: Escape で閉じた吹き出しが、同じ印への focusin で出直していた
+  check('Escape で閉じた相手へ戻っただけの focusin では、吹き出しを出し直さない',
+    /if \(e\.key === 'Escape'\) \{ escClosedAt = asElement\(e\.target\);/.test(code) &&
+    /if \(escClosedAt !== null && asElement\(e\.target\) === escClosedAt\) return;/.test(code) &&
+    /if \(escClosedAt !== null && \(e\.relatedTarget \|\| document\.hasFocus\(\)\)\) escClosedAt = null;/.test(code),
+    'ウィンドウが一瞬 blur して戻ると（Chrome 155 の headless では最初の Escape で起きる）、閉じた吹き出しが出直す');
   // RG-19-02 mandatory な吸い寄せでは、止まれない位置を到達可能としない
   check('吸い寄せのある軸を見ている',
     /function snapAxes/.test(code) && /mandatory/.test(code) && /snapX/.test(code) && /snapY/.test(code),

@@ -614,9 +614,18 @@ export const CLIPZERO_PAGE = `<!doctype html><html lang="en"><head><meta charset
   <div id="nonzero" class="box">A merge shown.</div><p id="nonzero-later">A merge later.</p>
 </body></html>`;
 
-export function startTestServer(html = REPO_PAGE) {
+/* extra … 道のり -> [content-type, 中身]。見本が `@import` で読む CSS などを同じ源から出す
+   （第23回 RG-23-06。別の源から読むと読めない stylesheet になり、全要素を歩く経路が
+   偶然救ってしまうので、同じ源に置く）。それ以外の道のりは、どれも見本の HTML を返す。 */
+export function startTestServer(html = REPO_PAGE, extra = {}) {
   const { key, cert } = makeCert();
   const server = https.createServer({ key, cert }, (req, res) => {
+    const hit = extra[(req.url || '').split('?')[0]];
+    if (hit) {
+      res.setHeader('content-type', hit[0]);
+      res.end(hit[1]);
+      return;
+    }
     res.setHeader('content-type', 'text/html; charset=utf-8');
     res.end(html);
   });
@@ -662,8 +671,17 @@ export class Cdp {
         clearTimeout(timer);   // 応答が来たタイマーを残すと、終了まで待たされる
         if (m.error) reject(new Error(`${m.error.message} (${JSON.stringify(m.error)})`));
         else resolve(m.result);
+      } else if (m.method && this.listeners) {
+        // 通知（例外・console など）。聞いている試験にだけ渡す（第23回 RG-23-08）
+        for (const f of this.listeners) { try { f(m); } catch (e) { /* 聞き手の失敗は無視 */ } }
       }
     }
+  }
+  /* CDP の通知を受け取る（`Runtime.exceptionThrown`・`Runtime.consoleAPICalled` など）。
+     返り値を呼ぶと外れる。 */
+  onEvent(fn) {
+    (this.listeners ||= new Set()).add(fn);
+    return () => this.listeners.delete(fn);
   }
   rejectAll(err) {
     for (const [, { reject, timer }] of this.pending) { clearTimeout(timer); reject(err); }
@@ -1890,3 +1908,479 @@ export async function putGhostCover(page, sel, style) {
     return 'ok';
   })()`);
 }
+
+/* ===================== 第23回監査（v1.8.21）の反例・1群目 ===================== */
+
+/* 矩形の中の**色の分かれ方**を測る（第23回 RG-23-02）。
+   `pixelsAt` は白でない画素を数えるだけなので、「白地に白で消えた印」と「白地に
+   描かれた印」は見分けられても、「青地に青で "i" が溶けた印」とは見分けられない。
+   ここでは次を返す:
+     colors … 量子化した色（各成分 8 段）のうち、画素の 5% 以上を占めるものの数。
+              "i" と地が別の色なら 2 以上になる
+     spread … 輝度の最大と最小の差（0〜255）
+     far    … 輝度が `ref`（その場の地の輝度）から 60 以上離れた画素の数
+   ⚠️ 印は 14px 四方しか無いので、**拡大して撮る**（`scale`）。1倍では "i" の縦棒が
+      1〜2 画素で、なめらか表示の中間色に埋もれる。 */
+export async function inkAt(cdp, page, r, { scale = 4, ref = 255 } = {}) {
+  const clip = { x: r.x, y: r.y, width: Math.max(1, r.w), height: Math.max(1, r.h), scale };
+  const { data } = await cdp.send('Page.captureScreenshot', { format: 'png', clip }, page.sessionId);
+  return await page.evaluate(`(async () => {
+    const img = new Image();
+    img.src = 'data:image/png;base64,${data}';
+    await img.decode();
+    const c = document.createElement('canvas');
+    c.width = img.width; c.height = img.height;
+    const g = c.getContext('2d');
+    g.drawImage(img, 0, 0);
+    const d = g.getImageData(0, 0, c.width, c.height).data;
+    const bins = new Map();
+    let lo = 255, hi = 0, far = 0, nonwhite = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      const y = 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+      if (y < lo) lo = y;
+      if (y > hi) hi = y;
+      if (Math.abs(y - ${ref}) >= 60) far++;
+      if (d[i] < 250 || d[i + 1] < 250 || d[i + 2] < 250) nonwhite++;
+      const k = (d[i] >> 5) + ',' + (d[i + 1] >> 5) + ',' + (d[i + 2] >> 5);
+      bins.set(k, (bins.get(k) || 0) + 1);
+    }
+    const total = d.length / 4;
+    const colors = [...bins.values()].filter(n => n >= total * 0.05).length;
+    return { total, nonwhite, colors, spread: Math.round(hi - lo), far };
+  })()`);
+}
+
+/* 印の**中ほど**（外接矩形の内側 60%）。輪の外の白い角を混ぜずに、"i" と地だけを見る。 */
+export function innerRect(r, k = 0.6) {
+  return { x: r.x + r.w * (1 - k) / 2, y: r.y + r.h * (1 - k) / 2, w: r.w * k, h: r.h * k };
+}
+
+/* closed shadow root の中の button で、関数を評価する（`pierce` した DOM から引く）。
+   製品側に検査用の入口を足さないため、ページの世界からは覗かない。 */
+export async function shadowButtonEval(cdp, tab, hostSel, fnDecl) {
+  await cdp.send('DOM.enable', {}, tab.sessionId);
+  const { root } = await cdp.send('DOM.getDocument', { depth: -1, pierce: true }, tab.sessionId);
+  const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: hostSel }, tab.sessionId);
+  if (!nodeId) return { error: 'no-host' };
+  const { node } = await cdp.send('DOM.describeNode', { nodeId, depth: -1, pierce: true }, tab.sessionId);
+  const sr = (node.shadowRoots || [])[0];
+  if (!sr) return { error: 'no-shadow' };
+  let btn = null;
+  const walk = n => { if (!btn && n.localName === 'button') btn = n; (n.children || []).forEach(walk); };
+  walk(sr);
+  if (!btn) return { error: 'no-button' };
+  const { object } = await cdp.send('DOM.resolveNode', { backendNodeId: btn.backendNodeId }, tab.sessionId);
+  const { result } = await cdp.send('Runtime.callFunctionOn',
+    { objectId: object.objectId, returnByValue: true, functionDeclaration: fnDecl }, tab.sessionId);
+  return result.value;
+}
+
+const BASE23 = 'html,body{background:#fff;color:#000;margin:0;font:16px/1.6 monospace}';
+
+/* RG-23-01。挿入した印を描かれていないとして引き取り、ページの observer がそれを
+   受け取って本文の入れ物に使い回す（回答の反例そのまま）。 */
+export const REJECT23_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>reject23</title><style>${BASE23}
+ #first .iiyaku-icon { opacity: 0 !important; }</style></head><body>
+  <button id="before">before</button>
+  <p id="first">A branch first.</p>
+  <p id="second">A branch second.</p>
+  <div id="sink"></div>
+  <script>
+    window.__events = [];
+    const observer = new MutationObserver(records => {
+      for (const record of records) {
+        for (const node of record.removedNodes) {
+          if (node.nodeType !== 1 || !node.matches('.iiyaku-icon')) continue;
+          observer.disconnect();
+          for (const attr of [...node.attributes]) node.removeAttribute(attr.name);
+          node.id = 'reused';
+          node.textContent = 'PAGE CONTENT';
+          document.querySelector('#sink').append(node);
+          window.__events.push('reused');
+          return;
+        }
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  </script>
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-23-01 の後段。登録済みの印を退役させ、ページが host を本文に使い回したとき、
+   拡張の `:host` の装飾が残らないか。ふつうの span を対照に置く。 */
+export const HOSTLOOK23_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>hostlook23</title><style>${BASE23}</style></head><body>
+  <button id="before">before</button>
+  <p id="first">A branch first.</p>
+  <p id="second">A branch second.</p>
+  <p><span id="ctlspan">plain</span></p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-23-02。ライトの配色（白地・黒字）で、実 Tab・hover・reduced-motion を見る。 */
+export const FOCUS23_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>focus23</title><style>html,body{margin:0;background:white;color:black;font:16px Arial}
+ p{margin:40px}</style></head><body>
+  <button id="before">start</button>
+  <p id="first">A branch here.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* 同じものをダークの配色で（GitHub のダークと同じ変数を置く）。 */
+export const FOCUS23_DARK_PAGE = `<!doctype html><html lang="en" data-color-mode="dark"><head><meta charset="utf-8">
+<title>focus23dark</title><style>:root{color-scheme:dark;--fgColor-accent:#4493f8;--bgColor-default:#0d1117}
+ html,body{margin:0;background:#0d1117;color:#e6edf3;font:16px Arial}
+ p{margin:40px}</style></head><body>
+  <button id="before">start</button>
+  <p id="first">A branch here.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-23-03。`rgba(..., 0)` 以外の透明の書き方。対照に第22回の `transparent` と、
+   不透明な `color()`（塗り直してはいけない＝テーマに従う）を置く。 */
+export const COLOR23_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>color23</title><style>${BASE23}
+ #c-fn{--fgColor-accent:color(srgb 0 0 0 / 0);--color-accent-fg:color(srgb 0 0 0 / 0)}
+ #c-ok{--fgColor-accent:oklch(0.6 0.15 250 / 0);--color-accent-fg:oklch(0.6 0.15 250 / 0)}
+ #c-tr{--fgColor-accent:transparent;--color-accent-fg:transparent}
+ #c-red{--fgColor-accent:color(srgb 1 0 0);--color-accent-fg:color(srgb 1 0 0)}</style></head><body>
+  <button id="before">before</button>
+  <div id="c-fn"><p>A branch fn.</p></div><p id="l-fn">A branch fn later.</p>
+  <div id="c-ok"><p>A commit ok.</p></div><p id="l-ok">A commit ok later.</p>
+  <div id="c-tr"><p>A merge tr.</p></div><p id="l-tr">A merge tr later.</p>
+  <div id="c-red"><p>A fetch red.</p></div><p id="l-red">A fetch red later.</p>
+  <div id="late"><p id="m1">A rebase late.</p></div><p id="m2">A rebase late later.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-23-04。既にある印の場所が、あとから「断定できない」状態（解けない filter）になる。
+   対照: 最初から filter の語（新しい候補は見送る）。印だけに filter を掛ける枝も置く。 */
+export const UNKNOWN23_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>unknown23</title><style>${BASE23}
+ #c1{filter:url(#zero)}
+ #p1 .iiyaku-icon{filter:url(#zero)}</style></head><body>
+  <svg width="0" height="0" style="position:absolute"><defs><filter id="zero"><feFlood flood-opacity="0"/></filter></defs></svg>
+  <button id="before">before</button>
+  <p id="first">A branch first.</p>
+  <p id="second">A branch second.</p>
+  <p id="c1">A commit first.</p>
+  <p id="c2">A commit second.</p>
+  <p id="p1">A merge first.</p>
+  <p id="p2">A merge second.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-23-09。見た目の見分けに使う `data-iiyaku-for` を、ページが足す・消す・書き換える。 */
+export const FORATTR23_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>forattr23</title><style>${BASE23}</style></head><body>
+  <button id="before">before</button>
+  <p id="first">A branch first.</p>
+  <p><a href="#x" id="lnk">A commit link</a></p>
+  <p><a href="#y" id="lnk2">A merge link</a></p>
+  <p><a href="#z" id="lnk3">A fetch link</a></p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-23-11。語は枠に収まるが、直後の印は枠の外（＝入れて測って引き取る）。
+   あとで枠が広がったら付くこと。CSSOM の値だけで広げる枝（合図が出ない）も置く。
+   ページの observer が印の出し入れを数える（自己通知の輪を外から見る）。 */
+export const WIDEN23_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>widen23</title><style>${BASE23}</style>
+<style id="s11">#first{font:16px monospace;width:6ch;white-space:nowrap;overflow:hidden}
+ #cssom{font:16px monospace;width:6ch;white-space:nowrap;overflow:hidden}</style></head><body>
+  <script>
+    window.__ev = [];
+    new MutationObserver(rs => {
+      for (const r of rs) {
+        for (const n of r.addedNodes)
+          if (n.nodeType === 1 && n.classList && n.classList.contains('iiyaku-icon')) __ev.push('add:' + (n.parentNode && n.parentNode.id));
+        for (const n of r.removedNodes)
+          if (n.nodeType === 1 && n.classList && n.classList.contains('iiyaku-icon')) __ev.push('rm:' + r.target.id);
+      }
+    }).observe(document.documentElement, { childList: true, subtree: true });
+  </script>
+  <button id="before">before</button>
+  <p id="first">branch</p>
+  <p id="cssom">commit</p>
+  <p id="hid" style="display:none">merge</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* ===================== 第23回監査（v1.8.21）の反例・2群目（覆いの判定） ===================== */
+
+/* 覆いの場面を1つずつ「枠」に入れる。枠は位置指定だけ（重なりのまとまりは作らない）、
+   覆いは枠いっぱいの絶対配置。前方の語（h-…）は枠の中、後方の同じ語（l-…）は枠の外。
+   覆いと数えれば [前方, 後方] = [0, 1]、数えなければ [1, 0]。
+   ⚠️ 枠と覆いの共通の規則には `pointer-events` を書かない。どの経路で宣言されたかを
+      場面ごとに分けて試すため（RG-23-05・06）。 */
+const SLOT23 = '.slot{position:relative}.slot>.cv{position:absolute;inset:0}';
+const slot23 = (id, word, inner = `<div class="cv" id="cv-${id}"></div>`, pcls = '') =>
+  `<div class="slot" id="s-${id}"><p id="h-${id}"${pcls ? ` class="${pcls}"` : ''}>A ${word} ${id}.</p>${inner}</div>
+  <p id="l-${id}">A ${word} ${id} later.</p>`;
+
+/* RG-23-05。宣言の値だけを CSSOM で `auto → none` に変える。対照は、初めから `none` で
+   `visibility` だけを変える覆い（初めから索引に入っている）。 */
+export const GHOSTVAL23_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>ghostval23</title><style>${BASE23}${SLOT23}</style>
+<style id="cv-css">#cv-val{z-index:5;background:white;pointer-events:auto;visibility:hidden}
+#cv-ctl{z-index:5;background:white;pointer-events:none;visibility:hidden}</style></head><body>
+  <button id="before">before</button>
+  ${slot23('val', 'branch')}
+  ${slot23('ctl', 'commit')}
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-23-06。宣言が変数・document の adoptedStyleSheets・`@import` 先にある覆い。
+   ⚠️ **読めない stylesheet を1枚も置かない**（全要素を歩く経路が偶然救わない形）。
+   import 先は同じ源から出す（→ GHOSTSRC23_EXTRA）。対照は `<style>` に直書きの覆い。
+   `late` は、あとで adopted の一覧を差し替える（DOM は変わらない）ときに出る覆い。 */
+export const GHOSTSRC23_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>ghostsrc23</title><style>${BASE23}${SLOT23}
+#cv-var{--pe:none;pointer-events:var(--pe);z-index:5;background:white}
+#cv-lit{pointer-events:none;z-index:5;background:white}
+#cv-late{z-index:5;background:white;display:none}</style>
+<style>@import url("/imp23.css");</style></head><body>
+  <button id="before">before</button>
+  ${slot23('var', 'branch')}
+  ${slot23('adopt', 'commit')}
+  ${slot23('imp', 'merge')}
+  ${slot23('lit', 'fetch')}
+  ${slot23('late', 'fork')}
+  <button id="after">after</button>
+  <script>
+    const s = new CSSStyleSheet();
+    s.replaceSync('#cv-adopt{pointer-events:none;z-index:5;background:white}');
+    document.adoptedStyleSheets = [s];
+  </script>
+</body></html>`;
+export const GHOSTSRC23_EXTRA = {
+  '/imp23.css': ['text/css', '#cv-imp{pointer-events:none;z-index:5;background:white}']
+};
+
+/* RG-23-07。z-index は重なりのまとまりをまたいで比べられない（回答の反例 A・B と、
+   前後を入れ替えた対照）。
+     a  … 語の段落が z-index:10 のまとまり、覆いは z-index:1 → 語が前（覆いではない）
+     a2 … 入れ替え: 段落が z-index:1、覆いが z-index:10 → 覆いが前
+     b  … z-index:10 のまとまりの中の z-index:-1 の白い子 → まとまりごと前（覆い）
+     b2 … 入れ替え: z-index:-1 のまとまりの中の z-index:10 の白い子 → まとまりごと後ろ
+     c  … 覆いの無い場面 */
+export const GHOSTSTACK23_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>ghoststack23</title><style>${BASE23}${SLOT23}
+.g10{position:relative;z-index:10}.g1{position:relative;z-index:1}
+#cv-a{z-index:1;background:white;pointer-events:none}
+#cv-a2{z-index:10;background:white;pointer-events:none}
+.front{position:absolute;inset:0;z-index:10;pointer-events:none}
+.front>.neg{position:absolute;inset:0;z-index:-1;background:white}
+.back{position:absolute;inset:0;z-index:-1;pointer-events:none}
+.back>.pos{position:absolute;inset:0;z-index:10;background:white}</style></head><body>
+  <button id="before">before</button>
+  ${slot23('a', 'branch', undefined, 'g10')}
+  ${slot23('a2', 'commit', undefined, 'g1')}
+  ${slot23('b', 'merge', '<div class="front"><div class="neg"></div></div>')}
+  ${slot23('b2', 'fetch', '<div class="back"><div class="pos"></div></div>')}
+  ${slot23('c', 'fork', '')}
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-23-08。600 段に入れ子になった候補（回答の反例そのまま）。宣言のある規則は少ないので、
+   選択子で引いて `none` の根を広げる経路を通る。前方の webhook だけが、ほんとうの不透明な
+   覆い（#same）の下にある（入れ子の候補があっても、覆いを見つけられること）。 */
+export const GHOSTNEST23_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>ghostnest23</title><style>${BASE23}
+.nest{pointer-events:none}
+#same{position:fixed;left:0;top:0;width:100%;height:60px;z-index:20;background:white;pointer-events:none}
+#top{height:80px}</style></head><body>
+  <div id="top"><p id="h-same">A webhook same.</p></div>
+  <button id="before">before</button>
+  <p id="first">A branch first.</p>
+  <p id="second">A commit second.</p>
+  <p id="third">A merge third.</p>
+  <p id="l-same">A webhook same later.</p>
+  <button id="after">after</button>
+  <div id="same"></div>
+  <script>
+    let parent = document.body;
+    for (let i = 0; i < 600; i++) {
+      const c = document.createElement('div'); c.className = 'nest'; parent.append(c); parent = c;
+    }
+  </script>
+</body></html>`;
+
+/* RG-23-08。同じ要素（#same）に当たる 3,000 の選択子。選択子が多いので、引かずに全部の
+   要素を歩く経路を通る。同じ源の別の道のりで出す（→ GHOSTNEST23_EXTRA）。 */
+const SAME23_RULES = Array.from({ length: 3000 }, (_, i) => `#same:not(.k${i}){pointer-events:none}`).join('\n');
+export const GHOSTMANY23_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>ghostmany23</title><style>${BASE23}
+#same{position:fixed;left:0;top:0;width:100%;height:60px;z-index:20;background:white}
+#top{height:80px}
+${SAME23_RULES}</style></head><body>
+  <div id="top"><p id="h-same">A webhook same.</p></div>
+  <button id="before">before</button>
+  <p id="first">A branch first.</p>
+  <p id="second">A commit second.</p>
+  <p id="third">A merge third.</p>
+  <p id="l-same">A webhook same later.</p>
+  <button id="after">after</button>
+  <div id="same"></div>
+</body></html>`;
+export const GHOSTNEST23_EXTRA = { '/octocat/many': ['text/html; charset=utf-8', GHOSTMANY23_PAGE] };
+
+/* RG-23-08。平坦に並んだ 30,000 個の候補（どれも `pointer-events: none`）。上限を超える。 */
+export const GHOSTFLAT23_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>ghostflat23</title><style>${BASE23}
+.flat{pointer-events:none}</style></head><body>
+  <button id="before">before</button>
+  <p id="first">A branch first.</p>
+  <p id="second">A commit second.</p>
+  <p id="third">A merge third.</p>
+  <button id="after">after</button>
+  <div id="flat"></div>
+  <script>
+    const box = document.getElementById('flat');
+    const f = document.createDocumentFragment();
+    for (let i = 0; i < 30000; i++) { const e = document.createElement('i'); e.className = 'flat'; f.append(e); }
+    box.append(f);
+  </script>
+</body></html>`;
+
+/* RG-23-08。覆いの判定そのものが故障したとき（試験用に content.js へ故障を差し込む）。
+   前方の branch には、ほんとうの不透明な覆いを置いておく。 */
+export const GHOSTFAULT23_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>ghostfault23</title><style>${BASE23}${SLOT23}
+#cv-f{z-index:5;background:white;pointer-events:none}</style></head><body>
+  <button id="before">before</button>
+  ${slot23('f', 'branch')}
+  <p id="second">A commit second.</p>
+  <p id="third">A merge third.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-23-10。塗られていない箱を覆いと数えない（回答の A・B・C）と、その対照。
+     op   … ふつうの白（覆い）          a01 … alpha 0.01        a50 … alpha 0.5（半透明）
+     clip … clip-path: inset(50%)（空）  filt … filter: opacity(0)
+     ovf  … 高さ 0 の overflow:hidden の中（塗りが切り取られて無い）
+     back … z-index:-1（後方の箱）       none … 覆いの無い場面 */
+export const GHOSTPAINT23_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>ghostpaint23</title><style>${BASE23}${SLOT23}
+.slot>.cv{z-index:5;pointer-events:none}
+#cv-op{background:white}
+#cv-a01{background:rgba(255,255,255,0.01)}
+#cv-a50{background:rgba(255,255,255,0.5)}
+#cv-clip{background:white;clip-path:inset(50%)}
+#cv-filt{background:white;filter:opacity(0)}
+.wrap0{position:absolute;left:0;top:0;width:100%;height:0;overflow:hidden}
+.wrap0>.cv0{position:absolute;left:0;top:0;width:100%;height:40px;z-index:5;background:white;pointer-events:none}
+#cv-back{z-index:-1;background:white}</style></head><body>
+  <button id="before">before</button>
+  ${slot23('op', 'branch')}
+  ${slot23('a01', 'commit')}
+  ${slot23('a50', 'merge')}
+  ${slot23('clip', 'fetch')}
+  ${slot23('filt', 'fork')}
+  ${slot23('ovf', 'clone', '<div class="wrap0"><div class="cv0"></div></div>')}
+  ${slot23('back', 'rebase')}
+  ${slot23('none', 'revert', '')}
+  <button id="after">after</button>
+</body></html>`;
+
+/* 語そのものの矩形（その語の文字だけ）。覆いが本当に語を隠しているか／見えているかの前提に使う。 */
+export async function wordRect23(page, sel, word) {
+  return await page.evaluate(`(() => {
+    const p = document.querySelector(${JSON.stringify(sel)});
+    if (!p) return null;
+    const w = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+    for (let n = w.nextNode(); n; n = w.nextNode()) {
+      const i = n.nodeValue.indexOf(${JSON.stringify(word)});
+      if (i < 0) continue;
+      const r = document.createRange(); r.setStart(n, i); r.setEnd(n, i + ${word.length});
+      const b = r.getBoundingClientRect();
+      return { x: b.x, y: b.y, w: b.width, h: b.height };
+    }
+    return null; })()`);
+}
+
+/* 配布物を並べたうえで、**試験のためだけに** content.js を書き換える（故障の差し込み）。
+   書き換えが当たらなければ例外にする（何も変えずに通る試験にしない）。 */
+export function stageExtensionPatched(edit) {
+  const dir = stageExtension();
+  const p = join(dir, 'src', 'content.js');
+  const before = readFileSync(p, 'utf8');
+  const after = edit(before);
+  if (after === before) throw new Error('content.js の書き換えが当たらなかった');
+  writeFileSync(p, after);
+  return dir;
+}
+
+/* ===================== 第23回監査（v1.8.21）の反例・3群目 ===================== */
+
+/* RG-23-15。吹き出しは印から 6px 下に離れて出る。その隙間を本物のカーソルで通る。
+   下に余白を置き、吹き出しが印の真下に出るようにする（印の中ほどから真下へ動けば入れる）。 */
+export const TIPGAP23_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>tipgap23</title><style>html,body{margin:0;background:white;color:black;font:16px Arial}
+ p{margin:40px} .spacer{height:600px}</style></head><body>
+  <button id="before">start</button>
+  <p id="first">A branch here.</p>
+  <div class="spacer"></div>
+  <button id="after">after</button>
+</body></html>`;
+
+/* ページの世界で、吹き出しの出入りと入力の時刻を控える（第23回 RG-23-15・3群目の Escape）。
+   CDP の往復の遅さに左右されずに「何 ms で閉じたか」を測るため、時刻はページ側で取る。 */
+export async function tipRecorder23(page) {
+  // 2回目以降は控えを空にするだけ（見張りを重ねると同じ出来事が2回ずつ並ぶ）
+  return await page.evaluate(`(() => {
+    window.__tip23 = [];
+    window.__tip23t0 = performance.now();
+    if (window.__tip23on) return true;
+    window.__tip23on = true;
+    const L = (k, o) => window.__tip23.push([Math.round((performance.now() - window.__tip23t0) * 10) / 10, k, o || '']);
+    window.addEventListener('keydown', e => L('key', e.key), true);
+    // mouseout（印から出た）は mouseover（次の要素へ入った）より先に来る
+    window.addEventListener('mouseout', e => L('out', (e.target && (e.target.id || e.target.tagName)) || ''), true);
+    window.addEventListener('mouseover', e => L('over', (e.target && (e.target.id || e.target.tagName)) || ''), true);
+    window.addEventListener('blur', e => { if (e.target === window) L('win-blur'); }, true);
+    window.addEventListener('focus', e => { if (e.target === window) L('win-focus'); }, true);
+    new MutationObserver(rs => { for (const r of rs) {
+      for (const n of r.addedNodes) if (n.nodeType === 1 && n.matches('.iiyaku-tooltip[data-iiyaku-owner]')) L('tip+');
+      for (const n of r.removedNodes) if (n.nodeType === 1 && n.matches('.iiyaku-tooltip[data-iiyaku-owner]')) L('tip-');
+    } }).observe(document.body, { childList: true });
+    return true; })()`);
+}
+
+/* closed shadow root の中の button へ、CDP でフォーカスを移す（キーを押さずに）。
+   ページの世界からは closed の中へ届かないので、pierce した DOM から引く。 */
+export async function focusShadowButton23(cdp, page, hostSel) {
+  await cdp.send('DOM.enable', {}, page.sessionId);
+  const { root } = await cdp.send('DOM.getDocument', { depth: -1, pierce: true }, page.sessionId);
+  const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: hostSel }, page.sessionId);
+  if (!nodeId) throw new Error(`host が無い: ${hostSel}`);
+  const { node } = await cdp.send('DOM.describeNode', { nodeId, depth: -1, pierce: true }, page.sessionId);
+  let btn = null;
+  const walk = n => { if (!btn && n.localName === 'button') btn = n; (n.children || []).forEach(walk); };
+  for (const sr of node.shadowRoots || []) walk(sr);
+  if (!btn) throw new Error(`shadow の中に button が無い: ${hostSel}`);
+  await cdp.send('DOM.focus', { backendNodeId: btn.backendNodeId }, page.sessionId);
+}
+
+/* 計測器（timing-probe.js）を載せ、そのうえで**試験のためだけに** content.js を書き換えた写し
+   （第23回 RG-23-13）。控えの見直しの経路を1つずつ確かめるために、ほかの周期を止める。
+   ⚠️ fast と idle は同じ 2 秒の周期で位相が揃いやすく、片方はいつも相手の一巡の途中から
+   入る。途中から入った回は残りしか見ないので、その経路の刻みを外しても大きくならず、
+   検査が当たらない（変異で確かめた）。書き換えが当たらなければ例外にする。 */
+export function stageProbePatched23(edit) {
+  const dir = stageExtensionWith({ 'timing-probe.js': 'tests/e2e/timing-probe.js' },
+    js => ['timing-probe.js', ...js]);
+  const p = join(dir, 'src', 'content.js');
+  const before = readFileSync(p, 'utf8');
+  const after = edit(before);
+  if (after === before) throw new Error('content.js の書き換えが当たらなかった');
+  writeFileSync(p, after);
+  return dir;
+}
+export const STOP_FAST23 = js => js.replace(
+  'function scheduleFastCheck() {\n    if (!observing || fastTimer !== null) return;',
+  'function scheduleFastCheck() {\n    return;   // 試験の写し: 速い周期を止める\n    if (!observing || fastTimer !== null) return;');
+export const STOP_IDLE23 = js => js.replace(
+  'function scheduleIdleCheck() {\n    if (!observing || idleTimer !== null) return;',
+  'function scheduleIdleCheck() {\n    return;   // 試験の写し: 暇なときの確認を止める\n    if (!observing || idleTimer !== null) return;');

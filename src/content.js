@@ -653,7 +653,47 @@
     });
   }
 
-  const TRANSPARENT = /^rgba\([^)]*,\s*0(\.0+)?\)$/;
+  // 計算済みの色の alpha（0〜1）。**読めない形は null**（第23回 RG-23-03）。
+  //
+  // ⚠️ 以前は「透明か」を `/^rgba\([^)]*,\s*0(\.0+)?\)$/` だけで見ていた。Chrome は
+  // `color(srgb 0 0 0 / 0)`・`oklch(… / 0)`・`lab(… / 0)` などを**その形のまま**計算済みの
+  // 値として返すので、どれも「透明でない」と答えていた（実測: ページが
+  // `--fgColor-accent: color(srgb 0 0 0 / 0)` を置くと、印は 0 画素のまま前方に残った。
+  // 対照の `transparent` は塗り直されて 108 画素）。
+  // 末尾の alpha を読む。`/` があればその後ろ、カンマ区切りなら4つ目、どちらも無ければ 1。
+  // 読めない形（`calc()` の残り・未知の関数・`currentcolor`）は **null** にして、
+  // 透明とも不透明とも断定しない——どちらへ倒すかは使う側が決める。
+  const COLOR_FN = /^(rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\((.*)\)$/;
+  const ALPHA_NUM = /^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/;
+  function colorAlpha(c) {
+    if (typeof c !== 'string') return null;
+    const s = c.trim().toLowerCase();
+    if (s === 'transparent') return 0;
+    const m = COLOR_FN.exec(s);
+    if (!m) return null;
+    const body = m[2];
+    let a;
+    const slash = body.lastIndexOf('/');
+    if (slash !== -1) a = body.slice(slash + 1).trim();
+    else if (body.includes(',')) {
+      const parts = body.split(',');
+      if (parts.length === 3) return 1;
+      if (parts.length !== 4) return null;
+      a = parts[3].trim();
+    } else return 1;                                     // 空白区切りで alpha を書かない形
+    if (a === 'none') return 0;                          // 描くときは 0 として扱われる
+    const pct = a.endsWith('%');
+    const n = pct ? a.slice(0, -1) : a;
+    if (!ALPHA_NUM.test(n)) return null;
+    const v = parseFloat(n) / (pct ? 100 : 1);
+    return Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : null;
+  }
+  // 確実に透明か（読めない形は「透明」と断定しない＝従来どおり描かれる側）
+  const isClearColor = c => colorAlpha(c) === 0;
+  // 確実に塗るか（読めない形は「塗る」と断定しない＝印の実測では不合格の側）
+  const isInkColor = c => { const a = colorAlpha(c); return a !== null && a > 0; };
+  // 覆いの判定は「alpha がちょうど 1」のときだけ覆いと数える（第23回 RG-23-10 → ghostCovers）。
+  // 読めない形（null）も 1 ではないので、覆いとは数えない（断定しない側）。
 
   // 文字そのものが透明なら読めない（第15回 RG-15-05。実測: `color: transparent` の
   // 語に印が付き、後ろの読める同じ語が説明されなかった）。
@@ -673,7 +713,7 @@
     if (!v || v === 'none') return false;
     for (const layer of splitTopLevel(v)) {
       const color = (layer.match(/rgba?\([^)]*\)/) || [])[0];
-      if (color && TRANSPARENT.test(color)) continue;          // 透明な影は描かない
+      if (color && isClearColor(color)) continue;          // 透明な影は描かない
       const lens = (layer.replace(/rgba?\([^)]*\)/g, '').match(/-?[0-9.]+px/g) || []).map(parseFloat);
       if (lens.length < 2) return true;                        // 読めない＝描かれる側へ倒す
       const [dx, dy] = lens;
@@ -726,7 +766,7 @@
     const clipList = splitTopLevel(clipAll0).map(x => x.trim());
     // `background-color` はいちばん下に敷かれ、**最後の層の clip** で抜かれる。
     // そこが `text` で色が不透明なら、文字は全面が塗られる。
-    if (clipList[clipList.length - 1] === 'text' && !TRANSPARENT.test(cs.backgroundColor || '')) return true;
+    if (clipList[clipList.length - 1] === 'text' && !isClearColor(cs.backgroundColor || '')) return true;
     const img = cs.backgroundImage;
     if (!img || img === 'none') return false;
     const layers = splitTopLevel(img).map(x => x.trim());
@@ -784,11 +824,11 @@
   function textPaintsAt(cs, el, rect) {
     const fill = cs.webkitTextFillColor && cs.webkitTextFillColor !== 'currentcolor'
       ? cs.webkitTextFillColor : cs.color;
-    if (!TRANSPARENT.test(fill || '')) return true;
+    if (!isClearColor(fill || '')) return true;
     // ① 縁取り。幅と色の**両方**がそろって初めて描かれる
     const sw = parseFloat(cs.webkitTextStrokeWidth || '0');
     const sc = cs.webkitTextStrokeColor || '';
-    if (sw > 0 && !TRANSPARENT.test(sc)) return true;
+    if (sw > 0 && !isClearColor(sc)) return true;
     // ② 影。色と**ずらし量**を見る
     if (shadowPaintsAt(cs.textShadow, rect)) return true;
     // ③ 背景を文字型に抜く指定。塗りが語の位置に届くかを見る。
@@ -809,7 +849,7 @@
     if (!v || v === 'none') return false;
     const colors = v.match(/rgba?\([^)]*\)/g);
     if (!colors || colors.length === 0) return true;      // 色の指定が読めない
-    return colors.some(c => !TRANSPARENT.test(c));
+    return colors.some(c => !isClearColor(c));
   }
 
   // `filter` の並びは**前から順に**適用され、後段の `url()` は前段の出力とは別の
@@ -1409,126 +1449,420 @@
   //    判別には使えない。
   //
   // ⚠️ **全要素を歩いて集める形も採らなかった。** 実測で 10,000要素あたり 6〜13ms。
-  //    代わりに、`pointer-events: none` を**宣言している規則の選択子**と、
-  //    `style` 属性にそう書いてある要素から候補を引く。宣言が1つも無ければ走査は
-  //    起きない（ふつうのページはここで終わる）。読めない stylesheet が1枚でもあれば
-  //    見落とすので、そのときだけ全要素を歩くほうへ落とす。
+  //    代わりに、`pointer-events` を**宣言している規則の選択子**と、`style` 属性に
+  //    それを書いてある要素から候補を引く。宣言が1つも無ければ走査は起きない。
+  //    読めない stylesheet が1枚でもあれば見落とすので、そのときだけ全要素を歩くほうへ落とす。
   //
-  // ⚠️ **断定できるものだけを覆いと数える。** 地の色が不透明で、透けておらず、
-  //    位置指定があり、重なり順で印より前に来るもの。画像や gradient で塗られた箱、
-  //    重なり順を推し量れない箱は「覆いではない」側へ倒す（落としすぎると、
-  //    ふつうのページの語が説明されなくなる）。→ 残る限界は AUDIT.md §7。
-  const PE_NONE_INLINE = /(^|[;\s])pointer-events\s*:\s*none/i;
-  let ghostSelSerial = -1, ghostSelPrint = -1, ghostSelectors = null, ghostSelWalk = false;
+  // ⚠️ **断定できるものだけを覆いと数える。** 地の色が完全に不透明で、透けておらず、
+  //    塗りを変える描画効果が無く、位置指定があり、重なり順で印より前と言えるもの。
+  //    画像や gradient で塗られた箱、重なり順を推し量れない箱は「覆いではない」側へ
+  //    倒す（落としすぎると、ふつうのページの語が説明されなくなる）。→ 残る限界は AUDIT.md §7。
+  //
+  // 第23回（RG-23-05〜08・10）で、候補の集め方・前後の比べ方・塗りの確かめ方・処理量を
+  // 別々の段に分けた（→ ghostSelectorList / ghostPool / solidCover / coverInFront）。
+
+  // ⚠️ **候補は「`pointer-events` を宣言している規則」全部**（第23回 RG-23-05・06）。
+  //    以前は宣言の**値**が `none` の規則だけを索引にしていた。索引は指紋（選択子と
+  //    宣言の本数）が変わるまで使い回すので、CSSOM で値だけを `auto → none` に変えた
+  //    覆いは索引に入らず、5 秒後も見落とされていた（実測: 印の画素 104 → 0 のまま
+  //    前方 1・後方 0）。値が `var(--pe)` の宣言も、生の値が `none` と一致しないので
+  //    落ちていた。いまは値を問わずに候補へ入れ、`none` かどうかは**計算済みの値**で決める。
+  //    `style` 属性も同じく「`pointer-events` と書いてあれば候補」（値は計算済みの値で見る）。
+  const PE_INLINE_SEL = '[style*="pointer-events" i]';
+  // 指紋は宣言の**本数**しか見ないので、同じ本数のまま別の宣言へ差し替えられると
+  // 索引は古いまま残る。索引を作り直す間隔にも上限を置く（周期の見直しと同じ 2 秒）。
+  const GHOST_SEL_TTL = 2000;
+  let ghostSelSerial = -1, ghostSelPrint = -1, ghostSelAt = -1, ghostSelectors = null, ghostSelWalk = false;
+
+  // 文書に効く stylesheet（第23回 RG-23-06）。`document.styleSheets` には、document の
+  // adoptedStyleSheets（`new CSSStyleSheet()` を代入しただけの規則。DOM に何も出ない）が
+  // 入らない。⚠️ `@import` 先は、規則を辿る途中で積む（→ importRulesOf）。
+  const HAS_ADOPTED = typeof Document !== 'undefined' && 'adoptedStyleSheets' in Document.prototype;
+  function adoptedSheets() {
+    if (!HAS_ADOPTED) return [];
+    try { return Array.from(document.adoptedStyleSheets || []); } catch (e) { return []; }
+  }
+  // `@import` の読み込み先の規則（`CSSImportRule` だけが `styleSheet` を持つ）。
+  // ⚠️ `r.cssRules` では辿れない。読めない import 先は例外を投げる（呼ぶ側で扱う）。
+  // 読み込み前・失敗した import は `styleSheet` が null で、辿る規則も無い。
+  const importRulesOf = r => (r.styleSheet ? r.styleSheet.cssRules : null);
+
+  // 入れ子の規則の選択子を、文書から引ける形へ直す。Chrome は入れ子の選択子を
+  // `& .b`・`&:hover`・`& > .c` と `&` つきで返す（実測 Chrome 155）。そのまま
+  // `querySelectorAll` へ渡すと `&` は `:scope`（＝`<html>`）になり、`&:hover` は
+  // `<html>` だけを指す——親の選択子で置き換える。`@scope` の中は解かない（null）。
+  function ruleSelector(r) {
+    let p = r.parentRule;
+    while (p && typeof p.selectorText !== 'string') {
+      if ('start' in p && 'end' in p) return null;          // @scope の中
+      p = p.parentRule;
+    }
+    if (!p) return r.selectorText;
+    const up = ruleSelector(p);
+    if (up === null) return null;
+    const own = r.selectorText;
+    return own.includes('&') ? own.replace(/&/g, ':is(' + up + ')') : ':is(' + up + ') ' + own;
+  }
 
   function ghostSelectorList() {
     const print = styleFingerprint();
-    if (ghostSelectors !== null && ghostSelSerial === styleSerial && ghostSelPrint === print) {
+    const now = performance.now();
+    if (ghostSelectors !== null && ghostSelSerial === styleSerial && ghostSelPrint === print &&
+        now - ghostSelAt < GHOST_SEL_TTL) {
       return ghostSelectors;
     }
-    ghostSelSerial = styleSerial; ghostSelPrint = print;
-    const sels = [];
+    ghostSelSerial = styleSerial; ghostSelPrint = print; ghostSelAt = now;
+    const sels = new Set();
     let walk = false, seen = 0;
-    for (const sheet of document.styleSheets) {
+    sheets: for (const sheet of [...document.styleSheets, ...adoptedSheets()]) {
       let rules;
-      try { rules = sheet.cssRules; } catch (e) { walk = true; continue; }   // 読めない
+      try { rules = sheet.cssRules; } catch (e) { walk = true; break; }   // 読めない＝どのみち全部歩く
       if (!rules) continue;
       const stack = [rules];
       while (stack.length) {
         for (const r of stack.pop()) {
-          if (++seen > RULE_SCAN_MAX) { walk = true; stack.length = 0; break; }
-          if (r.selectorText && r.style && r.style.getPropertyValue('pointer-events') === 'none') {
-            sels.push(r.selectorText);
+          if (++seen > RULE_SCAN_MAX) { walk = true; break sheets; }
+          const st = r.style;
+          if (st && st.getPropertyValue('pointer-events') !== '') {
+            // 選択子の無い場所（`@keyframes` の中・入れ子の宣言だけの塊）や `@scope` の中は、
+            // どの要素に効くかを引けない。見落とさないよう全要素を歩くほうへ落とす。
+            const sel = typeof r.selectorText === 'string' ? ruleSelector(r) : null;
+            if (sel === null) { walk = true; break sheets; }
+            sels.add(sel);
+          }
+          if ('styleSheet' in r) {
+            let inner;
+            try { inner = importRulesOf(r); } catch (e) { walk = true; break sheets; }  // 読めない import 先
+            if (inner) stack.push(inner);
           }
           if (r.cssRules) stack.push(r.cssRules);
         }
       }
     }
     ghostSelWalk = walk;
-    ghostSelectors = sels;
-    return sels;
+    ghostSelectors = walk ? [] : [...sels];
+    return ghostSelectors;
   }
 
-  // 祖先まで含めて、その箱が透けていないか
-  function opaqueChain(el) {
-    for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
-      const cs = getComputedStyle(n);
-      if (cs.visibility !== 'visible' || cs.display === 'none') return false;
-      if (parseFloat(cs.opacity) !== 1) return false;
+  // ⚠️ **集める数と手間に上限を置き、超えたら断定しない**（第23回 RG-23-08）。
+  //    以前は候補ごとに子孫を `inner.push(...querySelectorAll('*'))` で展開してから
+  //    除重していた。600 段の入れ子では同じ子孫を約 18 万回積み、`pool.push(...inner)` の
+  //    引数展開で `RangeError: Maximum call stack size exceeded` になり、最初の走査が
+  //    止まって後ろの語に印が付かなかった（実測）。
+  //    いまは引数展開を使わず、`pointer-events` が計算済みで `none` の根だけを、
+  //    既に広げた根の中へは入らずに1回ずつ広げる。集めた数が上限を超えたら、
+  //    覆いは「無い」と答える（＝覆いと数えない側。今の既定）。
+  // ⚠️ **選択子が多いときは、引くより歩くほうが安い**（実測 Chrome 155・ページ側で、
+  //    中央値）。全部の要素を歩いて計算済みの `pointer-events` を読むのは 1要素あたり
+  //    約 0.25µs（10,000要素で 2.2〜2.6ms・40,000要素で 10〜11ms）。選択子で1つずつ引くと
+  //    1要素・1選択子あたり約 3ns（20 個を 10,000要素から 0.6ms・32 個を 40,000要素から
+  //    3.6〜3.9ms）。手間は「選択子の数 × 要素の数」で増えるので、選択子が多い・要素が
+  //    多いときは歩く。第22回で「全要素を歩く形は採らない」としたのは宣言がほとんど無い
+  //    ページの話で、そこは選択子で引く（宣言が無ければ `style` 属性の1回だけで終わる）。
+  // ⚠️ **まとめて1回で引かない。** 1つの選択子の一覧にすると、選択子ごとの速い道が
+  //    使われず約 3 倍遅い（20 個・10,000要素で 1.7ms 対 0.6ms）。
+  const GHOST_POOL_MAX = 20000;        // 歩く・集める要素の上限
+  const GHOST_SEL_WALK = 64;           // これより多い選択子は、引かずに歩く
+  const GHOST_MATCH_MAX = 2000000;     // （選択子の数＋1）× 要素の数の上限（超えたら歩く）
+
+  // 覆いの候補（要素の並び。重複なし）。多すぎて断定しないときは null。
+  function ghostPool() {
+    const sels = ghostSelectorList();
+    const all = document.getElementsByTagName('*');
+    if (ghostSelWalk || sels.length > GHOST_SEL_WALK ||
+        (sels.length + 1) * all.length > GHOST_MATCH_MAX) {
+      return all.length > GHOST_POOL_MAX ? null : all;
     }
+    // 選択子はページの持ち物。読めない形が混じっても、その1つだけを捨てる。
+    const pool = new Set();
+    const add = list => { for (const el of list) pool.add(el); return pool.size <= GHOST_POOL_MAX; };
+    for (const sel of sels) {
+      let hit;
+      try { hit = document.querySelectorAll(sel); } catch (e) { continue; }
+      if (!add(hit)) return null;
+    }
+    if (!add(document.querySelectorAll(PE_INLINE_SEL))) return null;
+    // `pointer-events` は継承する。`none` の根の中も候補に入れる。
+    const seeds = Array.from(pool);
+    const done = new Set();            // 中まで広げた根
+    const reached = new Set();         // 広げる途中で歩いた要素（その枝はもう歩いてある）
+    for (const el of seeds) {
+      if (!el.firstElementChild || done.has(el) || reached.has(el)) continue;
+      if (getComputedStyle(el).pointerEvents !== 'none') continue;
+      if (!spreadInto(el, pool, done, reached)) return null;
+    }
+    return pool;
+  }
+  // 根の子孫を候補へ足す。**既に広げた根の中へは入らない**（入れ子の根を何度も広げない）。
+  // 外側の根の中にある根は `reached` で飛ばし、内側の根を先に広げていたときは、外側を
+  // 広げる途中でその枝を飛ばす。どちらの順でも、各要素は1回しか歩かない。
+  function spreadInto(root, pool, done, reached) {
+    let n = root.firstElementChild;
+    while (n) {
+      const skip = done.has(n);
+      if (!skip) {
+        pool.add(n); reached.add(n);
+        if (pool.size > GHOST_POOL_MAX) return false;
+      }
+      if (!skip && n.firstElementChild) { n = n.firstElementChild; continue; }
+      while (n !== root && !n.nextElementSibling) n = n.parentElement;
+      if (n === root) break;
+      n = n.nextElementSibling;
+    }
+    done.add(root);
     return true;
   }
 
+  // ---- 塗り（第23回 RG-23-10） ----
+  // 「地の alpha が 0 でない」では足りなかった。alpha 0.01・`clip-path: inset(50%)`・
+  // `filter: opacity(0)` の箱を覆いと数え、見えている印（語の矩形で 304 画素）を
+  // 落としていた（実測）。外接矩形は塗られている領域そのものではない。
+  // 覆いと数えるのは、**地の alpha がちょうど 1** で、覆いと祖先のどれにも塗りを変える
+  // 描画効果が無く、矩形のとおりに塗られていると言えるときだけ。
+  const isNoneVal = v => !v || v === 'none';
+  function paintEffect(s) {
+    if (!isNoneVal(s.filter) || !isNoneVal(s.clipPath) || !isNoneVal(s.offsetPath)) return true;
+    if (!isNoneVal(s.maskImage) || !isNoneVal(s.webkitMaskImage) ||
+        !isNoneVal(s.webkitMaskBoxImageSource)) return true;
+    if (s.mixBlendMode && s.mixBlendMode !== 'normal') return true;
+    if (s.clip && s.clip !== 'auto' && (s.position === 'absolute' || s.position === 'fixed')) return true;
+    // 回転・傾き・3D の変形は、外接矩形と塗りの形が一致しない（拡大・移動・反転は一致する）
+    if (!isNoneVal(s.rotate)) return true;
+    if (!isNoneVal(s.transform)) {
+      const m = /^matrix\(([^)]*)\)$/.exec(s.transform);
+      if (!m) return true;
+      const v = m[1].split(',');
+      if (parseFloat(v[1]) !== 0 || parseFloat(v[2]) !== 0) return true;
+    }
+    return false;
+  }
+  const hasRadius = s => s.borderTopLeftRadius !== '0px' || s.borderTopRightRadius !== '0px' ||
+                         s.borderBottomRightRadius !== '0px' || s.borderBottomLeftRadius !== '0px';
+  // 祖先が中身を切り取るか（overflow・contain: paint）。行内の箱には効かない。
+  const clipsInside = s => s.display !== 'inline' && s.display !== 'contents' &&
+    (s.overflowX !== 'visible' || s.overflowY !== 'visible' ||
+     /\b(paint|strict|content)\b/.test(s.contain || '') || s.contentVisibility === 'auto');
+
+  // 矩形のとおりに塗りつぶされていると言える覆いなら、その矩形を返す（祖先の切り取りで
+  // 狭める）。言えなければ null。祖先の opacity・visibility も見る（旧 opaqueChain）。
+  function solidCover(el, cs, r) {
+    if (hasRadius(cs)) return null;                         // 角は塗られていない
+    // 地の色は、いちばん下の層の background-clip で切られる
+    if (String(cs.backgroundClip).split(',').pop().trim() !== 'border-box') return null;
+    let x1 = r.left, y1 = r.top, x2 = r.right, y2 = r.bottom;
+    for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
+      const s = n === el ? cs : getComputedStyle(n);
+      if (s.visibility !== 'visible' || s.display === 'none') return null;
+      if (parseFloat(s.opacity) !== 1) return null;
+      if (paintEffect(s)) return null;
+      // 祖先の切り取りの外は塗られない。切り取りの縁の内側（padding box）へ狭める。
+      // 包含ブロックの外へ逃げる覆い（fixed など）まで狭めることになるが、それは
+      // 「覆っている範囲を少なく見積もる」向き（＝断定しない側）なので構わない。
+      if (n !== el && n !== document.body && clipsInside(s)) {
+        if (hasRadius(s)) return null;
+        const b = n.getBoundingClientRect();
+        const px = b.left + n.clientLeft, py = b.top + n.clientTop;
+        x1 = Math.max(x1, px); y1 = Math.max(y1, py);
+        x2 = Math.min(x2, px + n.clientWidth); y2 = Math.min(y2, py + n.clientHeight);
+        if (!(x2 > x1 && y2 > y1)) return null;
+      }
+    }
+    // 祖先の content-visibility なども、まとめて聞いておく
+    if (HAS_CHECK_VISIBILITY && !el.checkVisibility(CHECK_VISIBILITY_OPTS)) return null;
+    return { left: x1, top: y1, right: x2, bottom: y2 };
+  }
+
+  // ---- 前後（第23回 RG-23-07） ----
+  // `z-index` は文書全体の1つの順位ではない。以前は覆いの `z < 0` を捨て、`z > 0` なら
+  // 前と断定していたので、両方向に誤っていた（実測）:
+  //   A: `#first{position:relative;z-index:10}` の中の印と、`z-index:1` の固定の覆い。
+  //      印の側のまとまりが前なのに（語の矩形 304 画素）、印は後方へ移された。
+  //   B: `z-index:10` の固定の箱の子の `z-index:-1` の白い覆い。前のまとまりの中の
+  //      負の子なので印は 0 画素なのに、負の値として捨てられ、印が残った。
+  // いまは、覆いと印の**共通の祖先より下**で、それぞれが属するいちばん外側のまとまり
+  // （stacking context を作る祖先）を求め、その層で比べられるときだけ前後を断定する。
+  // 共通の祖先より上は両者で同じなので、比べ方に影響しない。
+  // 作るかどうか読めない性質が枝の上にあれば、覆いと数えない（断定しない側）。
+  //   'yes' … 作る／'no' … 作らない／'unknown' … 読めない
+  const SC_WILL = new Set(['opacity', 'transform', 'translate', 'rotate', 'scale', 'perspective',
+    'filter', 'backdrop-filter', 'clip-path', 'mask', 'mask-image', 'mask-border', '-webkit-mask',
+    '-webkit-mask-image', 'mix-blend-mode', 'isolation', 'offset-path', 'contain']);
+  const NO_SC_WILL = new Set(['auto', 'scroll-position', 'contents']);
+  function stackKind(s, parentDisplay, zApplies) {
+    if (s.display === 'contents') return 'no';              // 箱が無い
+    if (s.position === 'fixed' || s.position === 'sticky' || zApplies) return 'yes';
+    if (parseFloat(s.opacity) < 1) return 'yes';
+    if (!isNoneVal(s.transform) || !isNoneVal(s.translate) || !isNoneVal(s.rotate) ||
+        !isNoneVal(s.scale) || !isNoneVal(s.perspective) || !isNoneVal(s.offsetPath)) return 'yes';
+    if (s.transformStyle === 'preserve-3d') return 'yes';
+    if (!isNoneVal(s.filter) || !isNoneVal(s.backdropFilter) || !isNoneVal(s.clipPath)) return 'yes';
+    if (!isNoneVal(s.maskImage) || !isNoneVal(s.webkitMaskImage) ||
+        !isNoneVal(s.webkitMaskBoxImageSource)) return 'yes';
+    if (s.mixBlendMode && s.mixBlendMode !== 'normal') return 'yes';
+    if (s.isolation === 'isolate') return 'yes';
+    if (/\b(layout|paint|strict|content)\b/.test(s.contain || '')) return 'yes';
+    if (s.contentVisibility === 'auto' || s.contentVisibility === 'hidden') return 'yes';
+    // `container-type: size / inline-size` は Chrome では作る（実測 Chrome 155: 中の
+    // `z-index:-1` の子が、その箱の地より上に描かれた）。それ以外の値は読まない。
+    const ct = s.containerType;
+    if (ct && ct !== 'normal') return /size/.test(ct) ? 'yes' : 'unknown';
+    const will = (s.willChange || 'auto').split(',').map(t => t.trim());
+    if (will.some(t => SC_WILL.has(t))) return 'yes';
+    if (!will.every(t => NO_SC_WILL.has(t))) return 'unknown';
+    if (!isNoneVal(s.viewTransitionName) || !isNoneVal(s.webkitBoxReflect)) return 'unknown';
+    // 位置指定の無い要素の z-index が効くか（flex / grid の子か）は、親の箱が
+    // `display: contents` だと祖父母次第になる。そこは読まない。
+    if (s.zIndex !== 'auto' && parentDisplay === 'contents') return 'unknown';
+    return 'no';
+  }
+  // 要素ごとの重なりの性質。覚え書きは覆いの一覧と同じ間隔で捨てる（→ ghostCovers）。
+  //   kind … stackKind／z … 効いている z-index（auto・効かないときは 0）
+  //   pos … 位置指定があるか／order … flex・grid の `order` で並べ替えられているか
+  function stackInfo(el, memo) {
+    let v = memo.get(el);
+    if (v) return v;
+    const s = getComputedStyle(el);
+    const p = el.parentElement;
+    const pd = p ? getComputedStyle(p).display : 'block';
+    const item = /flex|grid/.test(pd);                     // flex / grid の子は z-index が効く
+    const pos = s.position !== 'static';
+    const zApplies = s.zIndex !== 'auto' && (pos || item);
+    v = { kind: stackKind(s, pd, zApplies), z: zApplies ? (parseInt(s.zIndex, 10) || 0) : 0,
+          pos, order: item && s.order !== '0' };
+    memo.set(el, v);
+    return v;
+  }
+  // 最上層（top layer）に出た要素の中かどうか。違えば、ここでの比べ方は当てはまらない。
+  const TOP_LAYER_SEL = [':modal', ':popover-open', ':fullscreen'].filter(s => {
+    try { return CSS.supports(`selector(${s})`); } catch (e) { return false; }
+  }).join(',');
+  const topLayerOf = el => { try { return TOP_LAYER_SEL ? el.closest(TOP_LAYER_SEL) : null; } catch (e) { return null; } };
+
+  // 覆い g が、印より手前に描かれていると断定できるか
+  function coverInFront(g, icon, memo) {
+    if (topLayerOf(g.el) !== topLayerOf(icon)) return false;
+    // 覆いの側の祖先に番号を振り、印の側から上って最初に当たったところが共通の祖先
+    const upC = new Map();
+    let k = 0;
+    for (let n = g.el; n && n !== document.documentElement; n = n.parentElement) upC.set(n, k++);
+    let lca = k;                                            // 当たらなければ <html>
+    const iBranch = [];
+    for (let n = icon; n && n !== document.documentElement; n = n.parentElement) {
+      const at = upC.get(n);
+      if (at !== undefined) { lca = at; break; }
+      iBranch.push(n);
+    }
+    if (lca === 0 || iBranch.length === 0) return false;     // 一方が他方を含む＝覆いではない
+    // それぞれの枝で、いちばん外側のまとまり。無ければ要素そのもの。
+    let x = g.el, y = null, yPos = null;
+    let n = g.el;
+    for (let i = 0; i < lca; i++, n = n.parentElement) {
+      const s = stackInfo(n, memo);
+      if (s.kind === 'unknown') return false;
+      if (s.kind === 'yes') x = n;
+    }
+    for (const m of iBranch) {
+      const s = stackInfo(m, memo);
+      if (s.kind === 'unknown') return false;
+      if (s.kind === 'yes') y = m;
+      if (!yPos && s.pos) yPos = m;
+    }
+    // まとまりの無い印は、いちばん近い位置指定の祖先と一緒に描かれる（z-index:auto の層）。
+    // それも無ければ、ふつうの流れの中（負の層より上、位置指定の層より下）。
+    if (!y) y = yPos;
+    const sx = stackInfo(x, memo);
+    const rank = s => (s.z < 0 ? 0 : s.z > 0 ? 3 : 2);
+    const rx = rank(sx);
+    if (!y) return rx >= 2;                                 // ふつうの流れ（層 1）との比べ
+    const sy = stackInfo(y, memo);
+    const ry = rank(sy);
+    if (rx !== ry) return rx > ry;
+    if (sx.z !== sy.z) return sx.z > sy.z;
+    // 同じ層・同じ z-index なら、文書順で後のものが上。並べ替えられていれば読まない。
+    if (sx.order || sy.order) return false;
+    return !!(y.compareDocumentPosition(x) & Node.DOCUMENT_POSITION_FOLLOWING);
+  }
+
   const GHOST_GAP = 120;
-  let ghostAt = -1, ghostList = null;
+  // 控え（ghostMemo）は要素を鍵にするので WeakMap にする。SPA の遷移で外れた古い画面の
+  // 要素を、次の判定まで握り続けないため（第23回の是正の点検 R23-REV-01）。
+  let ghostAt = -1, ghostList = null, ghostMemo = new WeakMap(), ghostFailed = false;
+  let paintFailNoted = false;   // 印の実測の例外の記録も1回だけ（同 R23-REV-03）
+
+  // ⚠️ **覆いの判定で例外が出ても、印の実測と入口の走査を止めない**（第23回 RG-23-08）。
+  // 判定できないときは「覆いなし」（＝覆いと数えない今の既定の側）。記録は1回だけ残す。
+  function noteGhostFailure(e) {
+    if (ghostFailed) return;
+    ghostFailed = true;
+    console.error('[iiyaku] 覆いの判定に失敗。覆いなしとして続けます:', e);
+  }
 
   function ghostCovers() {
     const now = performance.now();
     if (ghostList !== null && now - ghostAt < GHOST_GAP) return ghostList;
-    const out = [];
-    const sels = ghostSelectorList();
-    let pool = [];
-    if (ghostSelWalk) pool = [...document.querySelectorAll('*')];
-    else {
-      if (sels.length) {
-        // 選択子はページの持ち物。1つでも読めない形が混じると全部が落ちるので、
-        // まとめて渡さず、落ちたぶんだけ捨てる。
-        for (const s of sels) {
-          try { pool.push(...document.querySelectorAll(s)); } catch (e) { /* 読めない選択子 */ }
+    ghostMemo = new WeakMap();
+    let out = [];
+    try {
+      const pool = ghostPool();
+      if (pool !== null) {
+        for (const el of pool) {
+          const cs = getComputedStyle(el);
+          if (cs.pointerEvents !== 'none') continue;            // ほとんどの要素はここで終わる
+          if (isOurNode(el) || ownedIcons.has(el)) continue;   // 自分の持ち物は覆いに数えない
+          if (cs.position === 'static') continue;               // 重なり順を推し量れない
+          if (colorAlpha(cs.backgroundColor) !== 1) continue;   // 地が完全に不透明なときだけ
+          const r = el.getBoundingClientRect();
+          if (!(r.width > 0 && r.height > 0)) continue;
+          const rect = solidCover(el, cs, r);
+          if (rect) out.push({ el, r: rect });
         }
       }
-      for (const el of document.querySelectorAll('[style]')) {
-        if (PE_NONE_INLINE.test(el.getAttribute('style') || '')) pool.push(el);
-      }
-      // `pointer-events` は継承する。当たった要素の中も候補に入れる。
-      const inner = [];
-      for (const el of pool) if (el.firstElementChild) inner.push(...el.querySelectorAll('*'));
-      pool.push(...inner);
-    }
-    const seen = new Set();
-    for (const el of pool) {
-      if (seen.has(el)) continue;
-      seen.add(el);
-      if (isOurNode(el) || ownedIcons.has(el)) continue;      // 自分の持ち物は覆いに数えない
-      const cs = getComputedStyle(el);
-      if (cs.pointerEvents !== 'none') continue;
-      if (cs.position === 'static') continue;                 // 重なり順を推し量れない
-      if (TRANSPARENT.test(cs.backgroundColor)) continue;     // 地が透明＝断定しない
-      const z = cs.zIndex === 'auto' ? 0 : (parseInt(cs.zIndex, 10) || 0);
-      if (z < 0) continue;                                    // 後ろに敷いてある
-      const r = el.getBoundingClientRect();
-      if (!(r.width > 0 && r.height > 0)) continue;
-      if (!opaqueChain(el)) continue;
-      out.push({ el, r, z });
-    }
+    } catch (e) { out = []; noteGhostFailure(e); }
     ghostAt = now; ghostList = out;
     return out;
   }
 
-  // その点が、当たり判定に映らない覆いで塞がれているか
-  function ghostBlocks(icon, x, y) {
-    const list = ghostCovers();
-    for (const g of list) {
-      if (x < g.r.left || x >= g.r.right || y < g.r.top || y >= g.r.bottom) continue;
-      if (g.el === icon || g.el.contains(icon) || icon.contains(g.el)) continue;
-      if (g.z > 0) return true;
-      // 重なり順の指定が無いときは、**後から来たほうが上**に描かれる
-      if (icon.compareDocumentPosition(g.el) & Node.DOCUMENT_POSITION_FOLLOWING) return true;
+  // 印の矩形に掛かる覆いのうち、印より手前と断定できるもの（印1つにつき1回求める）
+  function ghostsOver(icon, b) {
+    try {
+      const list = ghostCovers();
+      if (list.length === 0) return list;
+      const out = [];
+      for (const g of list) {
+        if (g.r.right <= b.left || g.r.left >= b.right || g.r.bottom <= b.top || g.r.top >= b.bottom) continue;
+        if (coverInFront(g, icon, ghostMemo)) out.push(g);
+      }
+      return out;
+    } catch (e) { noteGhostFailure(e); return []; }
+  }
+
+  // その点が、手前の覆いで塞がれているか
+  function ghostBlocks(front, x, y) {
+    for (const g of front) {
+      if (x >= g.r.left && x < g.r.right && y >= g.r.top && y < g.r.bottom) return true;
     }
     return false;
   }
 
+  // ⚠️ **ここは「確実に描かれている」ときだけ真**（第23回 RG-23-04）。
+  // 以前は形・到達性の 'unknown' を `false` と区別して通し、解けない描画効果
+  // （`chain.paintUnknown`）も見ていなかった。新しい候補は 'unknown' を見送るのに
+  // （→ visibleHits）、**既にある印**は 'unknown' のまま残っていた——実測: 前方に印が
+  // 付いたあとで段落へ `filter: url(#zero)` を掛けると、印は 0 画素なのに
+  // `checkVisibility()` は true・当たり判定は host を返し、Tab で止まり続けた。
+  // 新規・保持・使用済みのキーを同じ契約（confirmed-visible）にそろえる（→ AUDIT.md §7 #25）。
   function iconIsPainted(icon) {
     const chain = paintChain(icon, 'none');
     if (chain.hidden) return false;
+    if (chain.paintUnknown) return false;          // 解けない描画効果＝断定できない
     if (rectIsEmpty(chain.clip)) return false;
     const b = icon.getBoundingClientRect();
     if (!(b.width > 0 && b.height > 0)) return false;
     const c = chain.clip;
     if (c && !(Math.min(b.right, c.x2) - Math.max(b.left, c.x1) > 1 &&
                Math.min(b.bottom, c.y2) - Math.max(b.top, c.y1) > 1)) return false;
-    if (reachable(b, chain) === false) return false;
-    for (const t of chain.tests) if (t(b) === false) return false;
+    if (reachable(b, chain) !== true) return false;
+    for (const t of chain.tests) if (t(b) !== true) return false;
     // ⑤ 印そのものの見え方。ページ側の `!important` でも消される。
     const cs = getComputedStyle(icon);
     if (cs.visibility !== 'visible' || cs.display === 'none') return false;
@@ -1547,9 +1881,10 @@
       if (parseFloat(ts.opacity) === 0) return false;
       const tb = target.getBoundingClientRect();
       if (!(tb.width > 0 && tb.height > 0)) return false;
-      // 字・枠・地のどれか1つでも塗れていればよい（丸い枠だけでも印として見える）
-      if (TRANSPARENT.test(ts.color) && TRANSPARENT.test(ts.borderTopColor) &&
-          TRANSPARENT.test(ts.backgroundColor)) return false;
+      // 字・枠・地のどれか1つでも塗れていればよい（丸い枠だけでも印として見える）。
+      // ⚠️ 「塗れている」は **alpha を読めて 0 より大きい**ときだけ（第23回 RG-23-03）。
+      // 読めない形を「塗れている」と断定しない。
+      if (![ts.color, ts.borderTopColor, ts.backgroundColor].some(isInkColor)) return false;
     }
     // ⑥ 覆われていないか。**画面の中にある点だけ**で見る（画面外は覆いの話ではなく
     // 到達性の話で、そこは④で見ている）。画面内の点が1つも無ければ判定しない。
@@ -1571,6 +1906,10 @@
     // （残る限界）。そのときは覆いを判定しない側へ倒す（→ AUDIT.md §7）。
     if (cs.pointerEvents === 'none') return true;
     let inView = 0, exposed = 0;
+    // 印より手前の覆いは、要るとき（最前面が印だった点があるとき）に1回だけ求める。
+    // ⚠️ 求める途中で例外が出ても「覆いなし」で返る（第23回 RG-23-08 → ghostsOver）。
+    let front = null;
+    const coveredAt = (x, y) => ghostBlocks(front || (front = ghostsOver(icon, b)), x, y);
     for (const [fx, fy] of ICON_PROBES) {
       const x = b.left + b.width * fx, y = b.top + b.height * fy;
       if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) continue;
@@ -1581,7 +1920,7 @@
       // は印を返し続ける。点ごとに見るので、**部分的な覆いでは残りの点が露出と数えられ**、
       // 「全面が覆われている」とは判定されない。
       const hit = document.elementFromPoint(x, y);
-      if (hit && (hit === icon || icon.contains(hit)) && !ghostBlocks(icon, x, y)) exposed++;
+      if (hit && (hit === icon || icon.contains(hit)) && !coveredAt(x, y)) exposed++;
     }
     if (inView > 0 && exposed === 0 && visibleNow(b, chain)) return false;   // 全面が覆われている
     return true;
@@ -1765,6 +2104,8 @@
     // 2,500段落の祖先を隠す／戻すを繰り返す試験では、ここが費用の大半だった。
     // 可視でないだけの節点は**印を付けない**が処理済みにもしない（あとで見えたら注記する）。
     if (!matcher.test(v)) { markHandled(node); return false; }
+    // 入れて測って引き取った語は、状態が変わるまで入れ直さない（第23回 RG-23-11）
+    if (holdRejected(node)) { rememberLatent(node); return false; }
     // 可視性は**一致した語の範囲**で見る。親要素まるごとで測ると、同じ親に
     // 見えている文字が1つでもあるだけで、切り取りの外の語まで可視と答える。
     if (visibleHits(node, el).length > 0) return true;
@@ -1985,6 +2326,12 @@
   // 正規の印を外したことに気づけなくなる（実測: 説明が約2秒間0個になり、
   // 暇なときの確認が来るまで戻らなかった）。作ったのが自分でも、外したのは相手でありうる。
   const expectedRemovals = new WeakSet();
+  // 入れて測って引き取った印（第23回 RG-23-11）。入れた記録が見張りに届くのは
+  // 引き取った**あと**なので、その1回だけを自分の変更として受け取る。受け取らないと
+  // 「ページが何かを足した」として見え方まで測り直すまとめ直しが走り、そこでまた
+  // 入れて測って引き取る——という自己通知の輪ができる。1回で消すので、ページが
+  // 同じ節点をあとで本文へ戻したとき（実測: 名札を剥がして使い回す）はふつうに数える。
+  const expectedAdds = new WeakSet();
 
   function removeOwn(node) {
     if (!node) return;
@@ -2245,6 +2592,11 @@
   // light DOM の側（class・data 属性・操作性）は `stripOwnIdentity` が落とすが、
   // shadow の中はページからも自分の走査からも見えないので、ここで明示的に畳む。
   // ⚠️ **`<slot>` は残す。** 外すとページが入れた本文が描かれなくなる（第21回の実測）。
+  // ⚠️ **その root から、自分の stylesheet も外す**（第23回 RG-23-01）。button を外しても
+  // `:host` の規則は残るので、使い回された本文の入れ物が `display:inline-flex`・左余白 4px・
+  // `vertical-align:middle` のままだった（実測。ふつうの `<span>` は inline・0px・baseline）。
+  // stylesheet は全部の印で1枚を共有しているので、**中身は消さずに、この root の
+  // `adoptedStyleSheets` からだけ外す**（中身を消すと現役の印まで絵を失う）。
   function deactivateShadowIcon(host) {
     const btn = iconButton.get(host);
     const desc = iconDesc.get(host);
@@ -2260,6 +2612,27 @@
       btn.remove();
     }
     if (desc) { desc.textContent = ''; desc.remove(); }
+    const root = iconShadow.get(host);
+    if (root) { try { root.adoptedStyleSheets = []; } catch (e) { /* 見た目だけの話 */ } }
+  }
+
+  // 印の所有を手放す。**どの経路でも、ここ1か所を通す**（第23回 RG-23-01）。
+  //
+  // ⚠️ 第22回で直したのは「登録済みの退役」（retireGloss）だけだった。挿入した直後に
+  // 描かれていないと分かって引き取る経路（annotate）は、まだ記録へ入る前なので
+  // retireGloss が回収できず、**中の button が生きたまま**ページへ渡っていた。実測:
+  // ページの observer が外された印を受け取り、名札を剥がして本文の入れ物に使うと、
+  // 「「branch」の解説」という押せる button が2個になり、その節点で実際に Tab が止まった。
+  // 登録済みの退役・登録前の取り消し・切断済みのどれでも、**先に押せなくしてから**
+  // 所有の記録を消す。DOM に繋がっているかは条件にしない（→ retireGloss の注記）。
+  //   keepExpectations … 自分が書いた属性の予定を残す（挿入して測って引き取った印。
+  //                      その書き込みの記録はまだ見張りに届いていないので、予定と
+  //                      突き合わせて自分の変更として受け取らせる → RG-23-11）
+  function relinquishIcon(icon, { keepExpectations = false } = {}) {
+    deactivateShadowIcon(icon);
+    ownedIcons.delete(icon);
+    iconTrigger.delete(icon);
+    if (!keepExpectations) expectedAttrs.delete(icon);
   }
 
   // その印の「押せる実体」。shadow を使わない場合は host 自身。
@@ -2286,6 +2659,8 @@
   const shadowPaintSeen = new WeakMap();       // host → 直近に見たページ側の値
   const THEME_VARS = ['--fgColor-accent', '--color-accent-fg',
                       '--bgColor-default', '--color-canvas-default'];
+  // button の塗りが読む変数。**ページも祖先に置ける**（custom property は継承する）。
+  const SHADOW_VARS = [SHADOW_FG, SHADOW_BG];
 
   function ensureShadowPaint(host) {
     const btn = iconButton.get(host);
@@ -2293,19 +2668,35 @@
     const hs = getComputedStyle(host);
     // ページ側の値が変わっていなければ測り直さない（測るたびに style を外して
     // 付け直すので、無条件に毎回やると描き直しを誘う）。
+    // ⚠️ **鍵には、button の塗りが実際に読む値を全部入れる**（第23回 RG-23-03）。
+    // `--rg-fg` / `--rg-bg` が入っていなかったので、正常な印の祖先へページが後から
+    // `--rg-fg: transparent` を置いても鍵が変わらず、塗り直しを飛ばしていた
+    // （部品の実測で 0 画素。拡張全体では退役→作り直しが偶然救っていた）。
     let seen = hs.color;
     for (const v of THEME_VARS) seen += '' + hs.getPropertyValue(v).trim();
+    for (const v of SHADOW_VARS) seen += '' + hs.getPropertyValue(v).trim();
     if (shadowPaintSeen.get(host) === seen) return;
     shadowPaintSeen.set(host, seen);
     // いったん上書きを外し、**ページのテーマ色で塗れるか**を測る
     btn.style.removeProperty(SHADOW_FG);
     btn.style.removeProperty(SHADOW_BG);
-    if (!TRANSPARENT.test(getComputedStyle(btn).color)) return;   // 塗れている
-    // 塗れない。ページの本文の色を借りる——その色は、語そのものが読める場所では
-    // 必ず地と対比している。本文の色も透明なら、環境の既定色（forced-colors でも
-    // 生きている system color）へ落とす。
-    const ink = TRANSPARENT.test(hs.color) ? 'CanvasText' : hs.color;
-    btn.style.setProperty(SHADOW_FG, ink);
+    const bs = getComputedStyle(btn);
+    // 印の色（ふだんの字と枠・hover/focus の地）と、hover/focus の "i" の色。
+    // 後者は hover/focus でしか使われないので、styles.css が `text-decoration-color` へ
+    // 同じ値を写してある（線は引かないので見た目には出ない）。
+    // ⚠️ 「塗れている」は alpha を読めて 0 より大きいときだけ。`color(srgb 0 0 0 / 0)` の
+    // ような形を「不透明」と断定しない（第23回 RG-23-03）。
+    // ⚠️ "i" の色が印の色と同じだと、hover / focus で "i" が地に溶ける（第23回 RG-23-02）。
+    const fg = bs.color, ground = bs.textDecorationColor;
+    const fgOk = isInkColor(fg);
+    const groundOk = isInkColor(ground) && ground !== fg;
+    if (fgOk && groundOk) return;                       // 塗れている
+    if (!fgOk) {
+      // 塗れない。ページの本文の色を借りる——その色は、語そのものが読める場所では
+      // 必ず地と対比している。本文の色も透明なら、環境の既定色（forced-colors でも
+      // 生きている system color）へ落とす。
+      btn.style.setProperty(SHADOW_FG, isInkColor(hs.color) ? hs.color : 'CanvasText');
+    }
     btn.style.setProperty(SHADOW_BG, 'Canvas');
   }
 
@@ -2424,7 +2815,21 @@
     if (icon.getAttribute('role') === 'button') setOwnAttr(icon, 'aria-expanded', v);
   }
 
+  // 吹き出しへ移る途中の隙間で閉じない（第23回 RG-23-15）。
+  // 吹き出しは印から 6px 離して置く（placeTip）。⚠️ 以前は、その隙間の本文へカーソルが
+  // 入った瞬間（印の下端から +0.5px・実測）に閉じていたので、カーソルを吹き出しへ
+  // 移して長い説明を読むことができなかった（WCAG 1.4.13 の hoverable）。
+  // 印・入口・吹き出しを囲む矩形の中へ**本物のカーソルが**移ったときだけ、短い猶予の
+  // あとに閉じる。印か吹き出しへ戻れば取り消す。矩形の外へ移ったとき、Escape・
+  // フォーカスの移動・印の退役・OFF では、これまでどおり即時に閉じる（hideTip が猶予を消す）。
+  const TIP_GRACE_MS = 250;
+  let tipCloseTimer = null;
+  function cancelTipClose() {
+    if (tipCloseTimer !== null) { clearTimeout(tipCloseTimer); tipCloseTimer = null; }
+  }
+
   function hideTip() {
+    cancelTipClose();
     if (tipDescribed) { removeDescribedBy(tipDescribed, TIP_ID); tipDescribed = null; }
     for (const ic of tipIcons) setExpanded(ic, 'false');
     if (tip) { removeOwn(tip); tip = null; }
@@ -2481,6 +2886,8 @@
   // icons: 出す説明のもと（複数可）／anchor: 位置の基準／describe: 説明を結びつける相手
   function showTip(icons, anchor, describe) {
     if (!enabled || !icons || icons.length === 0) return;
+    // 同じ説明を出し直すときも、待っている「閉じる」は取り消す（印へ戻ってきた）
+    cancelTipClose();
     if (tip && tipAnchor === anchor && requestKey(tipIcons) === requestKey(icons)) return;
     hideTip();
 
@@ -2539,31 +2946,84 @@
     return !!(el && tip && (el === tip || tip.contains(el)));
   };
 
+  // 印・入口・吹き出しを囲む矩形（4px 広げる）。印から吹き出しへ向かう道すじは、
+  // 両者の外接矩形の中に収まる。座標は viewport（吹き出しは position: fixed）。
+  function inTipCorridor(x, y) {
+    if (!tip || !tipAnchor || !tipAnchor.isConnected) return false;
+    if (typeof x !== 'number' || typeof y !== 'number') return false;
+    const P = 4;
+    let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
+    for (const el of [tipAnchor, tip, tipDescribed]) {
+      if (!el || !el.isConnected) continue;
+      const q = el.getBoundingClientRect();
+      l = Math.min(l, q.left); t = Math.min(t, q.top);
+      r = Math.max(r, q.right); b = Math.max(b, q.bottom);
+    }
+    return x >= l - P && x <= r + P && y >= t - P && y <= b + P;
+  }
+
+  // カーソルが印（入口）と吹き出しの外へ出た。
+  // ⚠️ 猶予を与えるのは、**移った先の要素があり**（relatedTarget。ウィンドウの外から
+  // 来た／出たときは null）、その位置が上の矩形の中のときだけ。ページの script が
+  // 座標なしで送る合成の mouseover / mouseout（clientX = clientY = 0）は、矩形の外として
+  // これまでどおり即時に閉じる。
+  function leaveTip(e) {
+    if (!tip) return;
+    if (e && e.relatedTarget && inTipCorridor(e.clientX, e.clientY)) {
+      if (tipCloseTimer === null) {          // 矩形の中で要素をまたいでも延長しない
+        const which = tip;
+        tipCloseTimer = setTimeout(() => {
+          tipCloseTimer = null;
+          if (tip === which) hideTip();
+        }, TIP_GRACE_MS);
+      }
+      return;
+    }
+    hideTip();
+  }
+
+  // Escape で閉じたときにフォーカスがあった相手（第23回の3群目）。
+  // ⚠️ Chrome 155（headless）では、最初の Escape でウィンドウが一瞬 blur して戻り、
+  // **同じ印へ focusout → focusin が来る**（実測: keydown の約 75〜100ms 後に
+  // focusout（relatedTarget = null・document.hasFocus() = false）→ window の blur →
+  // visibilitychange hidden → window の focus → focusin）。focusin は説明を出すので、
+  // Escape で閉じた吹き出しが出直していた。同じ相手へ戻っただけの focusin では出さない。
+  // 忘れるのは、別の要素へフォーカスが移ったとき（body を含む）・Escape 以外の
+  // キーが押されたとき・マウスで印に乗ったとき。Enter・Space・クリック・hover で
+  // 明示的に開くのは妨げない。
+  let escClosedAt = null;
+
   function bindTip() {
     // 印以外の場所へカーソルが移ったら消す。mouseout だけに頼ると、
     // 表示中に印が DOM から消えた場合（GitHub の再描画など）に
     // mouseout が来ず、ツールチップが residual として残る。
     document.addEventListener('mouseover', e => {
-      if (inTooltip(e.target)) return;   // 吹き出しの上に来ただけなら消さない
+      if (inTooltip(e.target)) { cancelTipClose(); return; }   // 吹き出しの上に来たら閉じない
       const req = requestFrom(e.target);
-      if (req) show(req); else hideTip();
+      if (req) { escClosedAt = null; show(req); } else leaveTip(e);
     }, true);
     document.addEventListener('mouseout', e => {
       // 吹き出しへカーソルを移す途中で消さない（長い説明を読めるようにする）
       if (inTooltip(e.relatedTarget) || requestFrom(e.relatedTarget)) return;
-      if (requestFrom(e.target)) hideTip();
+      if (requestFrom(e.target)) leaveTip(e);
     }, true);
 
     // キーボード。Tab で入口に止まったら出し、離れたら消す。
     document.addEventListener('focusin', e => {
+      // Escape で閉じた相手へ、ウィンドウの出入りなどで戻ってきただけなら出さない
+      if (escClosedAt !== null && asElement(e.target) === escClosedAt) return;
+      escClosedAt = null;
       const req = requestFrom(e.target);
       if (req) show(req); else hideTip();
     }, true);
     document.addEventListener('focusout', e => {
+      // 文書の中で別の場所へ移った（移り先が要素か、文書がフォーカスを保ったまま body へ）
+      if (escClosedAt !== null && (e.relatedTarget || document.hasFocus())) escClosedAt = null;
       if (requestFrom(e.target)) hideTip();
     }, true);
     document.addEventListener('keydown', e => {
-      if (e.key === 'Escape') { if (tip) hideTip(); return; }
+      if (e.key === 'Escape') { escClosedAt = asElement(e.target); if (tip) hideTip(); return; }
+      escClosedAt = null;
       const el = asElement(e.target);
       if (!el || !ownedIcons.has(el)) return;   // ページ側の同名 class には反応しない
       if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
@@ -2638,10 +3098,23 @@
     // 自分が作る印は**必ず空**。ページが中へ書き込んだものを、自分の UI として
     // 抱えたままにしない（実測: 印の中へ入れた文字がそのまま残った）。
     if (rec.icon.firstChild) return false;
+    // ⚠️ **見た目の見分けに使う属性も、記録と突き合わせる**（第23回 RG-23-09）。
+    // styles.css は「`data-iiyaku-for` も `role` も無い＝shadow の中で描く印」と見分けて、
+    // light DOM の枠と "i" を消している。ここで `role` だけを見て `data-iiyaku-for` を
+    // 見ていなかったので、単独の印へページが `data-iiyaku-for` を足すだけで、light DOM の
+    // 輪と "i" が戻り、中の button の輪と重なっていた（実測: host の枠 0px→1px・
+    // `::after` none→"i"・button は 14.34px→7.92×12.34px に縮んだ）。
+    // 装飾扱いの印は逆に、`data-iiyaku-for` が消えると light DOM でも描かれなくなる
+    // （shadow も持たない）ので、**値まで**記録した入口と一致することを見る。
     if (rec.placementKind === 'hosted') {
       // 装飾扱い。読み上げに出さず、Tab の順路にも入れない
       if (rec.icon.getAttribute('aria-hidden') !== 'true') return false;
       if (rec.icon.hasAttribute('role') || rec.icon.hasAttribute('tabindex')) return false;
+      const forId = rec.trigger && triggerIdOf.get(rec.trigger);
+      if (!forId || rec.icon.getAttribute('data-iiyaku-for') !== forId) return false;
+    } else if (rec.icon.hasAttribute('data-iiyaku-for')) {
+      // 単独の印（shadow あり／無し）は、装飾扱いの名札を持たない
+      return false;
     } else if (iconButton.has(rec.icon)) {
       // 単独の印。意味づけは closed shadow root の中の button が持ち、
       // light DOM の host は**単独では Tab の停止点にならない**（第21回 RG-21-06）。
@@ -2729,7 +3202,15 @@
     // 記録した語の範囲で見る。印の親要素まるごとで測ると、同じ親の別の文字が
     // 見えているだけで「まだ読める」と答えてしまう。
     const start = rec.splitOffset - rec.term.length;
-    if (!isVisibleOccurrence(rec.termNode.parentElement, rec.termNode, start, rec.splitOffset)) return false;
+    // ⚠️ **`=== true` で見る**（第23回 RG-23-04）。`isVisibleOccurrence` は
+    // true / false / 'unknown' を返し、文字列 'unknown' は真として評価される。
+    // `!isVisibleOccurrence(...)` と書いていたので、新しい候補は 'unknown' を見送るのに
+    // （→ visibleHits）、**既にある印は 'unknown' のまま説明済みとして残っていた**
+    // （実測: 前方の段落へ後から `filter: url(#zero)` を掛けると、印は 0 画素のまま
+    // 前方に残り、Tab で止まり、後方の読める同じ語は説明されなかった）。
+    // 断定できない間はキーも停止点も持たない。節点は控えに入るので、確実に読める
+    // 状態へ戻れば、そこでまた拾う（→ AUDIT.md §7 #25）。
+    if (isVisibleOccurrence(rec.termNode.parentElement, rec.termNode, start, rec.splitOffset) !== true) return false;
     const now = resolvePlacement(rec.parent);
     if (now.kind !== rec.placementKind) return false;
     if (rec.placementKind === 'hosted') {
@@ -2771,14 +3252,11 @@
     // 所有をその場で取り消す。取り消さないと、ページが退役した領域を保持していて
     // あとから DOM へ戻したとき、その印が「自分の正規の印」のまま生き返る
     // （実測: 同じ語の、押せる印が2つ並んだ）。
-    ownedIcons.delete(rec.icon);
-    iconTrigger.delete(rec.icon);
-    expectedAttrs.delete(rec.icon);
     // 中の押せる実体も、ここで畳む（第22回 RG-22-01）。
     // ⚠️ **DOM に繋がっているかを条件にしない。** ページが外して持っていた印を
     // あとから戻すことがあり、そのとき中の button が生き返る。所有を取り消すのと
-    // 同じ場所で、同じ回数だけ畳む。
-    deactivateShadowIcon(rec.icon);
+    // 同じ場所で、同じ回数だけ畳む（→ relinquishIcon。登録前の取り消しも同じ口を通る）。
+    relinquishIcon(rec.icon);
     if (rec.icon.isConnected) {
       // その印について説明を出している最中なら、先に閉じる
       if (tip && tipIcons.includes(rec.icon)) hideTip();
@@ -2827,6 +3305,61 @@
     return scanInner(document.body);
   }
 
+  /* ---------- 5-3. 入れて測って引き取った語（第23回 RG-23-11） ---------- */
+  // 印を入れたが描かれていなかった（切り取りの外・ページの CSS で消された など）語は、
+  // **処理済みにしない**。以前は描画の確認より前に `markHandled` しており、引き取った
+  // あとも処理済みのまま控えに入れていた。控えの見直しは処理済みの節点を捨てるので、
+  // 「あとで試す控え」と「もう見ない印」が同じ節点に付いていた（実測: 幅 6ch の
+  // `overflow:hidden` の枠で語は収まるが印は枠の外。枠を 20ch に広げて 5 秒待っても印 0）。
+  //
+  // ⚠️ ただし、処理済みを外すだけでは**入れて・測って・外すを繰り返す**。控えの見直しは
+  // 400ms ごとに回るので、何も変わっていないページで印の出し入れが続き、ページ側の
+  // observer にも毎回それが届く。そこで、引き取ったときの状態を控え、**変わったときだけ**
+  // 入れ直す。見る状態は次のとおり（入れる前に測れるものだけ。印そのものは入れないと測れない）:
+  //   extSerial … ページ側の変化の合図（DOM・属性・stylesheet・画面・操作・遷移）の通し番号。
+  //               周期の見直しと、自分が出し入れした印の記録では進まない
+  //   語の矩形・祖先の切り取り・描画効果・テーマ色 … CSSOM の値だけの書き換えのように
+  //               合図の出ない変化でも、印の置き場所が変わればここが変わる
+  //   stylesheet の枚数と形の指紋 … 印を名指しする規則の追加・削除
+  // 変わっていても、ページの observer と押し合いにならないよう、入れ直しの間隔は
+  // 引き取るたびに倍にする（400ms から 30 秒まで）。入れて描かれれば記録は消す。
+  // ⚠️ 残る限界: 印を名指しする規則の**値だけ**を CSSOM で書き換えた変化（語の場所も
+  // 合図も変わらない）は、次にページ側の合図が来るまで入れ直さない。
+  const rejected = new WeakMap();        // Text → { sig, at, gap }
+  const REJECT_GAP = 400;
+  const REJECT_GAP_MAX = 30000;
+
+  function rejectSig(node) {
+    const el = node.parentElement;
+    if (!el) return '';
+    const r = document.createRange();
+    r.selectNodeContents(node);
+    const b = r.getBoundingClientRect();
+    const ch = paintChain(el, 'none');
+    const c = ch.clip;
+    const cs = getComputedStyle(el);
+    let s = extSerial + '|' + styleSerial + '|' + printVal + '|' +
+      [b.left, b.top, b.right, b.bottom].map(Math.round).join(',') + '|' +
+      (c ? [c.x1, c.y1, c.x2, c.y2].map(Math.round).join(',') : '-') + '|' +
+      (ch.hidden ? 'h' : '') + (ch.paintUnknown ? 'u' : '') + ch.tests.length + '|' + cs.color;
+    for (const v of THEME_VARS) s += '' + cs.getPropertyValue(v).trim();
+    return s;
+  }
+
+  function noteRejected(node) {
+    const prev = rejected.get(node);
+    const gap = prev ? Math.min(REJECT_GAP_MAX, prev.gap * 2) : REJECT_GAP;
+    rejected.set(node, { sig: rejectSig(node), at: performance.now(), gap });
+  }
+
+  // まだ入れ直さない（＝前に引き取ったときから何も変わっていない／間を置いている）か
+  function holdRejected(node) {
+    const r = rejected.get(node);
+    if (!r) return false;
+    if (performance.now() - r.at < r.gap) return true;
+    return rejectSig(node) === r.sig;
+  }
+
   /* ---------- 6. 注記 ---------- */
   // 1つのテキストノードに含まれる一致すべてへ注記する。
   //
@@ -2868,6 +3401,7 @@
     let cur = node;        // いま扱っている節点（用語で終わる左側になる）
     let consumed = 0;      // cur の先頭が、元の文字列の何文字目にあたるか
     let added = 0;
+    let nodeRejected = false;   // 先頭の一致を引き取った＝node を処理済みにしない
     for (const hit of hits) {
       const at = hit.end - consumed;
       // 用語が末尾ちょうどで終わるときは割らない。割ると空の節点が1つ増え、
@@ -2881,24 +3415,38 @@
       const icon = makeIcon(hit.key, hit.match, DICT[hit.key]);
       parent.insertBefore(icon, tail ?? cur.nextSibling);
       applyIconSemantics(icon, placement);                  // 入った場所を見てから決める
-      markHandled(cur);
       // ⚠️ **入れてから、その印が本当に描かれているかを測る**（第19回 RG-19-01）。
       // 語が読めても、直後に入る印だけが切り取りの外へ出ることがある（実測:
       // 負の inset で外へ広げた枠と `overflow-clip-margin` の枠で、印の5点すべてが
       // 印に当たらない＝描かれていないのに `tabIndex:0` で Tab の順路に入っていた）。
       // 場所は**予測しない**——一度「用語の直後に 1.4em」と見積もって判定へ入れたが、
       // 35°回した形の中で外れた。入れて測り、描かれていなければ引き取る。
-      // その語はこの世代では諦め、控えへ戻す（形が変われば入り直せる）。
-      if (!iconIsPainted(icon)) {
+      // 測る途中で例外になったときも、描かれていると断定できないので引き取る
+      // （登録前の印を、押せるまま置き去りにしない → relinquishIcon）。
+      let painted = false;
+      try { painted = iconIsPainted(icon); }
+      catch (e) {
+        if (!paintFailNoted) { paintFailNoted = true; console.error('[iiyaku] 印の実測に失敗。この印は付けません（以後は記録しない）:', e); }
+      }
+      if (!painted) {
         if (tip && tipIcons.includes(icon)) hideTip();
-        ownedIcons.delete(icon); iconTrigger.delete(icon); expectedAttrs.delete(icon);
+        // 先に押せなくしてから手放す（第23回 RG-23-01）。属性の予定は残し、
+        // 入れた記録は1回だけ自分の変更として受け取る（→ 見張りの expectedAdds）。
+        relinquishIcon(icon, { keepExpectations: true });
+        expectedAdds.add(icon);
         removeOwn(icon);
         if (placement.kind === 'hosted') releaseTriggerIfUnused(placement.trigger);
+        // **処理済みにしない**（第23回 RG-23-11）。割った右側は処理済みにしてあるので外す。
+        handled.delete(cur);
+        if (cur === node) nodeRejected = true;
+        noteRejected(cur);
         rememberLatent(cur);
         if (!tail) break;
         cur = tail; consumed = hit.end;
         continue;
       }
+      markHandled(cur);
+      rejected.delete(cur);
       // 実際に挿入できたものだけ、作ったものと一緒に控える。
       // termNode は用語を末尾に含む節点。片づけのとき、これを走査対象へ戻す。
       // tailNode は自分が作った右側（作らなかったときは null）。控えるのは
@@ -2914,7 +3462,7 @@
       cur = tail;
       consumed = hit.end;
     }
-    markHandled(node);
+    if (!nodeRejected) markHandled(node);
     return added;
   }
 
@@ -3073,7 +3621,12 @@
   // （isSelfMutation / isOurNode）。読まれない旗を残すと、守っているつもりの
   // 不変条件が実際には誰も見ていない、という状態になる。
 
-  function schedule({ deep = false, root = null } = {}) {
+  // ページ側の変化の合図の通し番号（第23回 RG-23-11）。周期の見直しでは進めない。
+  // 入れて測って引き取った語を、いつ入れ直してよいかの目安にする（→ holdRejected）。
+  let extSerial = 0;
+
+  function schedule({ deep = false, root = null, periodic = false } = {}) {
+    if (!periodic) extSerial++;
     if (deep) wantDeep = true;
     if (root) pendingRoots.add(root);
     if (batchScheduled) return;
@@ -3161,8 +3714,13 @@
   }
 
   const observer = new MutationObserver(muts => {
-    // 複製された「自分のふり」は、走査より前に取り除く
-    for (const mu of muts) for (const n of mu.addedNodes) sanitizeClones(n);
+    // 複製された「自分のふり」は、走査より前に取り除く。
+    // ⚠️ 入れて測って引き取った印（もう外れている）は見ない。見ると「合言葉つきの
+    // 空の複製」として `removeOwn` に掛け、外れている節点の削除予定だけが残る（第23回 RG-23-11）。
+    for (const mu of muts) for (const n of mu.addedNodes) {
+      if (expectedAdds.has(n) && !n.isConnected) continue;
+      sanitizeClones(n);
+    }
     // DOM が変わった＝見え方の状態が変わりうる（第19回 RG-19-08）
     bumpEpoch();
     dropStates();
@@ -3201,6 +3759,7 @@
       // 割ったことが原因だと切り分けられた）。
       for (const n of mu.addedNodes) {
         if (expectedSplit.has(n)) { expectedSplit.delete(n); continue; }
+        if (expectedAdds.has(n)) { expectedAdds.delete(n); continue; }   // 入れて引き取った印
         if (!isOurNode(n)) { deep = true; roots.push(n); }
       }
       // 外れた節点は「自分が外す直前に控えたか」だけで判定する。作ったのが自分でも、
@@ -3306,12 +3865,25 @@
     for (let i = 0; i < s.length; i++) h = (h * 33 ^ s.charCodeAt(i)) >>> 0;
     return h;
   }
+  // stylesheet そのものの番号（初めて見た順）。中身ではなく物の同一性だけを表す。
+  const sheetIds = new WeakMap();
+  let sheetSeq = 0;
+  function sheetSerial(sheet) {
+    let id = sheetIds.get(sheet);
+    if (id === undefined) { id = ++sheetSeq; sheetIds.set(sheet, id); }
+    return id;
+  }
   function styleFingerprint() {
     const now = performance.now();
     if (printVal !== -1 && now - printAt < PRINT_GAP) return printVal;
     let h = 2166136261, seen = 0;
-    for (const sheet of document.styleSheets) {
+    // ⚠️ **document の adoptedStyleSheets と `@import` 先も混ぜる**（第23回 RG-23-06）。
+    // adopted は差し替えても DOM に何も出ない（見張りにも styleSerial にも届かない）。
+    // 同じ形の stylesheet へ差し替えられても気づくよう、**物そのものの番号**も混ぜる。
+    const adopted = adoptedSheets();
+    for (const sheet of [...document.styleSheets, ...adopted]) {
       h = (h * 33 ^ 0x9e37) >>> 0;                       // 枚の区切り
+      if (adopted.includes(sheet)) h = (h * 33 ^ sheetSerial(sheet)) >>> 0;
       let rules;
       try { rules = sheet.cssRules; } catch (e) { h = hashStr(h, 'opaque'); continue; }
       if (!rules) continue;
@@ -3333,6 +3905,11 @@
           // 足すと、カーソルを動かしているあいだ 20% を使うことになる。
           // 値だけの書き換えは、下の「短い周期の見直し」（→ scheduleFastCheck）が拾う。
           if (r.style) h = (h * 33 ^ r.style.length) >>> 0;
+          if ('styleSheet' in r) {                           // @import の読み込み先
+            let inner = null;
+            try { inner = importRulesOf(r); } catch (e) { h = hashStr(h, 'opaque'); }
+            if (inner) stack.push(inner);
+          }
           if (r.cssRules) stack.push(r.cssRules);
         }
       }
@@ -3608,7 +4185,8 @@
       // 書き換え）を拾うためにある。世代が進まないと「同じ世代で見た」として飛ばされ、
       // その変化に永久に気づかない（実測: 2,100件の控えのある見本と、上限で
       // こぼれた候補の見本が、どちらも後から見えた語を見つけられなくなった）。
-      const run = () => { bumpEpoch(); dropStates(); schedule({ deep: true }); scheduleIdleCheck(); };
+      // 周期の見直しは「ページが変わった」合図ではない（→ extSerial）
+      const run = () => { bumpEpoch(); dropStates(); schedule({ deep: true, periodic: true }); scheduleIdleCheck(); };
       if (canIdle) requestIdleCallback(run, { timeout: IDLE_GAP });
       else run();
     }, IDLE_GAP);
@@ -3631,10 +4209,16 @@
   // ⚠️ **間隔は控えの件数に合わせて空ける。** 1回の見直しの費用は件数に比例するので、
   // 件数が増えても一定の間隔で回すと、そのぶんだけ CPU を食い続ける。実測（控え
   // 5,000件・カーソル10移動）で `checkVisibility` が 35,042 → 46,844 回になった。
-  // 1秒あたりに見る件数を頭打ちにする（＝件数が増えたら間隔を空ける）。
+  // ⚠️ **これは間隔を決める目安で、1秒あたりの件数の上限ではない**（第23回 RG-23-12）。
+  // 間隔は 2,000ms で頭打ちにするので、控えが 2,500件を超えると1秒あたりに見る件数は
+  // また増える。続き（scheduleLatentResume）と暇なときの確認は、この入口の使いすぎの門
+  // （overBudget）を通らない。実測（Chrome 155・何もしない 10 秒の `checkVisibility`）:
+  // 500件 約 1,470回／秒・2,000件 約 2,200・5,000件 約 5,000・20,000件 約 13,700。
+  // 合図の出ない変化に気づくまでの遅れは、同じ実測の最大で 0.4〜2.0 秒
+  // （docs/audit/v1.8.22-changes.md）。
   const FAST_GAP = 400;
   const FAST_GAP_MAX = 2000;          // ここまで空けたら、2秒ごとの確認と同じ
-  const FAST_RATE = 1250;             // 1秒あたりに見てよい候補数のめやす
+  const FAST_RATE = 1250;             // 間隔を決める目安（1秒あたりの件数の上限ではない）
   const fastGap = () => Math.min(FAST_GAP_MAX,
     Math.max(FAST_GAP, Math.round(latent.size / FAST_RATE * 1000)));
   let fastTimer = null;
@@ -3764,8 +4348,10 @@
       // `dispatchEvent(new MouseEvent('click'))` で押せてしまう。実測: ページ側の
       // script から `.click()` を1回呼ぶだけで表示が「解説 OFF」に変わり、
       // **別のタブを開いてもそのまま OFF だった**（＝保存まで届いていた）。
-      // ブラウザが起こした操作だけ `isTrusted` が真になる。実際のマウス操作・
-      // Enter / Space・支援技術による activation はどれも真なので、そのまま通る。
+      // ブラウザが起こした操作だけ `isTrusted` が真になる。実際のマウス操作と
+      // Enter / Space は真になり、そのまま通る（E2E で確かめた）。支援技術による
+      // activation も真になるはずだが、**実機（NVDA・VoiceOver）では未確認**
+      // （AUDIT.md §7 #1 と同じ扱い）。DOM 仕様では `.click()` は trusted にならない。
       // ⚠️ この門は**設定を変える経路だけ**に掛ける。見え方を測り直すための
       // 受け身の合図（カーソル・フォーカス・スクロール）へ広げてはいけない。
       // 合成された変化でも「見えるようになった」ことは本当に起きているため。

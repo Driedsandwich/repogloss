@@ -2363,3 +2363,24 @@ export async function focusShadowButton23(cdp, page, hostSel) {
   await cdp.send('DOM.focus', { backendNodeId: btn.backendNodeId }, page.sessionId);
 }
 
+/* 計測器（timing-probe.js）を載せ、そのうえで**試験のためだけに** content.js を書き換えた写し
+   （第23回 RG-23-13）。控えの見直しの経路を1つずつ確かめるために、ほかの周期を止める。
+   ⚠️ fast と idle は同じ 2 秒の周期で位相が揃いやすく、片方はいつも相手の一巡の途中から
+   入る。途中から入った回は残りしか見ないので、その経路の刻みを外しても大きくならず、
+   検査が当たらない（変異で確かめた）。書き換えが当たらなければ例外にする。 */
+export function stageProbePatched23(edit) {
+  const dir = stageExtensionWith({ 'timing-probe.js': 'tests/e2e/timing-probe.js' },
+    js => ['timing-probe.js', ...js]);
+  const p = join(dir, 'src', 'content.js');
+  const before = readFileSync(p, 'utf8');
+  const after = edit(before);
+  if (after === before) throw new Error('content.js の書き換えが当たらなかった');
+  writeFileSync(p, after);
+  return dir;
+}
+export const STOP_FAST23 = js => js.replace(
+  'function scheduleFastCheck() {\n    if (!observing || fastTimer !== null) return;',
+  'function scheduleFastCheck() {\n    return;   // 試験の写し: 速い周期を止める\n    if (!observing || fastTimer !== null) return;');
+export const STOP_IDLE23 = js => js.replace(
+  'function scheduleIdleCheck() {\n    if (!observing || idleTimer !== null) return;',
+  'function scheduleIdleCheck() {\n    return;   // 試験の写し: 暇なときの確認を止める\n    if (!observing || idleTimer !== null) return;');

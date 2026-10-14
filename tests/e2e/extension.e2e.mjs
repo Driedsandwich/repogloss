@@ -38,7 +38,8 @@ import { launchChrome, startTestServer, stageExtension, stageExtensionWith,
          GHOSTVAL23_PAGE, GHOSTSRC23_PAGE, GHOSTSRC23_EXTRA, GHOSTSTACK23_PAGE,
          GHOSTNEST23_PAGE, GHOSTNEST23_EXTRA, GHOSTFLAT23_PAGE, GHOSTFAULT23_PAGE, GHOSTPAINT23_PAGE,
          wordRect23, stageExtensionPatched,
-         TIPGAP23_PAGE, tipRecorder23, focusShadowButton23 } from './helpers/chrome.mjs';
+         TIPGAP23_PAGE, tipRecorder23, focusShadowButton23,
+         stageProbePatched23, STOP_FAST23, STOP_IDLE23 } from './helpers/chrome.mjs';
 
 const PAGE = 'https://github.com/octocat/Hello-World';
 
@@ -2749,12 +2750,44 @@ test('自分の署名だけで片づけ、ページの持ち物には触れな�
   await tab.close();
 });
 
+/* ===== 周期の確認に救われていないか（第23回 RG-23-13）=====
+   v1.8.21 で短い周期の確認（fast・400ms〜）が入ったので「2秒を待たずに付く」を見る
+   試験は、**イベントの経路が壊れていても速い周期に救われて通る**ことがある。変異で
+   確かめた（docs/audit/v1.8.22-changes.md）: カーソルの合図を外しても、`:hover` 系の
+   4件（RG-13-02・RG-15-07・RG-20-06・RG-21-04）と `:active`（RG-21-05）と `:target`
+   （RG-22-05）が通っていた。
+   そこで、合図を出す前に**周期の確認が当分来ない瞬間**を選び（暇なときの確認が1回
+   まわった直後の、速い周期が1回まわった直後＝次の速い周期まで 400ms 近くある）、
+   印を差し込んだ経路そのもの（計測器 timing-probe.js の rg-inserts）を見る。
+   時間で測る検査はそのまま残す（成立を待つ試験の条件は変えない）。 */
+async function probeJson23(tab, key) {
+  return JSON.parse(await tab.evaluate(`localStorage.getItem(${JSON.stringify('rg-' + key)})`) || 'null');
+}
+async function quietWindow23(tab, { fast = true } = {}) {
+  const ticks = async () => (await probeJson23(tab, 'ticks')) || {};
+  const i0 = (await ticks()).idle || 0;
+  await waitFor('暇なときの確認が1回まわる', async () => ((await ticks()).idle || 0) > i0,
+    { timeout: 8000, interval: 10 });
+  if (!fast) return;
+  await sleep(50);
+  const f0 = (await ticks()).fast || 0;
+  await waitFor('速い周期が1回まわる', async () => ((await ticks()).fast || 0) > f0,
+    { timeout: 8000, interval: 10 });
+}
+// その場所（印を入れた親のいちばん近い id）へ、最後に印を差し込んだ経路
+async function insertPath23(tab, at) {
+  const ins = ((await probeJson23(tab, 'inserts')) || []).filter(x => x.at === at);
+  return ins.length ? ins[ins.length - 1].path : null;
+}
+
 test('CSS だけで短時間ひらく場所の語も説明する', async t => {
   const srv = await startTestServer(TRANSIENT_PAGE);
   const chrome = await launchChrome({ port: srv.port });
   const { cdp } = chrome;
   t.after(async () => { chrome.kill(); await srv.close(); });
-  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  // 計測器を載せる（第23回 RG-23-13: 印を差し込んだ経路を見る）
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtensionWith({ 'timing-probe.js': 'tests/e2e/timing-probe.js' },
+      js => ['timing-probe.js', ...js]) });
   const tab = await openPage(cdp, PAGE);
   await waitFor('拡張が印を付ける', async () => await tab.evaluate(
     `document.querySelectorAll('.iiyaku-icon').length`) > 0);
@@ -2766,11 +2799,14 @@ test('CSS だけで短時間ひらく場所の語も説明する', async t => {
     assert.equal(await nKey('branch'), 0, '前提が崩れている（最初から見えている）');
     const p = await tab.evaluate(`(() => { const r = document.getElementById('host').getBoundingClientRect();
       return [Math.round(r.x + 5), Math.round(r.y + r.height / 2)]; })()`);
+    await quietWindow23(tab);
     await move(p[0], p[1]);
     await sleep(400);   // 暇なときの確認（2秒）より十分早い
     assert.equal(await tab.evaluate(`getComputedStyle(document.getElementById('menu')).display`),
       'block', '前提が崩れている（メニューが開いていない）');
     assert.equal(await nKey('branch'), 1, '開いているあいだに説明が付いていない');
+    assert.equal(await insertPath23(tab, 'menu'), 'batch',
+      'カーソルの合図ではなく、周期の確認が付けた（イベントの経路が効いていない）');
     await move(5, 5);
   });
 
@@ -2848,7 +2884,35 @@ test('控えが多くても、1回の見直しを短く保ち、上限の外も�
      * 刻みを外せば1パスで全件をさらうので、そのときだけ増える。
      */
     await tab.evaluate(`localStorage.setItem('rg-reset', '1'); true`);
-    await sleep(11000);   // 暇なときの確認を5周ぶん（1回だけ短い回を見て済まさない）
+    /*
+     * ⚠️ **経路ごとに見る**（第23回 RG-23-13）。控えの見直しは batch（ページの変化の合図）・
+     * idle（2秒ごとの確認）・fast（短い周期）・resume（区切った続き）の4経路から入る。
+     * 以前の計測器は queueMicrotask の中だけを数えていたので、fast と resume の仕事は
+     * 数えられていなかった。ここでは4経路とも走らせ、経路ごとに上限を見る。
+     * batch はページの変化の合図が要るので、`<html>` の属性を変える（世代を進めて、
+     * 走査し直す場所は増やさずに控えを見直す経路）。⚠️ `location.hash` は使わない。
+     * URL が変わるとまとめ直しは全体の走査（scan）へ切り替わり、控えの見直しを通らない。
+     */
+    for (let i = 0; i < 4; i++) {
+      await sleep(2500);
+      await tab.evaluate(`document.documentElement.setAttribute('data-rg13', '${i}'); true`);
+    }
+    await sleep(1500);    // 合わせて 11.5 秒（暇なときの確認を5周ぶん。1回だけ短い回を見て済まさない）
+    /*
+     * 経路ごと。⚠️ 経路が一度も走っていなければ、その経路の上限は当たるものが無いまま
+     * 通る（計測器が製品の書き方の変化で経路を見分けられなくなった場合も同じ顔になる）。
+     * 変異で確かめた（docs/audit/v1.8.22-changes.md）: どれか1経路の刻みだけを外すと、
+     * その経路の最大が 2万近くになり、ここで落ちる。
+     */
+    const P = JSON.parse(await probe('paths') || '{}');
+    const brief = JSON.stringify(Object.fromEntries(Object.entries(P).map(([k, v]) =>
+      [k, { passes: v.passes, max: v.max.checkVisibility, total: v.total.checkVisibility }])));
+    for (const k of ['batch', 'idle', 'fast', 'resume']) {
+      assert.ok(P[k] && P[k].passes > 0, `${k} の経路が一度も走っていない（その経路の上限は素通りする）: ${brief}`);
+      assert.ok(P[k].max.checkVisibility > 0, `${k} の経路の仕事が 0＝数えられていない: ${brief}`);
+      assert.ok(P[k].max.checkVisibility < 10000,
+        `${k} の経路の1回の見直しが刻まれていない: ${P[k].max.checkVisibility} 件（20,000 候補中）: ${brief}`);
+    }
     const w = JSON.parse(await probe('work') || '{}');
     const cv = w.checkVisibility || [];
     const ms = JSON.parse(await probe('times') || '[]');
@@ -3018,7 +3082,9 @@ test('カーソルが素早く移っても、取りこぼさない（第15回）
   const chrome = await launchChrome({ port: srv.port });
   const { cdp } = chrome;
   t.after(async () => { chrome.kill(); await srv.close(); });
-  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  // 計測器を載せる（第23回 RG-23-13: 印を差し込んだ経路を見る）
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtensionWith({ 'timing-probe.js': 'tests/e2e/timing-probe.js' },
+      js => ['timing-probe.js', ...js]) });
   const tab = await openPage(cdp, PAGE);
   await waitFor('拡張が印を付ける', async () => await tab.evaluate(
     `document.querySelectorAll('.iiyaku-icon').length`) > 0);
@@ -3029,6 +3095,7 @@ test('カーソルが素早く移っても、取りこぼさない（第15回）
 
   await t.test('RG-15-07 150ms 以内に別の場所へ移っても、そちらに説明が付く', async () => {
     const p1 = await at('h1'), p2 = await at('h2');
+    await quietWindow23(tab);
     await move(p1[0], p1[1]);
     await sleep(60);                 // 間引きの窓の内側で移る
     await move(p2[0], p2[1]);
@@ -3036,6 +3103,8 @@ test('カーソルが素早く移っても、取りこぼさない（第15回）
     assert.equal(await tab.evaluate(
       `document.querySelectorAll('.iiyaku-icon[data-iiyaku-key="rebase"]').length`), 1,
       '窓の内側で来た合図を捨てている（暇なときの確認まで付かない）');
+    assert.equal(await insertPath23(tab, 'h2'), 'batch',
+      '窓の内側で来た合図ではなく、周期の確認が付けた（合図を捨てている）');
     await move(5, 5);
   });
 
@@ -3847,7 +3916,9 @@ test('CSSOM で足した hover 規則を拾う（第20回 RG-20-06）', async t 
   const srv = await startTestServer(CSSOM20_PAGE);
   const chrome = await launchChrome({ port: srv.port });
   t.after(async () => { chrome.kill(); await srv.close(); });
-  await chrome.cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  // 計測器を載せる（第23回 RG-23-13: 印を差し込んだ経路を見る）
+  await chrome.cdp.send('Extensions.loadUnpacked', { path: stageExtensionWith({ 'timing-probe.js': 'tests/e2e/timing-probe.js' },
+      js => ['timing-probe.js', ...js]) });
   const tab = await openPage(chrome.cdp, PAGE);
   await waitFor('走査が終わる', async () => await tab.evaluate(`document.readyState === 'complete'`));
   await sleep(2500);
@@ -3863,6 +3934,7 @@ test('CSSOM で足した hover 規則を拾う（第20回 RG-20-06）', async t 
   await tab.evaluate(`(() => { const s = document.getElementById('s20');
     s.sheet.insertRule('#host20:hover #menu20{display:inline}', s.sheet.cssRules.length); return true; })()`);
   await sleep(200);
+  await quietWindow23(tab);
   await moveMouse(chrome, tab, box[0], box[1]); await sleep(80);
   await moveMouse(chrome, tab, box[0] + 1, box[1] + 1);
   await sleep(700);
@@ -3873,6 +3945,8 @@ test('CSSOM で足した hover 規則を拾う（第20回 RG-20-06）', async t 
   await t.test('2秒ごとの確認を待たずに説明が付く', async () => {
     assert.equal(await tab.evaluate(`document.querySelectorAll('#menu20 [data-iiyaku-key]').length`), 1,
       'insertRule で足した hover 規則に気づいていない');
+    assert.equal(await insertPath23(tab, 'menu20'), 'batch',
+      'カーソルの合図ではなく、周期の確認が付けた（足した hover 規則に気づいていない）');
   });
 
   await tab.close();
@@ -3987,7 +4061,8 @@ test('祖先が最前面に出ることを、露出の証拠にしない（第21
 });
 
 test('CSSOM の書き換えに気づく（第21回 RG-21-04）', async t => {
-  const { chrome, tab } = await openWith(t, CSSOM21_PAGE);
+  // 計測器を載せる（第23回 RG-23-13: 印を差し込んだ経路を見る）
+  const { chrome, tab } = await openWith(t, CSSOM21_PAGE, { probe: true });
   // ⚠️ ページ全体で数えると `#own21` の語が混ざって差が見えない。中だけを数える
   const n = () => tab.evaluate(`document.querySelectorAll('#host21 .iiyaku-icon').length`);
 
@@ -4007,10 +4082,13 @@ test('CSSOM の書き換えに気づく（第21回 RG-21-04）', async t => {
   });
 
   await t.test('RG-21-04 同数のまま足された hover 規則を、2秒を待たずに拾う', async () => {
+    await quietWindow23(tab);
     await moveMouse(chrome, tab, 100, 30);
     await sleep(320);
     assert.ok(await n() > before,
       `2秒ごとの確認まで待たされている（前 ${before} / 320ms 後 ${await n()}）`);
+    assert.equal(await insertPath23(tab, 'menu21'), 'batch',
+      'カーソルの合図ではなく、周期の確認が付けた（書き換えた hover 規則に気づいていない）');
   });
 
   await t.test('RG-21-04 自前 style の宣言を書き換えられたら、入れ直す', async () => {
@@ -4054,9 +4132,11 @@ test('`:active` の合図も拾う（第21回 RG-21-05）', async t => {
 
   const hov = await rect('hov21');
   await t.test('【対照】:hover は拾える（物差しが動いている）', async () => {
+    await quietWindow23(tab);
     await moveMouse(chrome, tab, hov.x, hov.y);
     await sleep(320);
     assert.equal(await nIn('#hov21'), 1);
+    assert.equal(await insertPath23(tab, 'hmenu21'), 'batch', 'カーソルの合図ではなく、周期の確認が付けた');
   });
 
   const act = await rect('act21');
@@ -4102,6 +4182,10 @@ test('`:active` の合図も拾う（第21回 RG-21-05）', async t => {
       ob.observe(host, { childList: true, subtree: true });
       return true;
     })()`);
+    // ⚠️ 遅い周期の回数だけでは、速い周期（400ms）が先に見つけた場合と区別できない
+    //    （第23回 RG-23-13。押した合図を外す変異でも、ここは通っていた）。
+    //    周期の確認が当分来ない瞬間に押し、印を差し込んだ経路そのものも見る。
+    await quietWindow23(tab);
     const before = await slowTicks();
     await chrome.cdp.send('Input.dispatchMouseEvent',
       { type: 'mousePressed', x: act.x, y: act.y, button: 'left', buttons: 1, clickCount: 1 }, tab.sessionId);
@@ -4136,6 +4220,8 @@ test('`:active` の合図も拾う（第21回 RG-21-05）', async t => {
     assert.ok(atAppear - before <= tickSlack,
       `暇なときの確認を待って付いた＝速い経路が効いていない`
       + `（周回 ${before} → ${atAppear}・許容 ${tickSlack}・絞り ${CPU_THROTTLE || 1}x）`);
+    assert.equal(await insertPath23(tab, 'amenu21'), 'batch',
+      '押した合図ではなく、周期の確認（速い周期を含む）が付けた＝`:active` の合図が効いていない');
   });
 
   await tab.close();
@@ -4335,10 +4421,30 @@ test('ページ由来の変数で、押せる実体が 0 画素にならない�
     assert.ok(px && px.nonwhite > 0, `後から透明にされて 0 画素: ${JSON.stringify(px)}`);
   });
 
+  /*
+   * ⚠️ 下の forced-colors の検査は、以前は印の矩形の寸法と AX の button の有無しか見ておらず、
+   *    **画素を測っていなかった**（第23回 RG-23-13。コメントは「色の差を見る」と言っていた）。
+   *    いまは印の中ほどを拡大して撮り、色が2つ以上に分かれている（"i" と地が別の色）ことを測る。
+   *    その物差しが「字と地が同じ色」を本当に捕まえることを、先に通常の配色で確かめる——
+   *    実 Tab で止まった印は、第23回 RG-23-02 の直す前の styles.css では字も地も白になり、
+   *    ここで落ちる（直す前の版で確かめた: docs/audit/v1.8.22-changes.md）。
+   */
+  await t.test('【物差し】通常の配色で実 Tab で止まった印は、"i" と地が別の色に描かれる', async () => {
+    const hit = await tabUntil(cdp, tab, `el.closest && el.closest('#h-plain')`);
+    assert.ok(hit, '前提: Tab で #h-plain の印に止まれない');
+    await sleep(400);
+    const r = await rectOf23(tab, '#h-plain .iiyaku-icon');
+    const ink = await inkAt(cdp, tab, innerRect(r));
+    assert.ok(ink.colors >= 2 && ink.spread >= 60, `フォーカス中の印で "i" と地が同じ色: ${JSON.stringify(ink)}`);
+    await tab.evaluate(`document.activeElement && document.activeElement.blur(); true`);
+  });
+
   await t.test('高コントラスト（forced-colors）でも塗られている', async () => {
     await cdp.send('Emulation.setEmulatedMedia',
       { features: [{ name: 'forced-colors', value: 'active' }] }, tab.sessionId);
     await sleep(600);
+    assert.equal(await tab.evaluate(`matchMedia('(forced-colors: active)').matches`), true,
+      '前提: forced-colors の模擬が効いていない');
     // 高コントラストでは地が白とは限らないので、**印の中に色の差があるか**で見る
     const varied = await tab.evaluate(`(() => {
       const i = document.querySelector('#h-var .iiyaku-icon');
@@ -4347,6 +4453,16 @@ test('ページ由来の変数で、押せる実体が 0 画素にならない�
     assert.ok(varied, '高コントラストで印の箱が消えた');
     assert.equal((await glossButtons(cdp, tab)).length > 0, true,
       '高コントラストで解説 button が消えた');
+    const r = await rectOf23(tab, '#h-var .iiyaku-icon');
+    const still = await inkAt(cdp, tab, innerRect(r), { ref: 255 });
+    assert.ok(still.colors >= 2, `高コントラストで、印の "i" と地が同じ色: ${JSON.stringify(still)}`);
+    // 実 Tab で止まった状態も同じ物差しで見る
+    const hit = await tabUntil(cdp, tab, `el.closest && el.closest('#h-var')`);
+    assert.ok(hit, '前提: Tab で #h-var の印に止まれない');
+    await sleep(400);
+    const focused = await inkAt(cdp, tab, innerRect(r), { ref: 255 });
+    assert.ok(focused.colors >= 2, `高コントラストのフォーカス中に、"i" と地が同じ色: ${JSON.stringify(focused)}`);
+    await tab.evaluate(`document.activeElement && document.activeElement.blur(); true`);
     await cdp.send('Emulation.setEmulatedMedia', { features: [] }, tab.sessionId);
   });
 
@@ -4409,7 +4525,9 @@ test('宣言だけの書き換えにも気づく（第22回 RG-22-04）', async 
   const chrome = await launchChrome({ port: srv.port });
   const { cdp } = chrome;
   t.after(async () => { chrome.kill(); await srv.close(); });
-  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  // 計測器を載せる（第23回 RG-23-13: 印を差し込んだ経路を見る）
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtensionWith({ 'timing-probe.js': 'tests/e2e/timing-probe.js' },
+      js => ['timing-probe.js', ...js]) });
   const tab = await openPage(cdp, PAGE);
   await waitFor('拡張が動き出す', async () =>
     await tab.evaluate(`document.querySelectorAll('.iiyaku-toggle').length`));
@@ -4422,6 +4540,9 @@ test('宣言だけの書き換えにも気づく（第22回 RG-22-04）', async 
   });
 
   await t.test('選択子も規則の数も変えずに display を変えると、600ms 以内に付く', async () => {
+    // ⚠️ 2秒ごとの確認が 600ms の窓に入ると、速い周期が壊れていても通る（第23回 RG-23-13）。
+    //    暇なときの確認が1回まわった直後に書き換え、速い周期が付けたことを経路で見る。
+    await quietWindow23(tab, { fast: false });
     const changed = await tab.evaluate(`(() => {
       for (const s of document.styleSheets) {
         try { for (const r of s.cssRules) if (r.selectorText === '#menu22') {
@@ -4433,6 +4554,7 @@ test('宣言だけの書き換えにも気づく（第22回 RG-22-04）', async 
       'inline', '見本の意図どおりに変わっていない');
     await sleep(600);
     assert.equal(await n(), 1, '2秒ごとの確認まで待たないと説明されない');
+    assert.equal(await insertPath23(tab, 'menu22'), 'fast', '速い周期ではない経路が付けた');
   });
 
   await tab.close();
@@ -4443,7 +4565,9 @@ test('画面内の移動と、入力のやり方の変化も拾う（第22回 RG
   const chrome = await launchChrome({ port: srv.port });
   const { cdp } = chrome;
   t.after(async () => { chrome.kill(); await srv.close(); });
-  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  // 計測器を載せる（第23回 RG-23-13: 印を差し込んだ経路を見る）
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtensionWith({ 'timing-probe.js': 'tests/e2e/timing-probe.js' },
+      js => ['timing-probe.js', ...js]) });
   const tab = await openPage(cdp, PAGE);
   await waitFor('拡張が動き出す', async () =>
     await tab.evaluate(`document.querySelectorAll('.iiyaku-toggle').length`));
@@ -4452,12 +4576,15 @@ test('画面内の移動と、入力のやり方の変化も拾う（第22回 RG
   await t.test('`:target` で開いたら、600ms 以内に付く', async () => {
     assert.equal(await tab.evaluate(`document.querySelectorAll('#menu22 .iiyaku-icon').length`), 0,
       '前提が崩れている（隠れていない）');
+    await quietWindow23(tab);
     await tab.evaluate(`(() => { location.hash = '#menu22'; return true; })()`);
     await sleep(600);
     assert.equal(await tab.evaluate(`getComputedStyle(document.getElementById('menu22')).display`),
       'inline', '見本の意図どおりに開いていない');
     assert.equal(await tab.evaluate(`document.querySelectorAll('#menu22 .iiyaku-icon').length`), 1,
       '`:target` の変化が合図になっていない');
+    assert.equal(await insertPath23(tab, 'menu22'), 'batch',
+      '`:target` の合図ではなく、周期の確認（速い周期を含む）が付けた');
   });
 
   await t.test('同じ相手のまま `:focus-visible` へ変わったら、600ms 以内に付く', async () => {
@@ -4474,12 +4601,15 @@ test('画面内の移動と、入力のやり方の変化も拾う（第22回 RG
     assert.equal(await tab.evaluate(`document.querySelectorAll('#fmenu22 .iiyaku-icon').length`), 0);
 
     // フォーカスの相手は変えず、入力のやり方だけをキーボードへ変える
+    await quietWindow23(tab);
     await pressKey(cdp, tab.sessionId, 'ArrowDown');
     await sleep(600);
     assert.equal(await tab.evaluate(`document.getElementById('tgt22').matches(':focus-visible')`),
       true, '見本の意図どおりに :focus-visible にならない');
     assert.equal(await tab.evaluate(`document.querySelectorAll('#fmenu22 .iiyaku-icon').length`), 1,
       '入力のやり方の変化が合図になっていない');
+    assert.equal(await insertPath23(tab, 'fmenu22'), 'batch',
+      'キーの合図ではなく、周期の確認（速い周期を含む）が付けた');
   });
 
   await tab.close();
@@ -4521,11 +4651,52 @@ test('恒久の設定は、利用者が押したときだけ変わる（第22回
     await other.close();
   });
 
+  /*
+   * ⚠️ 上の3件は、直前の `.click()` の状態を引き継いでいる（v1.8.21 の依頼文でも自己申告）。
+   *    門が無い版では `.click()` が ON → OFF、合成 MouseEvent が OFF → ON と打ち消し合い、
+   *    2件目と3件目は通ってしまう（第23回 RG-23-13。門を外す変異で確かめた）。
+   *    ここでは操作ごとに、ON と OFF のそれぞれを**本物のマウス操作で**初期状態にしてから
+   *    1回だけ押させ、表示と保存（別のタブ）を見る。
+   */
+  const ON = ['解説 ON', 'true'], OFF = ['解説 OFF', 'false'];
+  const otherTabState = async () => {
+    const other = await openPage(cdp, PAGE);
+    await waitFor('別のタブで拡張が動き出す', async () =>
+      await other.evaluate(`!!document.querySelector('.iiyaku-toggle')`));
+    const v = await other.evaluate(`(() => { const b = document.querySelector('.iiyaku-toggle');
+      return [b.textContent, b.getAttribute('aria-pressed')]; })()`);
+    await other.close();
+    return v;
+  };
+  const setState = async want => {
+    if (JSON.stringify(await state()) !== JSON.stringify(want)) { await clickToggle(cdp, tab); await sleep(700); }
+    assert.deepEqual(await state(), want, '前提: 本物の click で初期状態にできない');
+    assert.deepEqual(await otherTabState(), want, '前提: 初期状態が保存されていない（別のタブで違う）');
+  };
+  const SYNTH = [
+    ['`.click()`', `document.querySelector('.iiyaku-toggle').click()`],
+    ['合成した MouseEvent', `document.querySelector('.iiyaku-toggle')
+      .dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))`]
+  ];
+  for (const [opName, expr] of SYNTH) {
+    for (const [initName, init] of [['ON', ON], ['OFF', OFF]]) {
+      await t.test(`${initName} から始めて、ページの ${opName} では表示も保存も変わらない`, async () => {
+        await setState(init);
+        await tab.evaluate(`(() => { ${expr}; return true; })()`);
+        await sleep(700);
+        assert.deepEqual(await state(), init, `ページの ${opName} で表示が変わった`);
+        assert.deepEqual(await otherTabState(), init, `ページの ${opName} が保存まで届いた（別のタブで変わっている）`);
+      });
+    }
+  }
+
   await t.test('【対照】本物のマウス操作では変わる', async () => {
+    await setState(ON);
     await clickToggle(cdp, tab);
     await sleep(700);
     assert.deepEqual(await state(), ['解説 OFF', 'false'],
       '本物の click でも変わらない＝門が広すぎる');
+    assert.deepEqual(await otherTabState(), OFF, '本物の click が保存まで届いていない');
     await clickToggle(cdp, tab);
     await sleep(700);
     assert.deepEqual(await state(), ['解説 ON', 'true']);
@@ -5564,4 +5735,67 @@ test('Escape で閉じた吹き出しは、同じ印へフォーカスが戻っ�
   });
 
   await tab.close();
+});
+
+test('第23回 RG-23-13: 経路ごとに、一巡の頭から入った見直しも刻まれている', async t => {
+  /*
+   * 「控えが多くても、1回の見直しを短く保ち…」は出荷するままの製品で4経路を走らせて見る。
+   * ただし fast と idle は同じ 2 秒の周期で位相が揃いやすく、**片方はいつも相手の一巡の
+   * 途中から入る**。途中から入った回は残りしか見ないので、その経路の刻みを外しても
+   * 1回が 2万近くにならず、検査が当たらない（変異で確かめた: idle の刻みだけを外した版が、
+   * 出荷するままの見本の検査を通った。別に測ると、idle の5回のうち一巡の頭から入った
+   * 1回だけが 20,002 件で、残り4回は 4,034〜5,426 件だった）。
+   * ここでは、試験のためだけにもう一方の周期を止めた写しで、その経路が**一巡の頭から**
+   * 入ったことを計測器で確かめてから、上限を見る。
+   */
+  const variants = [
+    { label: '速い周期を止めた写しで、暇なときの確認（idle）が刻まれている', edit: STOP_FAST23,
+      paths: ['idle', 'resume'] },
+    { label: '暇なときの確認を止めた写しで、速い周期（fast）とページの変化の合図（batch）が刻まれている',
+      edit: STOP_IDLE23, paths: ['fast', 'batch', 'resume'] }
+  ];
+  for (const v of variants) {
+    await t.test(v.label, async () => {
+      const srv = await startTestServer(latentPage(19999));
+      const chrome = await launchChrome({ port: srv.port });
+      try {
+        await chrome.cdp.send('Extensions.loadUnpacked', { path: stageProbePatched23(v.edit) });
+        const tab = await openPage(chrome.cdp, PAGE);
+        const probe = k => probeJson23(tab, k);
+        await waitFor('拡張が印を付ける', async () => await tab.evaluate(
+          `document.querySelectorAll('.iiyaku-icon[data-iiyaku-key="commit"]').length`) === 1, { timeout: 90000 });
+        await sleep(1500);
+        await tab.evaluate(`localStorage.setItem('rg-reset', '1'); true`);
+        await sleep(100);
+        if (v.paths.includes('batch')) {
+          // 速い周期の一巡が終わった頃（周期の 500ms 後）に合図を出し、batch も一巡の頭から入れる
+          for (let i = 0; i < 3; i++) {
+            const f0 = ((await probe('ticks')) || {}).fast || 0;
+            await waitFor('速い周期が1回まわる', async () => (((await probe('ticks')) || {}).fast || 0) > f0,
+              { timeout: 8000, interval: 20 });
+            await sleep(500);
+            await tab.evaluate(`document.documentElement.setAttribute('data-rg13', '${i}'); true`);
+          }
+          await sleep(1500);
+        } else {
+          await sleep(7000);   // 暇なときの確認を3周ぶん
+        }
+        const P = await probe('paths');
+        assert.ok(P, '計測器が経路を公表していない');
+        const brief = JSON.stringify(Object.fromEntries(Object.entries(P).map(([k, x]) =>
+          [k, { passes: x.passes, fresh: x.freshPasses, max: x.max.checkVisibility, freshMax: x.freshMax }])));
+        for (const k of v.paths) {
+          assert.ok(P[k].passes > 0, `${k} の経路が一度も走っていない: ${brief}`);
+          if (k !== 'resume') {
+            assert.ok(P[k].freshPasses > 0,
+              `${k} の経路が一巡の頭から一度も入っていない（刻みを外しても捕まらない）: ${brief}`);
+          }
+          assert.ok(P[k].max.checkVisibility > 0, `${k} の経路の仕事が 0＝数えられていない: ${brief}`);
+          assert.ok(P[k].max.checkVisibility < 10000,
+            `${k} の経路の1回の見直しが刻まれていない: ${P[k].max.checkVisibility} 件（20,000 候補中）: ${brief}`);
+        }
+        await tab.close();
+      } finally { chrome.kill(); await srv.close(); }
+    });
+  }
 });

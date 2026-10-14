@@ -57,7 +57,11 @@
   const inserts = [];
   // 入口の予約が何回走ったか（仕事の有無によらない）。試験が「周期の確認が当分来ない
   // 瞬間」を選ぶのに使う（直後の 1 回の予約は、次の間隔だけ先になる）。
-  const ticks = { fast: 0, idle: 0, resume: 0 };
+  // idlePending: 暇なときの確認のタイマーが鳴ったあと、中身（requestIdleCallback で走る
+  // 見直し）がまだ走っていない間だけ真。タイマーの回数（idle）は鳴った時点で増えるので、
+  // それだけを待つと、混んだ機械では中身が試験の窓に重なる（main の CI で実際に
+  // 「速い周期ではない経路（idle）が付けた」で落ちた）。試験は、これが偽になるまで待つ。
+  const ticks = { fast: 0, idle: 0, resume: 0, idleRun: 0, idlePending: false };
   const pendingResume = new Set();   // 予約されてまだ走っていない resume の timer ID
   // 製品の予約する関数の最初の文で、入口の経路を見分ける
   const classify = fn => {
@@ -155,7 +159,13 @@
     const origIdle = requestIdleCallback;
     requestIdleCallback = (fn, opts) => {
       const path = current;
-      return origIdle(dl => (path ? runAs(path, fn, [dl], false) : fn(dl)), opts);
+      if (path === 'idle') { ticks.idlePending = true; publish(); }
+      return origIdle(dl => {
+        try { return path ? runAs(path, fn, [dl], false) : fn(dl); }
+        finally {
+          if (path === 'idle') { ticks.idleRun++; ticks.idlePending = false; publish(); }
+        }
+      }, opts);
     };
   }
 

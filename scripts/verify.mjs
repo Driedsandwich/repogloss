@@ -707,14 +707,44 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     /const SHADOW_FG = '--rg-fg';/.test(code) &&
     /--rg-fg/.test(css22) && /--rg-bg/.test(css22),
     'ページが `--fgColor-accent: transparent` を置くと、印が 0 画素になる');
+  // ⚠️ 第23回 RG-23-03 で、透明の判定を `rgba(…, 0)` の正規表現から、alpha を読む関数へ替えた。
   check('押せる実体の塗りを、実測してから決めている（第22回 RG-22-02）',
     /btn\.style\.removeProperty\(SHADOW_FG\);/.test(code) &&
-    /if \(!TRANSPARENT\.test\(getComputedStyle\(btn\)\.color\)\) return;/.test(code),
+    /const fgOk = isInkColor\(fg\);/.test(code) &&
+    /if \(fgOk && groundOk\) return;/.test(code),
     '塗れているのに上書きすると、テーマ追従が失われる');
   check('印の実測が、押せる実体のほうも見ている（第22回 RG-22-02）',
     /const target = focusTargetOf\(icon\);/.test(code) &&
-    /TRANSPARENT\.test\(ts\.color\) && TRANSPARENT\.test\(ts\.borderTopColor\) &&/.test(code),
+    /\[ts\.color, ts\.borderTopColor, ts\.backgroundColor\]\.some\(isInkColor\)/.test(code),
     'host だけ見ても、shadow の中が 0 画素かは分からない');
+  // RG-23-03 透明の判定は alpha を読む。読めない形を「塗れている」と断定しない
+  check('透明の判定が、計算済みの色の alpha を読んでいる（第23回 RG-23-03）',
+    /function colorAlpha\(c\)/.test(code) &&
+    /const isInkColor = c => \{ const a = colorAlpha\(c\); return a !== null && a > 0; \};/.test(code) &&
+    !/\bTRANSPARENT\b/.test(code),
+    '`color(srgb 0 0 0 / 0)` や `oklch(… / 0)` を「透明でない」と読み、0 画素の印が残る');
+  check('塗り直しの鍵に、button が実際に読む変数を入れている（第23回 RG-23-03）',
+    /const SHADOW_VARS = \[SHADOW_FG, SHADOW_BG\];/.test(code) &&
+    /for \(const v of SHADOW_VARS\) seen \+=/.test(code),
+    '祖先へ後から `--rg-fg: transparent` を置かれても、鍵が変わらず塗り直しを飛ばす');
+  // RG-23-02 hover / focus で、字と地を別の名前で持つ（currentColor を地に使わない）
+  {
+    const shadowCss = (/\/\* ===== RG_SHADOW_BEGIN =====[\s\S]*?\/\* ===== RG_SHADOW_END ===== \*\//.exec(css22) || [''])[0];
+    const shadowRules = shadowCss.replace(/\/\*[\s\S]*?\*\//g, '');
+    check('shadow の中で、hover / focus の地と字を別の色にしている（第23回 RG-23-02）',
+      // ふだんの枠の `currentColor`（＝印の色）は正しい。見るのは地と outline だけ
+      shadowRules.length > 0 && !/background-color:\s*currentColor/i.test(shadowRules) &&
+      !/outline:[^;]*currentColor/i.test(shadowRules) &&
+      /button:hover,\s*\nbutton:focus-visible \{[^}]*background-color: var\(--rg-ink\);[^}]*color: var\(--rg-ground\);/.test(shadowRules) &&
+      /button:focus-visible \{[^}]*outline: 2px solid var\(--rg-ink\);/.test(shadowRules),
+      'currentColor は「いまの color」なので、地も字も outline も同じ色になり、白地に白で消える');
+    check('shadow の中にも、動きを減らす設定を効かせている（第23回 RG-23-02）',
+      /@media \(prefers-reduced-motion: reduce\) \{\s*button \{\s*transition: none;/.test(shadowRules),
+      'light DOM 側の媒体規則は shadow の中まで届かない');
+    check('shadow のある印は、hover でも light DOM の host が地を描かない（第23回 RG-23-02）',
+      /:not\(\[data-iiyaku-for\]\):not\(\[role\]\):hover,\s*\n[^{]*:not\(\[data-iiyaku-for\]\):not\(\[role\]\):focus-visible \{\s*background-color: transparent;/.test(css22),
+      'host が印の色の円を描き、中の button の絵と重なる');
+  }
   // ⚠️ v1.8.20 は light DOM 側の絵をそのまま残していたので、輪が二重になり
   //    "i" が箱の外へはみ出していた（v1.8.21 で実測・撮影して直した）
   check('shadow のある印は、light DOM 側で絵を描かない（v1.8.21）',
@@ -732,8 +762,9 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     /function ghostCovers/.test(code) && /function ghostBlocks/.test(code) &&
     /&& !ghostBlocks\(icon, x, y\)\) exposed\+\+;/.test(code),
     '`pointer-events: none` の不透明な覆いで 0 画素になった印が、正規のまま残る');
+  // ⚠️ 覆いの側の透明の判定は、第23回 RG-23-03 では据え置いた（`GHOST_CLEAR`）。
   check('覆いは、断定できるものだけ数えている（第22回 RG-22-03）',
-    /if \(TRANSPARENT\.test\(cs\.backgroundColor\)\) continue;/.test(code) &&
+    /if \(GHOST_CLEAR\.test\(cs\.backgroundColor\)\) continue;/.test(code) &&
     /if \(cs\.position === 'static'\) continue;/.test(code) &&
     /if \(!opaqueChain\(el\)\) continue;/.test(code),
     '透明な覆い・重なり順の分からない箱まで覆いと数え、読める語が説明されなくなる');
@@ -829,6 +860,11 @@ check('content.js が inert の中も走査対象から外している', /'\[ine
     /if \(reachable\(b, chain\) !== true\) return false;/.test(code) &&
     /for \(const t of chain\.tests\) if \(t\(b\) !== true\) return false;/.test(code),
     "文字列 'unknown' は真なので、断定できない印がキーと停止点を持ったまま残る");
+  // RG-23-09 見た目の見分けに使う属性を、記録と突き合わせる
+  check('data-iiyaku-for を、配置の記録と突き合わせている（第23回 RG-23-09）',
+    /\} else if \(rec\.icon\.hasAttribute\('data-iiyaku-for'\)\) \{/.test(code) &&
+    /rec\.icon\.getAttribute\('data-iiyaku-for'\) !== forId\) return false;/.test(code),
+    '単独の印へ足すだけで二重の輪と2つ目の "i" が戻り、装飾の印から消すと描かれなくなる');
   // RG-23-11 入れて測って引き取った語を、処理済みにしない（ただし出し入れを繰り返さない）
   check('挿入を見送った語を、処理済みのまま残していない（第23回 RG-23-11）',
     /if \(!painted\) \{[\s\S]{0,900}?handled\.delete\(cur\);/.test(code) &&

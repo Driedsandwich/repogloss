@@ -1937,6 +1937,26 @@ export function innerRect(r, k = 0.6) {
   return { x: r.x + r.w * (1 - k) / 2, y: r.y + r.h * (1 - k) / 2, w: r.w * k, h: r.h * k };
 }
 
+/* closed shadow root の中の button で、関数を評価する（`pierce` した DOM から引く）。
+   製品側に検査用の入口を足さないため、ページの世界からは覗かない。 */
+export async function shadowButtonEval(cdp, tab, hostSel, fnDecl) {
+  await cdp.send('DOM.enable', {}, tab.sessionId);
+  const { root } = await cdp.send('DOM.getDocument', { depth: -1, pierce: true }, tab.sessionId);
+  const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: hostSel }, tab.sessionId);
+  if (!nodeId) return { error: 'no-host' };
+  const { node } = await cdp.send('DOM.describeNode', { nodeId, depth: -1, pierce: true }, tab.sessionId);
+  const sr = (node.shadowRoots || [])[0];
+  if (!sr) return { error: 'no-shadow' };
+  let btn = null;
+  const walk = n => { if (!btn && n.localName === 'button') btn = n; (n.children || []).forEach(walk); };
+  walk(sr);
+  if (!btn) return { error: 'no-button' };
+  const { object } = await cdp.send('DOM.resolveNode', { backendNodeId: btn.backendNodeId }, tab.sessionId);
+  const { result } = await cdp.send('Runtime.callFunctionOn',
+    { objectId: object.objectId, returnByValue: true, functionDeclaration: fnDecl }, tab.sessionId);
+  return result.value;
+}
+
 const BASE23 = 'html,body{background:#fff;color:#000;margin:0;font:16px/1.6 monospace}';
 
 /* RG-23-01。挿入した印を描かれていないとして引き取り、ページの observer がそれを
@@ -1980,6 +2000,42 @@ export const HOSTLOOK23_PAGE = `<!doctype html><html lang="en"><head><meta chars
   <button id="after">after</button>
 </body></html>`;
 
+/* RG-23-02。ライトの配色（白地・黒字）で、実 Tab・hover・reduced-motion を見る。 */
+export const FOCUS23_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>focus23</title><style>html,body{margin:0;background:white;color:black;font:16px Arial}
+ p{margin:40px}</style></head><body>
+  <button id="before">start</button>
+  <p id="first">A branch here.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* 同じものをダークの配色で（GitHub のダークと同じ変数を置く）。 */
+export const FOCUS23_DARK_PAGE = `<!doctype html><html lang="en" data-color-mode="dark"><head><meta charset="utf-8">
+<title>focus23dark</title><style>:root{color-scheme:dark;--fgColor-accent:#4493f8;--bgColor-default:#0d1117}
+ html,body{margin:0;background:#0d1117;color:#e6edf3;font:16px Arial}
+ p{margin:40px}</style></head><body>
+  <button id="before">start</button>
+  <p id="first">A branch here.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-23-03。`rgba(..., 0)` 以外の透明の書き方。対照に第22回の `transparent` と、
+   不透明な `color()`（塗り直してはいけない＝テーマに従う）を置く。 */
+export const COLOR23_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>color23</title><style>${BASE23}
+ #c-fn{--fgColor-accent:color(srgb 0 0 0 / 0);--color-accent-fg:color(srgb 0 0 0 / 0)}
+ #c-ok{--fgColor-accent:oklch(0.6 0.15 250 / 0);--color-accent-fg:oklch(0.6 0.15 250 / 0)}
+ #c-tr{--fgColor-accent:transparent;--color-accent-fg:transparent}
+ #c-red{--fgColor-accent:color(srgb 1 0 0);--color-accent-fg:color(srgb 1 0 0)}</style></head><body>
+  <button id="before">before</button>
+  <div id="c-fn"><p>A branch fn.</p></div><p id="l-fn">A branch fn later.</p>
+  <div id="c-ok"><p>A commit ok.</p></div><p id="l-ok">A commit ok later.</p>
+  <div id="c-tr"><p>A merge tr.</p></div><p id="l-tr">A merge tr later.</p>
+  <div id="c-red"><p>A fetch red.</p></div><p id="l-red">A fetch red later.</p>
+  <div id="late"><p id="m1">A rebase late.</p></div><p id="m2">A rebase late later.</p>
+  <button id="after">after</button>
+</body></html>`;
+
 /* RG-23-04。既にある印の場所が、あとから「断定できない」状態（解けない filter）になる。
    対照: 最初から filter の語（新しい候補は見送る）。印だけに filter を掛ける枝も置く。 */
 export const UNKNOWN23_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
@@ -1994,6 +2050,17 @@ export const UNKNOWN23_PAGE = `<!doctype html><html lang="en"><head><meta charse
   <p id="c2">A commit second.</p>
   <p id="p1">A merge first.</p>
   <p id="p2">A merge second.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-23-09。見た目の見分けに使う `data-iiyaku-for` を、ページが足す・消す・書き換える。 */
+export const FORATTR23_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>forattr23</title><style>${BASE23}</style></head><body>
+  <button id="before">before</button>
+  <p id="first">A branch first.</p>
+  <p><a href="#x" id="lnk">A commit link</a></p>
+  <p><a href="#y" id="lnk2">A merge link</a></p>
+  <p><a href="#z" id="lnk3">A fetch link</a></p>
   <button id="after">after</button>
 </body></html>`;
 

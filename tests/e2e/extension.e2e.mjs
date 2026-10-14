@@ -32,8 +32,9 @@ import { launchChrome, startTestServer, stageExtension, stageExtensionWith,
          HOST_SEL, hostInfo, glossButtons, shadowShape, countTabStops, clickToggle,
          RETIRE22_PAGE, VARS22_PAGE, COVER22_PAGE, CSSOM22_PAGE, TARGET22_PAGE,
          TRUST22_PAGE, iconPixels, pixelsAt, putGhostCover, CPU_THROTTLE,
-         inkAt, innerRect,
-         REJECT23_PAGE, HOSTLOOK23_PAGE, UNKNOWN23_PAGE, WIDEN23_PAGE } from './helpers/chrome.mjs';
+         inkAt, innerRect, shadowButtonEval,
+         REJECT23_PAGE, HOSTLOOK23_PAGE, FOCUS23_PAGE, FOCUS23_DARK_PAGE, COLOR23_PAGE,
+         UNKNOWN23_PAGE, FORATTR23_PAGE, WIDEN23_PAGE } from './helpers/chrome.mjs';
 
 const PAGE = 'https://github.com/octocat/Hello-World';
 
@@ -4598,6 +4599,11 @@ test('単独の印の絵は、shadow の中だけが描く（v1.8.21）', async 
 const rectOf23 = (tab, sel) => tab.evaluate(`(() => { const e = document.querySelector(${JSON.stringify(sel)});
   if (!e) return null; const b = e.getBoundingClientRect(); return { x: b.x, y: b.y, w: b.width, h: b.height }; })()`);
 const count23 = (tab, sel) => tab.evaluate(`document.querySelectorAll(${JSON.stringify(sel)}).length`);
+const mouse23 = (cdp, tab, x, y) => cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y }, tab.sessionId);
+// 印の輪（outline-offset 2px・幅 2px）が通る、印の**上側**の帯。左は本文、右は次の文字、
+// 下は吹き出しが来るので、何も描かれない上側だけを見る。
+const ringBand23 = r => ({ x: r.x, y: r.y - 5, w: r.w, h: 4 });
+
 test('第23回 RG-23-01: 挿入を取り消した印の中の button も失効させる', async t => {
   const srv = await startTestServer(REJECT23_PAGE);
   const chrome = await launchChrome({ port: srv.port });
@@ -4675,6 +4681,167 @@ test('第23回 RG-23-01: 使い回された host に、拡張の見た目を残�
   await tab.close();
 });
 
+/* 「描かれている」を白でない画素の数だけで見ない（第23回 RG-23-02）。
+   印の中ほどで **"i" と地が別の色（2色以上・輝度差 60 以上）**であることを見る。
+   フォーカスの輪は、印の上側の帯に地から離れた色が出るかで見る。 */
+async function focusLookChecks23(t, cdp, tab, { ref, label }) {
+  const sel = '#first .iiyaku-icon';
+  const rect = await rectOf23(tab, sel);
+  assert.ok(rect, '印が無い');
+
+  await t.test(`【対照】${label}: ふつうの状態でも "i" と地が別の色`, async () => {
+    const ink = await inkAt(cdp, tab, innerRect(rect), { ref });
+    assert.ok(ink.colors >= 2 && ink.spread >= 60, `ふつうの状態で "i" が見えない: ${JSON.stringify(ink)}`);
+    const band = await inkAt(cdp, tab, ringBand23(rect), { ref });
+    assert.equal(band.far, 0, `フォーカスしていないのに輪が出ている: ${JSON.stringify(band)}`);
+  });
+
+  await t.test(`${label}: 実 Tab で止まると、"i" と地が別の色で描かれ、輪が見える`, async () => {
+    await tab.evaluate(`document.getElementById('before').focus(); true`);
+    await pressKey(cdp, tab.sessionId, 'Tab');
+    await sleep(400);
+    assert.equal(await tab.evaluate(`document.activeElement === document.querySelector(${JSON.stringify(sel)})`),
+      true, '前提が崩れている（印に止まっていない）');
+    const ink = await inkAt(cdp, tab, innerRect(rect), { ref });
+    assert.ok(ink.colors >= 2 && ink.spread >= 60, `フォーカス中に "i" と地が同じ色: ${JSON.stringify(ink)}`);
+    const band = await inkAt(cdp, tab, ringBand23(rect), { ref });
+    assert.ok(band.far > 0, `フォーカスの輪が地に溶けている: ${JSON.stringify(band)}`);
+  });
+
+  await t.test(`${label}: マウスを載せても "i" と地が別の色で、light DOM の host は地を描かない`, async () => {
+    await tab.evaluate(`document.activeElement && document.activeElement.blur(); true`);
+    await mouse23(cdp, tab, 5, 5);
+    await sleep(200);
+    await mouse23(cdp, tab, rect.x + rect.w / 2, rect.y + rect.h / 2);
+    await sleep(400);
+    const ink = await inkAt(cdp, tab, innerRect(rect), { ref });
+    assert.ok(ink.colors >= 2 && ink.spread >= 60, `hover で "i" と地が同じ色: ${JSON.stringify(ink)}`);
+    assert.equal(await tab.evaluate(`getComputedStyle(document.querySelector(${JSON.stringify(sel)})).backgroundColor`),
+      'rgba(0, 0, 0, 0)', 'shadow のある印なのに、light DOM の host が hover の地を描いている');
+    await mouse23(cdp, tab, 5, 5);
+    await sleep(300);
+  });
+}
+
+test('第23回 RG-23-02: 実 Tab と hover で、印とフォーカスが見える（ライト）', async t => {
+  const srv = await startTestServer(FOCUS23_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  await waitFor('印が付く', async () => await count23(tab, '#first .iiyaku-icon'));
+  await sleep(600);
+
+  await focusLookChecks23(t, cdp, tab, { ref: 255, label: 'ライト' });
+
+  await t.test('動きを減らす設定では、shadow の中の button も遷移しない', async () => {
+    await cdp.send('Emulation.setEmulatedMedia',
+      { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] }, tab.sessionId);
+    await sleep(300);
+    assert.equal(await tab.evaluate(`matchMedia('(prefers-reduced-motion: reduce)').matches`), true,
+      '前提が崩れている（媒体の模擬が効いていない）');
+    const d = await shadowButtonEval(cdp, tab, '#first .iiyaku-icon',
+      `function () { return getComputedStyle(this).transitionDuration; }`);
+    assert.ok(typeof d === 'string' && d.split(',').every(x => parseFloat(x) === 0),
+      `reduced-motion でも中の button が遷移する: ${JSON.stringify(d)}`);
+    await cdp.send('Emulation.setEmulatedMedia', { features: [] }, tab.sessionId);
+  });
+
+  // forced-colors では、ブラウザが字・地・枠・outline を system color へ置き換えるので、
+  // 直す前の版でも "i" は見えていた（実測）。落とさないための対照として置く。
+  await t.test('【対照】高コントラスト（forced-colors）でも、実 Tab で止まった印の "i" が見える', async () => {
+    await cdp.send('Emulation.setEmulatedMedia',
+      { features: [{ name: 'forced-colors', value: 'active' }] }, tab.sessionId);
+    await sleep(400);
+    const rect = await rectOf23(tab, '#first .iiyaku-icon');
+    await tab.evaluate(`document.getElementById('before').focus(); true`);
+    await pressKey(cdp, tab.sessionId, 'Tab');
+    await sleep(400);
+    const ink = await inkAt(cdp, tab, innerRect(rect));
+    assert.ok(ink.colors >= 2 && ink.spread >= 60, `forced-colors のフォーカス中に "i" が見えない: ${JSON.stringify(ink)}`);
+    await tab.evaluate(`document.activeElement && document.activeElement.blur(); true`);
+    await cdp.send('Emulation.setEmulatedMedia', { features: [] }, tab.sessionId);
+  });
+
+  await tab.close();
+});
+
+test('第23回 RG-23-02: 実 Tab と hover で、印とフォーカスが見える（ダーク）', async t => {
+  const srv = await startTestServer(FOCUS23_DARK_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  await waitFor('印が付く', async () => await count23(tab, '#first .iiyaku-icon'));
+  await sleep(600);
+  // 地 #0d1117 の輝度（0.2126R + 0.7152G + 0.0722B）
+  await focusLookChecks23(t, cdp, tab, { ref: 16, label: 'ダーク' });
+  await tab.close();
+});
+
+test('第23回 RG-23-03: rgba 以外の書き方の透明でも、印は塗られる', async t => {
+  const srv = await startTestServer(COLOR23_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  await waitFor('印が付く', async () => await count23(tab, '.iiyaku-icon'));
+  await sleep(800);
+
+  const painted = async sel => {
+    const r = await rectOf23(tab, sel);
+    if (!r) return { error: 'no-icon' };
+    return await inkAt(cdp, tab, innerRect(r));
+  };
+  const ok = ink => ink && ink.colors >= 2 && ink.spread >= 60;
+
+  await t.test('`color(srgb 0 0 0 / 0)` を置かれても、印は塗られている', async () => {
+    const ink = await painted('#c-fn .iiyaku-icon');
+    assert.ok(ok(ink), `0 画素の印が残っている: ${JSON.stringify(ink)}`);
+  });
+
+  await t.test('`oklch(… / 0)` を置かれても、印は塗られている', async () => {
+    const ink = await painted('#c-ok .iiyaku-icon');
+    assert.ok(ok(ink), `0 画素の印が残っている: ${JSON.stringify(ink)}`);
+  });
+
+  await t.test('【対照】`transparent`（第22回の形）も塗られている', async () => {
+    const ink = await painted('#c-tr .iiyaku-icon');
+    assert.ok(ok(ink), `対照が塗られていない＝測り方が壊れている: ${JSON.stringify(ink)}`);
+  });
+
+  await t.test('【対照】不透明な `color()` は塗り直さない（ページのテーマに従う）', async () => {
+    const v = await shadowButtonEval(cdp, tab, '#c-red .iiyaku-icon',
+      `function () { return [this.style.getPropertyValue('--rg-fg'), getComputedStyle(this).color]; }`);
+    assert.deepEqual(v, ['', 'color(srgb 1 0 0)'], '不透明な色を「透明」と読み違えて上書きした');
+  });
+
+  await t.test('どれも前方に付いたまま（説明を捨てていない）', async () => {
+    assert.deepEqual(await tab.evaluate(`['c-fn','l-fn','c-ok','l-ok','c-tr','l-tr','c-red','l-red']
+      .map(id => document.getElementById(id).querySelectorAll('.iiyaku-icon').length)`),
+      [1, 0, 1, 0, 1, 0, 1, 0]);
+  });
+
+  // ⚠️ 塗り直しの鍵に、button が実際に読む `--rg-fg` / `--rg-bg` が入っていること。
+  //    入っていないと、祖先へ置かれた `--rg-fg: transparent` に気づかず塗り直しを飛ばす。
+  //    拡張全体では、そのあと「塗れていない」として退役→作り直しになり見た目は救われるが、
+  //    それは偶然の救済で、鍵の欠けは残る。**同じ印のまま**塗り直せることを見る。
+  await t.test('祖先へ後から `--rg-fg: transparent` を置かれても、同じ印のまま塗り直す', async () => {
+    await tab.evaluate(`window.__old = document.querySelector('#m1 .iiyaku-icon'); true`);
+    await tab.evaluate(`document.getElementById('late').style.setProperty('--rg-fg', 'transparent'); true`);
+    await sleep(1200);
+    assert.equal(await tab.evaluate(`window.__old === document.querySelector('#m1 .iiyaku-icon')`), true,
+      '鍵が変わらず塗り直しを飛ばし、作り直しで救われている');
+    const ink = await painted('#m1 .iiyaku-icon');
+    assert.ok(ok(ink), `0 画素になった: ${JSON.stringify(ink)}`);
+  });
+
+  await tab.close();
+});
+
 test('第23回 RG-23-04: 断定できなくなった印は、キーも停止点も手放す', async t => {
   const srv = await startTestServer(UNKNOWN23_PAGE);
   const chrome = await launchChrome({ port: srv.port });
@@ -4716,6 +4883,60 @@ test('第23回 RG-23-04: 断定できなくなった印は、キーも停止点�
     assert.equal(ax.length, 1, `解説 button の数: ${JSON.stringify(ax)}`);
     const [a, b] = await pair('first', 'second');
     assert.equal(a + b, 1, `同じ語の印が ${a + b} 個ある`);
+  });
+
+  await tab.close();
+});
+
+test('第23回 RG-23-09: data-iiyaku-for の足し引きで、二重の輪も描画の消失も残さない', async t => {
+  const srv = await startTestServer(FORATTR23_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  await waitFor('印が付く', async () => await count23(tab, '#first .iiyaku-icon') &&
+    await count23(tab, '#lnk3 .iiyaku-icon'));
+  await sleep(600);
+
+  const look = sel => tab.evaluate(`(() => { const h = document.querySelector(${JSON.stringify(sel)});
+    if (!h) return null;
+    const a = h.closest('a');
+    return { border: getComputedStyle(h).borderTopWidth, after: getComputedStyle(h, '::after').content,
+             forAttr: h.getAttribute('data-iiyaku-for'),
+             entrance: a ? a.getAttribute('data-iiyaku-entrance') : null }; })()`);
+
+  await t.test('単独の印へ足されても、light DOM の輪と "i" は戻らない', async () => {
+    await tab.evaluate(`document.querySelector('#first .iiyaku-icon').setAttribute('data-iiyaku-for', 'page'); true`);
+    await sleep(1200);
+    const v = await look('#first .iiyaku-icon');
+    assert.ok(v, '印が無くなった');
+    assert.deepEqual([v.border, v.after, v.forAttr], ['0px', 'none', null],
+      `二重の輪と2つ目の "i" が戻っている: ${JSON.stringify(v)}`);
+    const ax = (await glossButtons(cdp, tab)).filter(b => b.name.includes('branch'));
+    assert.equal(ax.length, 1, `解説 button の数: ${JSON.stringify(ax)}`);
+  });
+
+  await t.test('装飾の印から消されると、記録どおりの印に付け直す（描画が消えたまま残さない）', async () => {
+    await tab.evaluate(`document.querySelector('#lnk .iiyaku-icon').removeAttribute('data-iiyaku-for'); true`);
+    await sleep(1200);
+    const v = await look('#lnk .iiyaku-icon');
+    assert.ok(v && v.entrance, `印か入口が無い: ${JSON.stringify(v)}`);
+    assert.equal(v.forAttr, v.entrance, `名札が記録と食い違ったまま: ${JSON.stringify(v)}`);
+    assert.equal(v.after, '"i"', `装飾の印が描かれていない: ${JSON.stringify(v)}`);
+  });
+
+  await t.test('装飾の印の値を書き換えられると、記録どおりの印に付け直す', async () => {
+    await tab.evaluate(`document.querySelector('#lnk2 .iiyaku-icon').setAttribute('data-iiyaku-for', 'page-x'); true`);
+    await sleep(1200);
+    const v = await look('#lnk2 .iiyaku-icon');
+    assert.ok(v && v.entrance, `印か入口が無い: ${JSON.stringify(v)}`);
+    assert.equal(v.forAttr, v.entrance, `名札が記録と食い違ったまま: ${JSON.stringify(v)}`);
+  });
+
+  await t.test('【対照】触っていない装飾の印は、同じ要素・同じ名札のまま', async () => {
+    const v = await look('#lnk3 .iiyaku-icon');
+    assert.ok(v && v.entrance && v.forAttr === v.entrance && v.after === '"i"', JSON.stringify(v));
   });
 
   await tab.close();

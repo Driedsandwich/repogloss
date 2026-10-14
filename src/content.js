@@ -653,7 +653,49 @@
     });
   }
 
-  const TRANSPARENT = /^rgba\([^)]*,\s*0(\.0+)?\)$/;
+  // 計算済みの色の alpha（0〜1）。**読めない形は null**（第23回 RG-23-03）。
+  //
+  // ⚠️ 以前は「透明か」を `/^rgba\([^)]*,\s*0(\.0+)?\)$/` だけで見ていた。Chrome は
+  // `color(srgb 0 0 0 / 0)`・`oklch(… / 0)`・`lab(… / 0)` などを**その形のまま**計算済みの
+  // 値として返すので、どれも「透明でない」と答えていた（実測: ページが
+  // `--fgColor-accent: color(srgb 0 0 0 / 0)` を置くと、印は 0 画素のまま前方に残った。
+  // 対照の `transparent` は塗り直されて 108 画素）。
+  // 末尾の alpha を読む。`/` があればその後ろ、カンマ区切りなら4つ目、どちらも無ければ 1。
+  // 読めない形（`calc()` の残り・未知の関数・`currentcolor`）は **null** にして、
+  // 透明とも不透明とも断定しない——どちらへ倒すかは使う側が決める。
+  const COLOR_FN = /^(rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\((.*)\)$/;
+  const ALPHA_NUM = /^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?$/;
+  function colorAlpha(c) {
+    if (typeof c !== 'string') return null;
+    const s = c.trim().toLowerCase();
+    if (s === 'transparent') return 0;
+    const m = COLOR_FN.exec(s);
+    if (!m) return null;
+    const body = m[2];
+    let a;
+    const slash = body.lastIndexOf('/');
+    if (slash !== -1) a = body.slice(slash + 1).trim();
+    else if (body.includes(',')) {
+      const parts = body.split(',');
+      if (parts.length === 3) return 1;
+      if (parts.length !== 4) return null;
+      a = parts[3].trim();
+    } else return 1;                                     // 空白区切りで alpha を書かない形
+    if (a === 'none') return 0;                          // 描くときは 0 として扱われる
+    const pct = a.endsWith('%');
+    const n = pct ? a.slice(0, -1) : a;
+    if (!ALPHA_NUM.test(n)) return null;
+    const v = parseFloat(n) / (pct ? 100 : 1);
+    return Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : null;
+  }
+  // 確実に透明か（読めない形は「透明」と断定しない＝従来どおり描かれる側）
+  const isClearColor = c => colorAlpha(c) === 0;
+  // 確実に塗るか（読めない形は「塗る」と断定しない＝印の実測では不合格の側）
+  const isInkColor = c => { const a = colorAlpha(c); return a !== null && a > 0; };
+  // ⚠️ **覆いの判定だけは、まだ旧来の形で見る**（第23回 RG-23-03 の範囲外）。
+  // 覆いの側は「alpha が 1 のときだけ覆い」へ直す別の是正（RG-23-10）があり、
+  // ここで判定を替えると、その結果まで変わってしまう。関数を分けて、覆いの答えは据え置く。
+  const GHOST_CLEAR = /^rgba\([^)]*,\s*0(\.0+)?\)$/;
 
   // 文字そのものが透明なら読めない（第15回 RG-15-05。実測: `color: transparent` の
   // 語に印が付き、後ろの読める同じ語が説明されなかった）。
@@ -673,7 +715,7 @@
     if (!v || v === 'none') return false;
     for (const layer of splitTopLevel(v)) {
       const color = (layer.match(/rgba?\([^)]*\)/) || [])[0];
-      if (color && TRANSPARENT.test(color)) continue;          // 透明な影は描かない
+      if (color && isClearColor(color)) continue;          // 透明な影は描かない
       const lens = (layer.replace(/rgba?\([^)]*\)/g, '').match(/-?[0-9.]+px/g) || []).map(parseFloat);
       if (lens.length < 2) return true;                        // 読めない＝描かれる側へ倒す
       const [dx, dy] = lens;
@@ -726,7 +768,7 @@
     const clipList = splitTopLevel(clipAll0).map(x => x.trim());
     // `background-color` はいちばん下に敷かれ、**最後の層の clip** で抜かれる。
     // そこが `text` で色が不透明なら、文字は全面が塗られる。
-    if (clipList[clipList.length - 1] === 'text' && !TRANSPARENT.test(cs.backgroundColor || '')) return true;
+    if (clipList[clipList.length - 1] === 'text' && !isClearColor(cs.backgroundColor || '')) return true;
     const img = cs.backgroundImage;
     if (!img || img === 'none') return false;
     const layers = splitTopLevel(img).map(x => x.trim());
@@ -784,11 +826,11 @@
   function textPaintsAt(cs, el, rect) {
     const fill = cs.webkitTextFillColor && cs.webkitTextFillColor !== 'currentcolor'
       ? cs.webkitTextFillColor : cs.color;
-    if (!TRANSPARENT.test(fill || '')) return true;
+    if (!isClearColor(fill || '')) return true;
     // ① 縁取り。幅と色の**両方**がそろって初めて描かれる
     const sw = parseFloat(cs.webkitTextStrokeWidth || '0');
     const sc = cs.webkitTextStrokeColor || '';
-    if (sw > 0 && !TRANSPARENT.test(sc)) return true;
+    if (sw > 0 && !isClearColor(sc)) return true;
     // ② 影。色と**ずらし量**を見る
     if (shadowPaintsAt(cs.textShadow, rect)) return true;
     // ③ 背景を文字型に抜く指定。塗りが語の位置に届くかを見る。
@@ -809,7 +851,7 @@
     if (!v || v === 'none') return false;
     const colors = v.match(/rgba?\([^)]*\)/g);
     if (!colors || colors.length === 0) return true;      // 色の指定が読めない
-    return colors.some(c => !TRANSPARENT.test(c));
+    return colors.some(c => !isClearColor(c));
   }
 
   // `filter` の並びは**前から順に**適用され、後段の `url()` は前段の出力とは別の
@@ -1493,7 +1535,7 @@
       const cs = getComputedStyle(el);
       if (cs.pointerEvents !== 'none') continue;
       if (cs.position === 'static') continue;                 // 重なり順を推し量れない
-      if (TRANSPARENT.test(cs.backgroundColor)) continue;     // 地が透明＝断定しない
+      if (GHOST_CLEAR.test(cs.backgroundColor)) continue;     // 地が透明＝断定しない
       const z = cs.zIndex === 'auto' ? 0 : (parseInt(cs.zIndex, 10) || 0);
       if (z < 0) continue;                                    // 後ろに敷いてある
       const r = el.getBoundingClientRect();
@@ -1555,9 +1597,10 @@
       if (parseFloat(ts.opacity) === 0) return false;
       const tb = target.getBoundingClientRect();
       if (!(tb.width > 0 && tb.height > 0)) return false;
-      // 字・枠・地のどれか1つでも塗れていればよい（丸い枠だけでも印として見える）
-      if (TRANSPARENT.test(ts.color) && TRANSPARENT.test(ts.borderTopColor) &&
-          TRANSPARENT.test(ts.backgroundColor)) return false;
+      // 字・枠・地のどれか1つでも塗れていればよい（丸い枠だけでも印として見える）。
+      // ⚠️ 「塗れている」は **alpha を読めて 0 より大きい**ときだけ（第23回 RG-23-03）。
+      // 読めない形を「塗れている」と断定しない。
+      if (![ts.color, ts.borderTopColor, ts.backgroundColor].some(isInkColor)) return false;
     }
     // ⑥ 覆われていないか。**画面の中にある点だけ**で見る（画面外は覆いの話ではなく
     // 到達性の話で、そこは④で見ている）。画面内の点が1つも無ければ判定しない。
@@ -2328,6 +2371,8 @@
   const shadowPaintSeen = new WeakMap();       // host → 直近に見たページ側の値
   const THEME_VARS = ['--fgColor-accent', '--color-accent-fg',
                       '--bgColor-default', '--color-canvas-default'];
+  // button の塗りが読む変数。**ページも祖先に置ける**（custom property は継承する）。
+  const SHADOW_VARS = [SHADOW_FG, SHADOW_BG];
 
   function ensureShadowPaint(host) {
     const btn = iconButton.get(host);
@@ -2335,19 +2380,35 @@
     const hs = getComputedStyle(host);
     // ページ側の値が変わっていなければ測り直さない（測るたびに style を外して
     // 付け直すので、無条件に毎回やると描き直しを誘う）。
+    // ⚠️ **鍵には、button の塗りが実際に読む値を全部入れる**（第23回 RG-23-03）。
+    // `--rg-fg` / `--rg-bg` が入っていなかったので、正常な印の祖先へページが後から
+    // `--rg-fg: transparent` を置いても鍵が変わらず、塗り直しを飛ばしていた
+    // （部品の実測で 0 画素。拡張全体では退役→作り直しが偶然救っていた）。
     let seen = hs.color;
     for (const v of THEME_VARS) seen += '' + hs.getPropertyValue(v).trim();
+    for (const v of SHADOW_VARS) seen += '' + hs.getPropertyValue(v).trim();
     if (shadowPaintSeen.get(host) === seen) return;
     shadowPaintSeen.set(host, seen);
     // いったん上書きを外し、**ページのテーマ色で塗れるか**を測る
     btn.style.removeProperty(SHADOW_FG);
     btn.style.removeProperty(SHADOW_BG);
-    if (!TRANSPARENT.test(getComputedStyle(btn).color)) return;   // 塗れている
-    // 塗れない。ページの本文の色を借りる——その色は、語そのものが読める場所では
-    // 必ず地と対比している。本文の色も透明なら、環境の既定色（forced-colors でも
-    // 生きている system color）へ落とす。
-    const ink = TRANSPARENT.test(hs.color) ? 'CanvasText' : hs.color;
-    btn.style.setProperty(SHADOW_FG, ink);
+    const bs = getComputedStyle(btn);
+    // 印の色（ふだんの字と枠・hover/focus の地）と、hover/focus の "i" の色。
+    // 後者は hover/focus でしか使われないので、styles.css が `text-decoration-color` へ
+    // 同じ値を写してある（線は引かないので見た目には出ない）。
+    // ⚠️ 「塗れている」は alpha を読めて 0 より大きいときだけ。`color(srgb 0 0 0 / 0)` の
+    // ような形を「不透明」と断定しない（第23回 RG-23-03）。
+    // ⚠️ "i" の色が印の色と同じだと、hover / focus で "i" が地に溶ける（第23回 RG-23-02）。
+    const fg = bs.color, ground = bs.textDecorationColor;
+    const fgOk = isInkColor(fg);
+    const groundOk = isInkColor(ground) && ground !== fg;
+    if (fgOk && groundOk) return;                       // 塗れている
+    if (!fgOk) {
+      // 塗れない。ページの本文の色を借りる——その色は、語そのものが読める場所では
+      // 必ず地と対比している。本文の色も透明なら、環境の既定色（forced-colors でも
+      // 生きている system color）へ落とす。
+      btn.style.setProperty(SHADOW_FG, isInkColor(hs.color) ? hs.color : 'CanvasText');
+    }
     btn.style.setProperty(SHADOW_BG, 'Canvas');
   }
 
@@ -2680,10 +2741,23 @@
     // 自分が作る印は**必ず空**。ページが中へ書き込んだものを、自分の UI として
     // 抱えたままにしない（実測: 印の中へ入れた文字がそのまま残った）。
     if (rec.icon.firstChild) return false;
+    // ⚠️ **見た目の見分けに使う属性も、記録と突き合わせる**（第23回 RG-23-09）。
+    // styles.css は「`data-iiyaku-for` も `role` も無い＝shadow の中で描く印」と見分けて、
+    // light DOM の枠と "i" を消している。ここで `role` だけを見て `data-iiyaku-for` を
+    // 見ていなかったので、単独の印へページが `data-iiyaku-for` を足すだけで、light DOM の
+    // 輪と "i" が戻り、中の button の輪と重なっていた（実測: host の枠 0px→1px・
+    // `::after` none→"i"・button は 14.34px→7.92×12.34px に縮んだ）。
+    // 装飾扱いの印は逆に、`data-iiyaku-for` が消えると light DOM でも描かれなくなる
+    // （shadow も持たない）ので、**値まで**記録した入口と一致することを見る。
     if (rec.placementKind === 'hosted') {
       // 装飾扱い。読み上げに出さず、Tab の順路にも入れない
       if (rec.icon.getAttribute('aria-hidden') !== 'true') return false;
       if (rec.icon.hasAttribute('role') || rec.icon.hasAttribute('tabindex')) return false;
+      const forId = rec.trigger && triggerIdOf.get(rec.trigger);
+      if (!forId || rec.icon.getAttribute('data-iiyaku-for') !== forId) return false;
+    } else if (rec.icon.hasAttribute('data-iiyaku-for')) {
+      // 単独の印（shadow あり／無し）は、装飾扱いの名札を持たない
+      return false;
     } else if (iconButton.has(rec.icon)) {
       // 単独の印。意味づけは closed shadow root の中の button が持ち、
       // light DOM の host は**単独では Tab の停止点にならない**（第21回 RG-21-06）。

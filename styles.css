@@ -109,6 +109,16 @@
   content: none;
 }
 
+/* ⚠️ **hover でも、light DOM の host は地を描かない**（第23回 RG-23-02）。
+   上の hover / focus-visible の規則は host にも当たる（shadow の中を指していれば host も
+   `:hover` になる）。そのため host が印の色の円を描き、中の button の絵と重なって
+   外縁だけが残っていた（実測: host の地は rgb(37,99,235)、中は白地に白）。
+   単独の印の絵は、hover でも focus でも中の button が全部描く。 */
+.iiyaku-icon[data-iiyaku-owner]:not([data-iiyaku-for]):not([role]):hover,
+.iiyaku-icon[data-iiyaku-owner]:not([data-iiyaku-for]):not([role]):focus-visible {
+  background-color: transparent;
+}
+
 /* OFF のときに印を隠す規則は、ここには書かない（v1.8.15）。
    以前は `<html>` へ `iiyaku-off` という class を付けていたが、**ページが同じ名前の
    class を持っていると起動時に消していた**（第16回 RG-16-06。実測: ページの
@@ -268,6 +278,16 @@
 }
 
 button {
+  /* 印の色（ふだんの字と枠・hover/focus の地）と、地の色（hover/focus の字）。
+     ⚠️ **2つを別の名前で持つ**（第23回 RG-23-02）。以前は hover / focus で
+     `background-color: currentColor` と `color: <地の色>` を同じ button に書いていた。
+     `currentColor` は「変える前の印の色」ではなく**その要素のいまの `color`** なので、
+     地も字も枠も outline も全部「地の色」になり、ライトの配色では白地に白で消えていた
+     （実測: 実 Tab で止まると印の白でない画素が 104 → 0。button の字・地・枠・outline が
+     すべて rgb(255,255,255)）。`--rg-fg` / `--rg-bg` は `content.js` が塗れないときだけ
+     この button のインラインへ書く（→ ensureShadowPaint）。 */
+  --rg-ink: var(--rg-fg, var(--fgColor-accent, var(--color-accent-fg, #2563eb)));
+  --rg-ground: var(--rg-bg, var(--bgColor-default, var(--color-canvas-default, #ffffff)));
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -288,11 +308,14 @@ button {
      Tab では止まっていた）。`content.js` が実際の塗りを測り、塗れないときだけ
      `--rg-fg` をこの button のインラインへ書く（closed shadow root の中なので
      ページからは触れない）。塗れているあいだは書かないので、テーマ追従は変わらない。 */
-  color: var(--rg-fg, var(--fgColor-accent, var(--color-accent-fg, #2563eb)));
+  color: var(--rg-ink);
   /* 字の大きさは host から継いだものをそのまま使う（`.78em` を掛け直さない）。 */
   font: 700 1em/1 Georgia, "Times New Roman", "Liberation Serif", "Hiragino Mincho ProN", serif;
   font-style: normal;
   text-decoration: none;
+  /* 線は引かない（↑）ので見た目には出ない。hover / focus でしか使わない「地の色」を、
+     ふだんの状態でも `content.js` が測れるように写しておく（→ ensureShadowPaint）。 */
+  text-decoration-color: var(--rg-ground);
   cursor: help;
   user-select: none;
   opacity: 0.8;
@@ -308,17 +331,37 @@ button::after {
   font-family: Georgia, "Times New Roman", "Liberation Serif", "Hiragino Mincho ProN", serif;
 }
 
+/* hover / focus では反転する。地＝印の色、"i"＝地の色。`currentColor` は使わない（↑）。 */
 button:hover,
 button:focus-visible {
   opacity: 1;
-  background-color: currentColor;
-  color: var(--rg-bg, var(--bgColor-default, var(--color-canvas-default, #ffffff)));
+  background-color: var(--rg-ink);
+  border-color: var(--rg-ink);
+  color: var(--rg-ground);
 }
 
-/* キーボードで止まったことが分かるようにする。マウス操作では出さない。 */
+/* キーボードで止まったことが分かるようにする。マウス操作では出さない。
+   輪の色も印の色で固定する（`currentColor` だと反転後の "i" の色＝地の色になる）。 */
 button:focus-visible {
-  outline: 2px solid currentColor;
+  outline: 2px solid var(--rg-ink);
   outline-offset: 2px;
+}
+
+/* GitHub の変数が取れない場合の受け皿（light DOM 側の同じ規則と合わせる）。 */
+@media (prefers-color-scheme: dark) {
+  button {
+    --rg-ink: var(--rg-fg, var(--fgColor-accent, var(--color-accent-fg, #60a5fa)));
+    --rg-ground: var(--rg-bg, var(--bgColor-default, var(--color-canvas-default, #0d1117)));
+  }
+}
+
+/* 動きを減らす設定にしている人には、装飾のための変化を出さない（第23回 RG-23-02）。
+   ⚠️ light DOM 側の同じ規則は shadow の中まで届かない。ここにも置く
+   （実測: reduced-motion でも中の button の `transition-duration` が 0.15s のままだった）。 */
+@media (prefers-reduced-motion: reduce) {
+  button {
+    transition: none;
+  }
 }
 
 /* 説明文は読み上げ用。shadow の外の ID を指せないので、同じ中に置く。 */

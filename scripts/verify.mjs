@@ -31,7 +31,7 @@ const manifest = readJson('manifest.json');
 // 増やすときは、ここと文書と審査の申告を同時に直す、と決めておく
 const ALLOWED_TOP_KEYS = [
   'manifest_version', 'name', 'version', 'description', 'minimum_chrome_version',
-  'permissions', 'action', 'icons', 'content_scripts', 'web_accessible_resources'
+  'permissions', 'action', 'icons', 'content_scripts'
 ];
 // 動作に必要な最低の Chrome。Element.checkVisibility が入った版。
 // これが無い環境では、祖先の opacity と content-visibility を見抜けず、
@@ -39,11 +39,11 @@ const ALLOWED_TOP_KEYS = [
 const MIN_CHROME = '105';
 const ALLOWED_PERMISSIONS = ['storage'];
 const ALLOWED_MATCHES = ['https://github.com/*'];
-const ALLOWED_JS = ['src/matcher.js', 'src/content.js'];
+// 辞書と見た目は JS の写しとして先に読み込む（公開前点検。web_accessible_resources をやめた）
+const ALLOWED_JS = ['src/dict.js', 'src/styles.js', 'src/matcher.js', 'src/content.js'];
 // 見た目は走り出しに読み込む（第19回 RG-19-06）。静的な `content_scripts.css` には
 // 読み込みごとに変わる合言葉を書けないため、CSS はここに1つも入れない。
 const ALLOWED_CSS = undefined;
-const ALLOWED_WAR_RESOURCES = ['locales/dict.json', 'styles.css'];
 
 check('manifest: Manifest V3', manifest.manifest_version === 3, `manifest_version=${manifest.manifest_version}`);
 check('manifest: version が x.y.z', /^\d+\.\d+\.\d+$/.test(manifest.version), `version=${manifest.version}`);
@@ -63,24 +63,25 @@ check('manifest: content_scripts はちょうど1つ', (manifest.content_scripts
   `件数=${(manifest.content_scripts ?? []).length}`);
 const cs = manifest.content_scripts?.[0] ?? {};
 check('manifest: content_scripts の対象は https の github.com だけ', eq(cs.matches, ALLOWED_MATCHES), `matches=${JSON.stringify(cs.matches)}`);
-check('manifest: 読み込む JS が想定どおり（matcher.js が先）', eq(cs.js, ALLOWED_JS), `js=${JSON.stringify(cs.js)}`);
+check('manifest: 読み込む JS が想定どおり（辞書・見た目・matcher.js が先）', eq(cs.js, ALLOWED_JS), `js=${JSON.stringify(cs.js)}`);
 check('manifest: 読み込む CSS が想定どおり', eq(cs.css, ALLOWED_CSS), `css=${JSON.stringify(cs.css)}`);
 check('manifest: content_scripts に想定外の設定が無い',
   Object.keys(cs).every(k => ['matches', 'js', 'css'].includes(k)),
   `項目=${Object.keys(cs).join(', ')}`);
 
-const war = manifest.web_accessible_resources ?? [];
-check('manifest: web_accessible_resources はちょうど1つ', war.length === 1, `件数=${war.length}`);
-check('manifest: 公開する同梱ファイルは辞書だけ', eq(war[0]?.resources, ALLOWED_WAR_RESOURCES), `resources=${JSON.stringify(war[0]?.resources)}`);
-check('manifest: 公開先も https の github.com だけ', eq(war[0]?.matches, ALLOWED_MATCHES), `matches=${JSON.stringify(war[0]?.matches)}`);
+// 公開前点検: web_accessible_resources に置いたファイルは、github.com のスクリプトも
+// chrome-extension://<ID>/… で読める（実測: styles.css が 200）。拡張の有無と、
+// 中身から版まで分かるので、ページへ公開する同梱物は持たない。
+check('manifest: web_accessible_resources を持たない（ページから同梱物を読ませない）',
+  manifest.web_accessible_resources === undefined,
+  `web_accessible_resources=${JSON.stringify(manifest.web_accessible_resources)}`);
 
 /* ---------- 参照ファイルの実在 ---------- */
 const referenced = [
   ...(cs.js ?? []),
   ...(cs.css ?? []),
   ...Object.values(manifest.icons ?? {}),
-  ...Object.values(manifest.action?.default_icon ?? {}),
-  ...war.flatMap(w => w.resources ?? [])
+  ...Object.values(manifest.action?.default_icon ?? {})
 ];
 for (const f of referenced) {
   check(`manifest が参照する ${f} が実在する`, existsSync(join(ROOT, f)));
@@ -113,17 +114,41 @@ for (const f of PACKAGE_FILES.filter(p => extname(p) === '.js')) {
   // 拡張の外へ出る URL が無いこと。github.com は説明用の記述にだけ出る。
   const urls = [...body.matchAll(/https?:\/\/[^\s'"`)]+/g)].map(m => m[0]);
   check(`${f} に外部の URL が埋め込まれていない`, urls.length === 0, urls.join(', '));
-  // fetch は同梱物（辞書と見た目）の読み込みだけ。どちらも `chrome.runtime.getURL`
-  // が返す拡張の中の URL で、外へは出ない（第19回 RG-19-06 で styles.css を追加）。
-  const fetches = [...body.matchAll(/\bfetch\s*\(([^)]*)/g)].map(m => m[1].trim());
-  const badFetch = fetches.filter(a => a !== 'DICT_URL' && a !== 'CSS_URL');
-  check(`${f} の fetch は同梱物の読み込みだけ`, badFetch.length === 0, badFetch.join(' / '));
-  for (const [name, res] of [['DICT_URL', 'locales/dict.json'], ['CSS_URL', 'styles.css']]) {
-    if (!body.includes(name)) continue;
-    check(`${f} の ${name} は chrome.runtime.getURL で作っている`,
-      new RegExp(`const ${name} = chrome\\.runtime\\.getURL\\('${res.replace('.', '\\.')}'\\)`).test(body),
-      '拡張の外の URL を読みに行く経路になりうる');
+  // fetch はもう使わない。辞書と見た目は content_scripts の JS の写しとして読み込む
+  // （公開前点検。以前は web_accessible_resources から fetch していた）。
+  check(`${f} が fetch を使っていない`, !/\bfetch\s*\(/.test(body));
+  check(`${f} が chrome.runtime.getURL を使っていない`, !/\bgetURL\s*\(/.test(body),
+    '拡張の中の URL を作る理由は、もう無い');
+}
+
+/* ---------- 辞書と見た目の写しが、正本と一致するか ---------- */
+// 正本は locales/dict.json と styles.css。配布するのは写しの src/dict.js・src/styles.js。
+// 正本だけ直して写しを作り直し忘れると、検査は正本を見て通り、出荷物は古いままになる。
+{
+  const { embeddedFiles } = await import('./embed-assets.mjs');
+  for (const [rel, body] of Object.entries(embeddedFiles(ROOT))) {
+    check(`${rel} が正本と一致する（node scripts/embed-assets.mjs で作り直す）`,
+      existsSync(join(ROOT, rel)) && read(rel) === body);
   }
+  // 陽性対照: 正本が1文字変われば、写しも変わること（比べる中身が空でない）
+  const vm = await import('node:vm');
+  const g = vm.createContext({});
+  for (const rel of ['src/dict.js', 'src/styles.js']) vm.runInContext(read(rel), g);
+  check('写しを読み込むと、辞書と見た目が正本と同じ値になる',
+    JSON.stringify(g.RepoGlossDict) === JSON.stringify(readJson('locales/dict.json')) &&
+    g.RepoGlossCss === read('styles.css'));
+  // 陽性対照: 正本を1文字変えた複製から作った写しは、いまの写しと一致しないこと
+  const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const tmp = mkdtempSync(join(tmpdir(), 'repogloss-embed-'));
+  try {
+    mkdirSync(join(tmp, 'locales'));
+    writeFileSync(join(tmp, 'locales/dict.json'), read('locales/dict.json'));
+    writeFileSync(join(tmp, 'styles.css'), read('styles.css') + ' ');
+    const changed = embeddedFiles(tmp);
+    check('写しと正本の突き合わせが、実際に差を見つけられる（陽性対照）',
+      changed['src/styles.js'] !== read('src/styles.js') && changed['src/dict.js'] === read('src/dict.js'));
+  } finally { rmSync(tmp, { recursive: true, force: true }); }
 }
 
 /* ---------- 編集領域を触らない仕掛けが入っているか ---------- */
@@ -1215,12 +1240,23 @@ check(`STORE_LISTING が今回の提出版 ${manifest.version} を指してい�
       .map(m => m[1]);
     check('PRIVACY.md の同梱資源の欄が、日英の2行そろっている',
       rows.length === 2, `見つかった行数: ${rows.length}`);
+    // 公開前点検で web_accessible_resources をやめた。いまは「無い」と言い切っていること、
+    // manifest に戻したら、文書側も列挙し直さないと落ちることを両方見る。
+    const NONE = /^\s*(?:なし（`web_accessible_resources` は宣言していません）|None \(`web_accessible_resources` is not declared\))\s*$/;
     for (let i = 0; i < rows.length; i++) {
-      const miss = war.filter(f => !rows[i].includes(f));
-      check(`PRIVACY.md の同梱資源が manifest と一致している（${i === 0 ? '日本語' : '英語'}）`,
-        war.length > 0 && miss.length === 0,
-        `manifest にあって記載に無い: ${miss.join(', ') || 'なし'}（manifest: ${war.join(', ')}）`);
+      const lang = i === 0 ? '日本語' : '英語';
+      if (war.length === 0) {
+        check(`PRIVACY.md の同梱資源が manifest と一致している（${lang}・公開する同梱物なし）`,
+          NONE.test(rows[i]), `記載: ${rows[i].trim().slice(0, 80)}`);
+      } else {
+        const miss = war.filter(f => !rows[i].includes(f));
+        check(`PRIVACY.md の同梱資源が manifest と一致している（${lang}）`,
+          !NONE.test(rows[i]) && miss.length === 0,
+          `manifest にあって記載に無い: ${miss.join(', ') || 'なし'}（manifest: ${war.join(', ')}）`);
+      }
     }
+    check('「同梱物なし」を読む検査が、列挙した旧い記載を通さない（陽性対照）',
+      !NONE.test(' `web_accessible_resources`（`locales/dict.json`・`styles.css`） '));
   }
   check('PRIVACY.md が公式ポリシーへのリンクを持つ',
     privacy.includes('developer.chrome.com/docs/webstore/program-policies/limited-use'));
@@ -1674,9 +1710,9 @@ check('content.js が保存キー iiyakuEnabled を変えていない', content.
     check('styles.css を content_scripts.css として静的に入れていない',
       !JSON.stringify(JSON.parse(read('manifest.json')).content_scripts).includes('styles.css'),
       '静的なファイルには読み込みごとに変わる合言葉を書けない');
-    check('styles.css を web_accessible_resources から読めるようにしている',
-      JSON.parse(read('manifest.json')).web_accessible_resources
-        .some(r => (r.resources || []).includes('styles.css')),
+    check('styles.css を、content.js より先に読み込む JS の写し（src/styles.js）として入れている',
+      (() => { const js = JSON.parse(read('manifest.json')).content_scripts[0].js;
+               return js.includes('src/styles.js') && js.indexOf('src/styles.js') < js.indexOf('src/content.js'); })(),
       '走り出しに読み込めず、印の見た目が付かない');
     check('見た目を読めなかったら、何もしないで止まる',
       /if \(!CSS_TEXT\.trim\(\)\)/.test(content) && /return;/.test(content),

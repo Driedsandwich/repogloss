@@ -21,7 +21,7 @@ RepoGloss は、GitHub の画面に出てくる英語のうち Git / GitHub 固�
 | Chrome API 権限 | `storage` のみ |
 | サイトアクセス | `https://github.com/*` |
 | `host_permissions` | 宣言なし |
-| 実行されるコード | [`src/matcher.js`](src/matcher.js) と [`src/content.js`](src/content.js) の2本（同梱のみ・リモートコードなし） |
+| 実行されるコード | [`src/dict.js`](src/dict.js)・[`src/styles.js`](src/styles.js)（辞書と見た目の写し）と [`src/matcher.js`](src/matcher.js)・[`src/content.js`](src/content.js) の4本（同梱のみ・リモートコードなし） |
 | 外部依存パッケージ | **なし**（`package.json` は検証用の scripts だけ。ZIP 生成も Node 標準の `zlib` で自作） |
 | ストア公開中の版 | **v1.7.1**（v1.8.0〜v1.8.22 はいずれも未提出） |
 
@@ -30,8 +30,8 @@ RepoGloss は、GitHub の画面に出てくる英語のうち Git / GitHub 固�
 ```sh
 git checkout v1.8.22                     # 監査対象を手元に出す（タグを打ったあと）
 git diff --name-only v1.8.21 v1.8.22     # 直前の版との差分
-# CHANGED:   manifest.json src/content.js styles.css README.md DESIGN.md PRIVACY.md
-# UNCHANGED: src/matcher.js locales/dict.json LICENSE icons/icon16.png icons/icon32.png icons/icon48.png icons/icon128.png
+# CHANGED:   manifest.json src/content.js src/dict.js src/styles.js README.md DESIGN.md PRIVACY.md
+# UNCHANGED: src/matcher.js LICENSE icons/icon16.png icons/icon32.png icons/icon48.png icons/icon128.png
 # → ほかに scripts/ と tests/ と docs/（配布物には入らない）
 ```
 
@@ -233,7 +233,7 @@ npm run package:verify-zip                   # 中身と身元の記録を検査
 | command | exit | 結果 |
 |---|---:|---|
 | `node --check src/matcher.js` / `src/content.js` | 0 | 構文 OK |
-| `npm test` | 0 | 単体 **68件**全成功 / 構成検査 **414項目**・不一致0（辞書61語・version 1.8.22） |
+| `npm test` | 0 | 単体 **68件**全成功 / 構成検査 **443項目**・不一致0（辞書61語・version 1.8.22） |
 | `node --test tests/e2e/extension.e2e.mjs`（全件・1回） | 0 | **517件**全成功（fail 0・skip 0・約 8 分。v1.8.21 のタグの時点は 415件、1・2群目のあとの全件は 497件） |
 | `npm run package:stage` / `:verify` | 0 | 13ファイル一致（合算 `b1ae5d4a…`） |
 | `npm run package:verify-zip -- --release` | — | **未実施**（提出候補は CI が作る。まだ無い） |
@@ -302,19 +302,19 @@ v1.8.20 と並べた v1.8.21 の実測（カーソル10移動・何もしない4
 | `permissions` | `["storage"]` | 同じ | **なし** |
 | `host_permissions` | 宣言なし | 同じ | **なし** |
 | サイトアクセス | `https://github.com/*` | 同じ | **なし** |
-| `content_scripts` | `src/matcher.js`, `src/content.js` | 同じ | **なし** |
-| `web_accessible_resources` | `locales/dict.json`, `styles.css` | 同じ | **なし** |
+| `content_scripts` | `src/matcher.js`, `src/content.js` | `src/dict.js`, `src/styles.js`, `src/matcher.js`, `src/content.js` | **あり**（辞書と見た目の写しを先に読み込む。下の 6-1） |
+| `web_accessible_resources` | `locales/dict.json`, `styles.css` | **宣言なし** | **あり**（公開前点検。下の 6-1） |
 | 外部通信 | なし | なし | **なし** |
 | 保存するもの | `iiyakuEnabled`（真偽値1つ） | 同じ | **なし** |
 | 辞書 | 61語 | 61語 | **なし** |
 
 **増やしていないことを実測で確かめました**（2026-10-14）:
 
-- `git diff v1.8.21 -- manifest.json` の差分は **`version` の1行だけ**（`1.8.21` → `1.8.22`）。
+- `git diff v1.8.21 -- manifest.json` の差分は、`version`（`1.8.21` → `1.8.22`）と、公開前点検での `content_scripts.js` への写し2本の追加・`web_accessible_resources` の削除だけ（権限・サイトアクセスは同じ）。
 - `src/content.js` の追加行に、`chrome.storage`・`fetch`・`XMLHttpRequest`・`WebSocket`・`sendBeacon`・`EventSource`・`chrome.runtime.sendMessage`・`localStorage`・`sessionStorage`・`indexedDB` は **0 行**。`chrome.storage.local` の `get` / `set` の呼び出しは v1.8.21 と同じ **2 か所**（キーは `iiyakuEnabled` だけ）。
-- `src/matcher.js`・`locales/dict.json`・`LICENSE`・アイコン4枚は**無変更**（`git diff --name-only v1.8.21` が空）。`PRIVACY.md` は公開前点検で最終更新の版を直した（下の「公開前点検の是正」）。
+- `src/matcher.js`・`LICENSE`・アイコン4枚は**無変更**（`git diff --name-only v1.8.21` が空）。`PRIVACY.md`・`manifest.json`・`src/content.js` などは公開前点検でさらに直した（下の 6-1）。
 
-配布13ファイルのうち変わったのは **manifest.json・src/content.js・styles.css・README.md・DESIGN.md・PRIVACY.md** の6つです（§1 の `# CHANGED:` は `verify` が `git diff` の実測と突き合わせます）。
+配布13ファイルのうち変わった（または加わった）のは **manifest.json・src/content.js・src/dict.js・src/styles.js・README.md・DESIGN.md・PRIVACY.md** の7つです。`locales/dict.json`・`styles.css` は正本としてリポジトリに残り、配布物からは外れて写しの `src/dict.js`・`src/styles.js` に置き換わりました（§1 の `# CHANGED:` は `verify` が `git diff` の実測と突き合わせます）。
 
 > **保存するものも、初回の挙動も変えていません。** 回答の 5 節（ストア・提出物）にある開示・同意の論点（初期状態が ON で、本文の処理の前に専用の同意 UI が無いこと）は、製品の是正と分けて**本人の判断待ち**として変更記録に書きました。実装は変えていません。
 
@@ -323,6 +323,8 @@ v1.8.20 と並べた v1.8.21 の実測（カーソル10移動・何もしない4
 ### 6-1. 公開前点検の是正
 
 - `PRIVACY.md` の最終更新が v1.8.19 のままだったのを、v1.8.22 へ直した。`verify` が最終更新の版と manifest の `version` の一致を見る。
+- `web_accessible_resources` をやめた。辞書と見た目を公開していたため、github.com のスクリプトが `fetch('chrome-extension://<ID>/styles.css')` で 200 を受け取り、拡張の有無と中身から版まで分かった（実測）。いまは `scripts/embed-assets.mjs` が正本（`locales/dict.json`・`styles.css`）を `src/dict.js`・`src/styles.js` へ写し、`content_scripts` の JS として `matcher.js` より先に読み込む。`content.js` から `fetch` と `chrome.runtime.getURL` が無くなった。写しと正本の一致は `verify` が見る。ページからの読み取りが拒否されることと、E2E 中の通信がテストサーバと `chrome-extension://` だけであることは、E2E に足した試験で確かめる。
+- `PRIVACY.md` に、github.com 側から拡張の存在（と ON / OFF）は分かりうるが、ID と版は読める形で出していないことを日英で書いた。
 
 ---
 
@@ -470,7 +472,7 @@ v1.8.20 と並べた v1.8.21 の実測（カーソル10移動・何もしない4
 | 配布物の検査（壊した ZIP を9種ぶつける） | [`tests/package.test.js`](tests/package.test.js) |
 | 提出物の身元の schema と、その検査（28件） | [`scripts/provenance.mjs`](scripts/provenance.mjs) / [`tests/provenance.test.js`](tests/provenance.test.js) |
 | 配布物の一覧（唯一の正本） | [`scripts/package-files.mjs`](scripts/package-files.mjs) |
-| 構成と文書の整合検査（414項目） | [`scripts/verify.mjs`](scripts/verify.mjs) |
+| 構成と文書の整合検査（443項目） | [`scripts/verify.mjs`](scripts/verify.mjs) |
 | ZIP の読み書き（自作） | [`scripts/zip.mjs`](scripts/zip.mjs) |
 | ZIP の検査 | [`scripts/verify-zip.mjs`](scripts/verify-zip.mjs) |
 | CI | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) |

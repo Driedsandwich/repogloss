@@ -4,7 +4,7 @@
  *
  * ここでしか確かめられないのは、肩代わりの効かない部分:
  *   manifest が Chrome に受理されるか / 読み込み順（matcher.js が先か）/
- *   web_accessible_resources を通した辞書の読み込み / 本物の chrome.storage /
+ *   content_scripts の JS として同梱した辞書と見た目の読み込み / 本物の chrome.storage /
  *   タブをまたいだ設定の同期 / 実際の DOM とフォーカスの挙動。
  * Chrome が無い環境では openssl か Chrome の不在で失敗する。CI では両方入っている。
  */
@@ -57,7 +57,7 @@ test('拡張として読み込んだ状態で動く', async t => {
   const tab = await openPage(cdp, PAGE);
 
   // ② 印が付く＝matcher.js が content.js より先に読み込まれ、辞書も読めている
-  //    （web_accessible_resources と content_scripts.matches が実際に効いている）
+  //    （辞書と見た目の写しが先に読み込まれ、content_scripts.matches が実際に効いている）
   const icons = await waitFor('印が付く', async () =>
     await tab.evaluate(`document.querySelectorAll('.iiyaku-icon').length`));
   assert.ok(icons > 0, '印が1つも付いていない');
@@ -5806,4 +5806,70 @@ test('第23回 RG-23-13: 経路ごとに、一巡の頭から入った見直し�
       } finally { chrome.kill(); await srv.close(); }
     });
   }
+});
+
+/* 公開前点検: ページ側のスクリプトから、拡張の同梱物を読めないこと。
+   以前は辞書と styles.css を web_accessible_resources に置いていたので、
+   github.com のスクリプトが fetch('chrome-extension://<ID>/styles.css') で 200 を受け取り、
+   拡張の有無と、中身から版まで分かった（実測）。いまは content_scripts の JS に同梱する。
+   あわせて、走っている間の通信が、テストサーバ（github.com へ写したもの）と
+   chrome-extension:// の中だけであることを記録して確かめる。 */
+test('ページ側から同梱物を読めず、通信はテストサーバと拡張の中だけ', async t => {
+  const srv = await startTestServer();
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  const { id } = await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  assert.match(id, /^[a-p]{32}$/);
+
+  // openPage は開いてすぐ移動するので、記録を始めてから移動する形を自前で組む
+  const { targetId } = await cdp.send('Target.createTarget', { url: 'about:blank' });
+  const { sessionId } = await cdp.send('Target.attachToTarget', { targetId, flatten: true });
+  const urls = [];
+  const off = cdp.onEvent(m => {
+    if (m.sessionId === sessionId && m.method === 'Network.requestWillBeSent') urls.push(m.params.request.url);
+  });
+  t.after(off);
+  await cdp.send('Network.enable', {}, sessionId);
+  await cdp.send('Runtime.enable', {}, sessionId);
+  await cdp.send('Page.navigate', { url: PAGE }, sessionId);
+  const evaluate = async expression => {
+    const r = await cdp.send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }, sessionId);
+    if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails).slice(0, 300));
+    return r.result?.value;
+  };
+  await waitFor('拡張が印を付ける', async () =>
+    await evaluate(`document.querySelectorAll('.iiyaku-icon').length`).catch(() => 0));
+
+  const outside = () => urls.filter(u => {
+    const x = new URL(u);
+    return !(x.protocol === 'chrome-extension:' || (x.protocol === 'https:' && x.host === 'github.com'));
+  });
+
+  await t.test('ページのスクリプトから chrome-extension://<ID>/ の同梱物を読めない', async () => {
+    const files = ['styles.css', 'locales/dict.json', 'manifest.json',
+                   'src/styles.js', 'src/dict.js', 'src/content.js', 'src/matcher.js'];
+    const got = await evaluate(`Promise.all(${JSON.stringify(files)}.map(f =>
+      fetch('chrome-extension://${id}/' + f)
+        .then(r => f + ': ' + r.status, e => f + ': 拒否'))) `);
+    assert.deepEqual(got, files.map(f => f + ': 拒否'), `ページから読めてしまう: ${got.join(' / ')}`);
+  });
+
+  await t.test('同じページで、印は付いている（読めないのは同梱物の側だけ）', async () => {
+    assert.ok(await evaluate(`document.querySelectorAll('.iiyaku-icon').length`) > 0);
+  });
+
+  await t.test('通信は、テストサーバと chrome-extension:// の中だけ', async () => {
+    await sleep(1500);   // 走り出しの後の通信も拾う
+    assert.ok(urls.some(u => u.startsWith('https://github.com/')), `記録が取れていない: ${urls.join(' ')}`);
+    assert.deepEqual(outside(), [], `外への通信がある: ${outside().join(' ')}`);
+  });
+
+  await t.test('陽性対照: 外への通信があれば、この記録が捕まえる', async () => {
+    await evaluate(`fetch('https://example.invalid/rg-probe').then(() => 0, () => 0)`);
+    await waitFor('外への通信を記録する', async () => outside().length > 0);
+    assert.deepEqual(outside(), ['https://example.invalid/rg-probe']);
+  });
+
+  await cdp.send('Target.closeTarget', { targetId });
 });

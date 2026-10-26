@@ -3,10 +3,10 @@
 // scripts/verify.mjs と tests/e2e/ の両方がこの一覧を使う。
 export const PACKAGE_FILES = [
   'manifest.json',
-  'styles.css',
   'src/matcher.js',
   'src/content.js',
-  'locales/dict.json',
+  'src/dict.js',
+  'src/styles.js',
   'icons/icon16.png',
   'icons/icon32.png',
   'icons/icon48.png',

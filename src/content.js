@@ -33,28 +33,19 @@
   }
 
   /* ---------- 1. 辞書読み込み ---------- */
-  const DICT_URL = chrome.runtime.getURL('locales/dict.json');
-  // 見た目も、辞書と同じ経路で走り出しに読み込む（第19回 RG-19-06）。
-  // 以前は `content_scripts.css` として静的に入れていたが、静的なファイルには
-  // 読み込みごとに変わる合言葉を書けないので、レイヤー名も選択子も固定になる。
-  // ここで読み込み、**選択子へ合言葉を埋めてから**入れる。ページ側の同名要素は
-  // そもそも一致しなくなるので、打ち消す規則（revert）が要らなくなった。
-  const CSS_URL = chrome.runtime.getURL('styles.css');
-  let DICT = {}, CSS_TEXT = '';
-  try {
-    const [d, c] = await Promise.all([
-      fetch(DICT_URL).then(r => r.json()),
-      fetch(CSS_URL).then(r => r.text())
-    ]);
-    DICT = d; CSS_TEXT = c;
-  } catch (e) {
-    console.error('[iiyaku] dict.json / styles.css 読み込み失敗:', e);
-    return;
-  }
+  // 辞書と見た目は、manifest の content_scripts で先に読み込む `src/dict.js`・`src/styles.js`
+  // が、この隔離された世界の globalThis へ置いている（正本は `locales/dict.json`・`styles.css`。
+  // 写しは scripts/embed-assets.mjs で作る）。
+  // 以前は web_accessible_resources に置いて fetch していたが、それではページ側の
+  // スクリプトも chrome-extension://<ID>/styles.css を読めて、拡張の有無と版が分かった。
+  // 見た目は静的な `content_scripts.css` にはしない（第19回 RG-19-06）。静的なファイルには
+  // 読み込みごとに変わる合言葉を書けないので、ここで**選択子へ合言葉を埋めてから**入れる。
+  const DICT = globalThis.RepoGlossDict || {};
+  const CSS_TEXT = typeof globalThis.RepoGlossCss === 'string' ? globalThis.RepoGlossCss : '';
   // 印の見た目は CSS が作る（`::after` の丸と "i"）。読めていないのに走ると、
   // **見えない押せる点**を並べることになる。失敗したら何もしない。
   if (!CSS_TEXT.trim()) {
-    console.error('[iiyaku] styles.css が空です。何もしません');
+    console.error('[iiyaku] src/styles.js が読み込まれていないか、空です。何もしません');
     return;
   }
   const matcher = globalThis.RepoGlossMatcher && globalThis.RepoGlossMatcher.createMatcher(DICT);

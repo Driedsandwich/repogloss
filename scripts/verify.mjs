@@ -1171,6 +1171,22 @@ check(`README の変更履歴に ${manifest.version} の行がある`, readme.in
 check(`STORE_LISTING が今回の提出版 ${manifest.version} を指している`, store.includes(manifest.version),
   'ストア掲載メモに現在のバージョンが出てこない');
 
+// 公開前点検: PRIVACY.md の最終更新が v1.8.19 のまま、STORE_LISTING が取り込み済みの版を
+// 「作成前」と書いたまま残っていた。版を上げるたびに直す場所なので、機械で見る。
+{
+  const LAST = /^最終更新:\s*\S+[（(]v(\d+\.\d+\.\d+)[）)]/m;
+  const lastVer = (LAST.exec(read('PRIVACY.md')) || [])[1];
+  check(`PRIVACY.md の最終更新の版が manifest の version と一致する（${manifest.version}）`,
+    lastVer === manifest.version, `最終更新の版: ${lastVer ?? '見つからない'}`);
+  check('最終更新の版を読む検査が、実際に読める（陽性対照）',
+    (LAST.exec('最終更新: 2026-08-15（v1.8.19）') || [])[1] === '1.8.19');
+  const PREP = /作成前/;
+  check('STORE_LISTING に「作成前」の記述が残っていない', !PREP.test(store),
+    store.split('\n').filter(l => PREP.test(l)).map(l => l.trim().slice(0, 60)).join(' / '));
+  check('「作成前」を探す検査が、実際に捕まえる（陽性対照）',
+    PREP.test('### 8-2. v1.8.22 の候補（作成前）'));
+}
+
 // 「この版 vX.Y.Z」のような現在版の言い切りが、manifest と食い違ったまま残らないようにする。
 // v1.8.3 では manifest が 1.8.3 なのに README が「この版 v1.8.2」と書いていた。
 // 「manifest の版がどこかに在る」という検査では、この取り残しを見つけられない。

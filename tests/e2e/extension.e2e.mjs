@@ -2172,8 +2172,11 @@ test('自分の署名を持つものだけを片づけ、ページの持ち物�
     await tab.evaluate(`[...document.querySelectorAll('.iiyaku-icon')].filter(i => i.dataset.iiyakuKey).length`));
 
   await t.test('RG-11-04 半径を省いた circle（既定は closest-side）を見抜く', async () => {
-    assert.equal(await tab.evaluate(`getComputedStyle(document.getElementById('circle-box')).clipPath`),
-      'circle(at 0px 50%)', 'この試験の前提（computed 値）が違う');
+    // 前提は「半径を省いた circle で、中心が左端の真ん中」。computed 値の書き方は
+    // ブラウザの版で揺れる（`circle(at 0px 50%)` / `circle(closest-side at 0px 50%)` /
+    // `circle(at 0% 50%)` など）ので、綴りではなく意味で見る。
+    assert.match(await tab.evaluate(`getComputedStyle(document.getElementById('circle-box')).clipPath`),
+      /^circle\((closest-side\s+)?at\s+0(px|%)?\s+50%\)$/, 'この試験の前提（computed 値）が違う');
     assert.deepEqual([await nIn('#circle-box'), await nIn('#circle-later')], [0, 1]);
   });
 

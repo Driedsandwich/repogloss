@@ -31,7 +31,7 @@ npm run test:e2e
 
 - Chrome（または Chromium）と `openssl` が要ります。Chrome が自動で見つからないときは、環境変数 `CHROME_PATH` に実行ファイルの場所を入れます（`tests/e2e/helpers/chrome.mjs` の `findChrome`）。
 - テストは `github.com` を手元の HTTPS サーバへ向けます（`--host-resolver-rules`）。**HTTP(S) のプロキシが環境変数で設定されている環境では、Chrome がプロキシへ出てしまい、ページが空のまま大量に失敗します。** そのときは、その実行に限り `no_proxy` / `NO_PROXY` に `github.com` を足して実行します（プロキシ自体は外さない）。
-- 時間がかかります（数十分かかることがある）。
+- 時間がかかります（2026-10-26 にクラウドの Linux 環境で実行し、517 件が成功、約 8.5 分）。
 
 配布物の検査（必要なときだけ）:
 

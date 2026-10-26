@@ -103,7 +103,7 @@ Chrome の権限は、`permissions` に書く **Chrome API 権限**と、コン�
 
 **「いいえ（リモートコードは使用していません）」を選択。**
 
-根拠: 外部スクリプトの読み込み、`eval()` による遠隔文字列の実行、CDN からのライブラリ取得のいずれも行っていません。実行されるコードはパッケージに同梱された **`src/matcher.js` と `src/content.js` の2本だけ**です（`manifest.json` の `content_scripts[0].js` と一致）。
+根拠: 外部スクリプトの読み込み、`eval()` による遠隔文字列の実行、CDN からのライブラリ取得のいずれも行っていません。実行されるコードはパッケージに同梱された **`src/dict.js`・`src/styles.js`（辞書と見た目の定義を値として置くだけの写し）と `src/matcher.js`・`src/content.js` の4本だけ**です（`manifest.json` の `content_scripts[0].js` と一致）。
 
 ### 3-4. データ収集の申告
 

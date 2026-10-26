@@ -308,7 +308,7 @@ v1.8.20 と並べた v1.8.21 の実測（カーソル10移動・何もしない4
 | 保存するもの | `iiyakuEnabled`（真偽値1つ） | 同じ | **なし** |
 | 辞書 | 61語 | 61語 | **なし** |
 
-**増やしていないことを実測で確かめました**（2026-10-14）:
+**増やしていないことを実測で確かめました**（2026-10-14。公開前点検の是正のあと 2026-10-26 に manifest の行を書き直した）:
 
 - `git diff v1.8.21 -- manifest.json` の差分は、`version`（`1.8.21` → `1.8.22`）と、公開前点検での `content_scripts.js` への写し2本の追加・`web_accessible_resources` の削除だけ（権限・サイトアクセスは同じ）。
 - `src/content.js` の追加行に、`chrome.storage`・`fetch`・`XMLHttpRequest`・`WebSocket`・`sendBeacon`・`EventSource`・`chrome.runtime.sendMessage`・`localStorage`・`sessionStorage`・`indexedDB` は **0 行**。`chrome.storage.local` の `get` / `set` の呼び出しは v1.8.21 と同じ **2 か所**（キーは `iiyakuEnabled` だけ）。

@@ -226,14 +226,25 @@ npm run package:verify-zip                   # 中身と身元の記録を検査
 
 ## 4. 検証の結果
 
+### 4-0. 公開前点検の是正のあとの測定（`51338c7`・2026-10-28）
+
+対象は枝 `claude/repogloss-web-accessible-resources-9p8h07` のコミット **`51338c759d7d508592226d73fd9dc31ca15732c4`**（辞書と CSS を JS に同梱し、`web_accessible_resources` をなくしたもの）。環境は Linux（クラウドのコンテナ）/ Node.js v22.22.0。下の §4-1 の 10/14 の結果とは**別の木・別の環境**の結果で、混ぜていません。この表を書いたコミットは `AUDIT.md` だけを変え、配布13ファイルには触れないので、合算ハッシュはこの表を足したあとの木でも同じです。
+
+| command | exit | 結果 |
+|---|---:|---|
+| `npm test`（`node --check` 2本 → 単体 → 構成検査） | 0 | 構文 OK / 単体 **68件**全成功（fail 0）/ 構成検査 **443項目**・不一致0（辞書61語・version 1.8.22） |
+| `npm run package:stage` / `:verify` | 0 | 13ファイル一致（合算 `bf58fe60…`） |
+| `node --test tests/e2e/extension.e2e.mjs` | — | **未実施**（Google Chrome が無い環境なので E2E は走らせていない。`CHROME_PATH` で別の Chromium を指して走らせることもしていない） |
+| `npm run package:verify-zip -- --release` | — | **未実施** |
+
 ### 4-1. 手元（macOS 27.0.1 / Google Chrome 155.0.8059.80 / Node.js v22.22.3・2026-10-14）
 
-下は手元での実行結果です（CI は §4-2）。
+下は 2026-10-14 の手元での実行結果です（CI は §4-2）。対象は当時の作業ブランチ `fix/twentythird-audit-v1.8.22` の未コミットの候補で、記録にコミットの SHA はありません。配布13ファイルの合算 `b1ae5d4a…` は、その後のコミット **`6618cfb`**（2026-10-14 19:32「文書を現在の版へ揃える」）を並べ直した値と一致するので、対象はこのコミットと同じ配布物だった**と推定**します（E2E の件数までは、ハッシュからは結び付けられません）。§4-0 の `51338c7` の結果ではありません。
 
 | command | exit | 結果 |
 |---|---:|---|
 | `node --check src/matcher.js` / `src/content.js` | 0 | 構文 OK |
-| `npm test` | 0 | 単体 **68件**全成功 / 構成検査 **443項目**・不一致0（辞書61語・version 1.8.22） |
+| `npm test` | 0 | 単体 **68件**全成功 / 構成検査 **410項目**・不一致0（当時の件数。辞書61語・version 1.8.22） |
 | `node --test tests/e2e/extension.e2e.mjs`（全件・1回） | 0 | **517件**全成功（fail 0・skip 0・約 8 分。v1.8.21 のタグの時点は 415件、1・2群目のあとの全件は 497件） |
 | `npm run package:stage` / `:verify` | 0 | 13ファイル一致（合算 `b1ae5d4a…`） |
 | `npm run package:verify-zip -- --release` | — | **未実施**（提出候補は CI が作る。まだ無い） |

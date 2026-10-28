@@ -24,7 +24,7 @@ RepoGloss のコード・コメント・文書に出てくる言葉を、やさ�
 | 世代（generation） | 処理済みの目印の通し番号。印が退役したときだけ進め、ページ全体を選び直す | `src/content.js:119-122`, `3303-3306` |
 | 見え方の世代（visEpoch） | 「見え方が変わったかもしれない」たびに進める別の通し番号。同じ世代で一度見た控えは測り直さない | `src/content.js:3801-3818` |
 | 控え（latent） | 辞書の語は含むが、そのときは見えなかった（または入口が無かった）文章の一覧。見え方が変わったときにここだけを見直す。上限 20,000 件で、上限でも捨てずに増やすのをやめるだけ | `src/content.js:124-159`, `3516-3606` |
-| 控えの見直し | 控えの中で、見えるようになったものに印を付ける処理。1 回 8ms までで区切る | `src/content.js:3523`, `3551-3606` |
+| 控えの見直し | 控えの中で、見えるようになったものに印を付ける処理。候補 16 個ごとに経過時間を確かめ、8ms を超えていれば区切る（厳密な上限ではなく、1 回が 8ms を超えることはある） | `src/content.js:3523`, `3551-3606` |
 | 記録（glossed） | 印を付けた語ごとに「どの文章を割り、何を作ったか」を覚えたもの。辞書の語数（61）が上限 | `src/content.js:160-169`, `3454-3459` |
 | 整合（isCoherent） | 記録と今のページが食い違っていないか（印がまだ語の直後にあるか、ページに書き換えられていないか） | `src/content.js:3070-3171` |
 | 使える（isUsable） | 印がまだ見えて、Tab で止まれるか | `src/content.js:3173-3224` |
@@ -59,7 +59,7 @@ RepoGloss のコード・コメント・文書に出てくる言葉を、やさ�
 | 合算ハッシュ（COMBINED_SHA256） | 配布物全部の中身を 1 つの値にまとめたもの。OS が違っても同じになるかを比べる | `scripts/package-stage.mjs:85-93` |
 | SHA-256 / ハッシュ | ファイルの中身から作る「指紋」の値。1 文字でも違えば別の値になる | `scripts/package-stage.mjs:19` |
 | 身元（provenance） | その ZIP が、どのコミットの、どの CI 実行から出たかの記録（`dist/<zip名>.json`） | `scripts/package-zip.mjs:94-125`；`scripts/provenance.mjs:1-8` |
-| UNCOMMITTED | commit していない内容から試しに ZIP を作ったとき、名前に付く印。提出物と取り違えないため | `scripts/package-zip.mjs:6-8`, `46-48` |
+| UNCOMMITTED | 配布の対象のファイルに commit していない変更があるまま、試しに ZIP を作ったとき（`--allow-uncommitted`）、名前に付く印。提出物と取り違えないため | `scripts/package-zip.mjs:6-8`, `46-48` |
 | `dist/` | 配布物を並べる作業場所。Git には入れない | `.gitignore:13-15` |
 | 監査入口 | `AUDIT.md` のこと。外部監査に必要な情報をここに集める | `AUDIT.md:1-7` |
 | 監査対象のタグ | `AUDIT.md` の `tag:` 欄。値が入っていると、`verify.mjs` がそのタグと今の配布物が同じかを確かめる（今は `null`） | `AUDIT.md:53-57`；`scripts/verify.mjs:1530-1560` |
@@ -79,7 +79,7 @@ RepoGloss のコード・コメント・文書に出てくる言葉を、やさ�
 | MutationObserver | DOM が変わったことを知らせてくれるブラウザの仕組み | `src/content.js:3716-3779` |
 | `checkVisibility` | 要素が見えるかどうかを、祖先の透明度なども含めて答えるブラウザの機能。Chrome 105 以降にある | `src/content.js:172-193`；`README.md:24` |
 | shadow root / closed shadow root | 要素の中に作る、外から見えない小部屋。closed だとページの JavaScript から中を取り出せず、コピーしても中身は写らない | `src/content.js:2502-2520` |
-| カスケードレイヤー（`@layer`） | CSS の優先順位をまとめて決める仕組み。この拡張の見た目はレイヤーに入れてあり、ページが同じ性質を指定すればページが勝つ | `styles.css:1-27`；`src/content.js:18-25` |
+| カスケードレイヤー（`@layer`） | CSS の優先順位をまとめて決める仕組み。この拡張がページへ入れる見た目（`styles.css` の `RG_SHADOW_BEGIN` より前）はレイヤーに入れてあり、ページが同じ性質を指定すればページが勝つ。例外として、closed shadow root の中で使う区間（`RG_SHADOW_BEGIN`〜`RG_SHADOW_END`）はレイヤーに入れない（ページの規則が届かず、譲る相手がいないため） | `styles.css:1-27`, `258-268`；`src/content.js:18-25`, `2527-2543`, `4413-4418` |
 | CSSOM | CSS を JavaScript から読み書きする仕組み。ここで値だけを書き換えると DOM には何も出ない | `src/content.js:4195-4206` |
 | adoptedStyleSheets | JavaScript で作った stylesheet を、`<style>` タグなしで文書や shadow root に付ける仕組み | `src/content.js:1477-1484`, `2557-2560` |
 | `aria-*` / `role` / `tabindex` | 読み上げソフトやキーボード操作のための属性。「これはボタン」「Tab で止まれる」などを伝える | `src/content.js:2718-2757` |

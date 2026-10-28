@@ -1,6 +1,6 @@
 # CLAUDE.md — このリポジトリで作業する AI への決まり
 
-RepoGloss は、GitHub のページで Git / GitHub の用語に日本語の説明を添える Chrome 拡張（Manifest V3）です。**公開リポジトリ**で、持ち主はエンジニアではありません。コードの大半は AI が書いています。仕組みは `docs/ARCHITECTURE.md`、用語は `docs/GLOSSARY.md` にあります。
+RepoGloss は、GitHub のページで Git / GitHub の用語に日本語の説明を添える Chrome 拡張（Manifest V3）です。**公開リポジトリ**です。仕組みは `docs/ARCHITECTURE.md`、用語は `docs/GLOSSARY.md` にあります。
 
 ここに書いたことは、実際にファイルを読むかコマンドを実行して確かめたものだけです。
 
@@ -37,7 +37,7 @@ npm run test:e2e
 
 ```sh
 npm run package:stage        # dist/ へ配布 13 ファイルを並べ、合算ハッシュを出す
-npm run package:zip          # 提出用 ZIP を作って検査する（commit していない変更があると止まる）
+npm run package:zip          # 提出用 ZIP を作って検査する（配布の対象のファイルに commit していない変更があると止まる）
 ```
 
 `dist/` と `*.zip` は Git に入れません（`.gitignore`）。

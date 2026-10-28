@@ -107,7 +107,7 @@ flowchart TB
 | `scripts/verify.mjs` | 構成と文書の整合を約 410 件検査する。manifest の形・権限・外部通信の有無・`content.js` の約束事・文書の数字・監査資料と版の一致など | 全体の見出しと、`1-466` の検査名の一覧、`1085-1160`・`1468-1566`・`1692-1717` の本文を読んだ。`93-128` の中身、`467-1074`・`1158-1430`・`1567-1690` の細部は未確認 |
 | `scripts/package-files.mjs` | 配布物 13 ファイルの一覧。**配布物の唯一の正本** | `scripts/package-files.mjs:1-18` |
 | `scripts/package-stage.mjs` | 配布物だけを `dist/` に並べ、1 件ずつと全体のハッシュを出す。`--verify` で並べたものが今の中身と同じか確かめる | `scripts/package-stage.mjs:1-101` |
-| `scripts/package-zip.mjs` | 提出用 ZIP を作り、開き直して検査し、身元の記録（どのコミット・どの CI 実行から出たか）を書く。commit していない変更があると止まる | `scripts/package-zip.mjs:1-155` |
+| `scripts/package-zip.mjs` | 提出用 ZIP を作り、開き直して検査し、身元の記録（どのコミット・どの CI 実行から出たか）を書く。配布の対象のファイルに commit していない変更があると止まる | `scripts/package-zip.mjs:1-155` |
 | `scripts/zip.mjs` | 外部パッケージを使わない、自前の小さな ZIP 読み書き。日時を固定し、毎回同じバイト列になるようにしている | 冒頭 40 行のみ読んだ（`scripts/zip.mjs:1-40`）。残りは未確認 |
 | `scripts/verify-zip.mjs` | ZIP の中身の検査（過不足・余計な親フォルダ・中身の一致・版・秘密らしいファイル名） | `scripts/verify-zip.mjs:1-71` |
 | `scripts/provenance.mjs` | 身元の記録の検査。提出候補なら「CI の、このリポジトリの、main への push から出たもの」まで求める | `scripts/provenance.mjs:1-97` |
@@ -191,7 +191,7 @@ GitHub はページを読み直さずに中身を差し替えます。そのた�
    - 記録した印が、まだ記録どおりで（`isCoherent` `3079-3171`）、まだ見えて押せるか（`isUsable` `3191-3224`）を確かめ、だめなら「退役」させる（`retireGloss` `3248-3275`）
    - URL が変わった・印が退役した → ページ全体を調べ直す（`reselect` `3303-3306`）
    - そうでなければ、変わった場所だけを調べ、見え方が変わったなら控えも見直す（`discoverLatent` `3551-3606`）
-5. 控えの見直しは 1 回 8ms までで区切り、続きは次に回す（`src/content.js:3523`, `3557-3562`）。
+5. 控えの見直しには 8ms の目安がある。ただし厳密な上限ではない。経過時間を確かめるのは、見る位置が 16 の倍数のとき（候補 16 個ごと）だけで、そこで 8ms を超えていれば区切り、続きは次に回す（`src/content.js:3523`, `3557-3562`）。確かめと確かめのあいだの候補は時間に関係なく処理するので、1 回が 8ms を超えることはある。
 6. 合図の出ない変化のために、定期の確認が 2 つある。
    - 暇なときの確認：約 2 秒ごと（`scheduleIdleCheck`、`src/content.js:4171-4193`）
    - 短い周期の見直し：控えの件数に応じて 0.4〜2 秒ごと（`scheduleFastCheck`、`src/content.js:4219-4247`）
@@ -216,7 +216,7 @@ GitHub はページを読み直さずに中身を差し替えます。そのた�
 
 1. 配布物の一覧は `scripts/package-files.mjs` だけが決める（13 ファイル）。
 2. `npm run package:stage` が `dist/repogloss-<版>/` へ並べ、全体を 1 つのハッシュ（合算ハッシュ）にまとめる（`scripts/package-stage.mjs:76-101`）。CI はこれを Linux・Windows・macOS で実行し、3 つが同じ値かを機械で比べる（`.github/workflows/ci.yml:47-105`）。
-3. `npm run package:zip` が ZIP を作る。commit していない変更があると止まる（`--allow-uncommitted` を付けたときだけ、名前に `UNCOMMITTED` を付けて作る）（`scripts/package-zip.mjs:46-81`）。作った ZIP を開き直して中身を検査し（`scripts/verify-zip.mjs`）、身元の記録 `dist/<zip名>.json` を書く（`scripts/package-zip.mjs:94-148`）。
+3. `npm run package:zip` が ZIP を作る。**配布の対象のファイル**（`PACKAGE_FILES` の 13 件）に commit していない変更があると止まる。それ以外のファイル（`docs/` や `tests/` など）の変更では止まらない（`--allow-uncommitted` を付けたときだけ、名前に `UNCOMMITTED` を付けて作る）（`git status --porcelain -- <配布の対象>` で調べる：`scripts/package-zip.mjs:36-45`, `52-65`）。作った ZIP を開き直して中身を検査し（`scripts/verify-zip.mjs`）、身元の記録 `dist/<zip名>.json` を書く（`scripts/package-zip.mjs:94-148`）。
 4. CI では、検査・E2E・ハッシュ比較がすべて通り、かつ `main` への push のときだけ ZIP を作り、`--release` 付きでもう一度検査して成果物として残す（`.github/workflows/ci.yml:129-160`）。CI はストアへの提出はしない（`.github/workflows/ci.yml:3`）。
 
 ---

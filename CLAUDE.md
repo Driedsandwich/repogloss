@@ -48,7 +48,8 @@ npm run package:zip          # 提出用 ZIP を作って検査する（配布�
 
 次のものは、検査（`scripts/verify.mjs`）や監査の証拠として、値が固定・突き合わせされています。依頼に無いのに変えると、検査が落ちるか、監査の証拠が壊れます。
 
-- **拡張の版と申告書**：`manifest.json`（`version`・`minimum_chrome_version`・`permissions`・`content_scripts`・`web_accessible_resources`）。形は `scripts/verify.mjs` 冒頭の `ALLOWED_*` で丸ごと固定されています。版を上げるのは持ち主の指示があるときだけです。
+- **拡張の版と申告書**：`manifest.json`（`version`・`minimum_chrome_version`・`permissions`・`content_scripts`）。ページから読める同梱ファイル（`web_accessible_resources`）は持たない作りで、足すと検査が落ちます。形は `scripts/verify.mjs` 冒頭の `ALLOWED_*` で丸ごと固定されています。版を上げるのは持ち主の指示があるときだけです。
+- **`src/dict.js`・`src/styles.js`**：辞書（`locales/dict.json`）と見た目（`styles.css`）の写しで、自動生成です。手で直さず、正本を直したら `node scripts/embed-assets.mjs` で作り直します（ずれると `verify.mjs` が落ちます）。
 - **README などに書いた版と数字**：`README.md` の版のバッジや語数などは、`verify.mjs` が manifest や辞書と突き合わせています。
 - **`AUDIT.md` の機械が読む欄**：`version:` `state:` `base_commit:` `commit:` `tag:` の行と、`# CHANGED:` / `# UNCHANGED:` の 2 行。`verify.mjs` が `git diff` の実測と突き合わせます。
 - **`AUDIT.md` が名乗る検査件数**：`verify.mjs` が自分の件数と照合します。`verify.mjs` に検査を足したり減らしたりすると、`AUDIT.md` の件数も直さないと落ちます。

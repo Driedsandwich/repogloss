@@ -1,6 +1,6 @@
 # プライバシーポリシー / Privacy Policy — RepoGloss
 
-最終更新: 2026-08-15（v1.8.19）
+最終更新: 2026-10-26（v1.8.22）
 
 ---
 
@@ -47,7 +47,7 @@
 
 **印を付けるのは、見えると判定できた一致だけ**です。見えない場所の一致には印を付けません。
 
-- 用途は、拡張に同梱された辞書（`locales/dict.json`）と照合し、見える場所かどうかを判定することだけです。
+- 用途は、拡張に同梱された辞書（`src/dict.js`）と照合し、見える場所かどうかを判定することだけです。
 - 照合はすべて利用者の端末内（ブラウザの中）で完結します。ネットワークへは出ません。
 - 結果として、一致した用語の横に ⓘ を表示し、日本語の説明をツールチップとして出します。それ以外の用途はありません。
 - 読み取った内容を保存しません。ページを閉じれば残りません。
@@ -89,9 +89,16 @@ Chrome の権限は、`permissions` に書く API の権限と、コンテンツ
 |---|---|---|
 | Chrome API 権限 | `storage` | ON / OFF の設定を端末内に保存するため。これ以外に使いません |
 | サイトアクセス | `content_scripts.matches` = `https://github.com/*` | GitHub のページ上で、表示中の文章を辞書と照合し、用語に ⓘ を表示するため |
-| 同梱ファイルの読み込み | `web_accessible_resources`（`locales/dict.json`・`styles.css`） | コンテンツスクリプトが、拡張機能に同梱された**辞書**と**見た目の定義**を読み込むため。`styles.css` は雛形で、読み込みごとに変わる合言葉を選択子へ埋めてから使います（v1.8.18 から。ページ側の要素へ自分の見た目が乗らないようにするため）。どちらも `chrome-extension://` の中にあり、**外部サーバーからは取得しません**。機密情報も含みません |
+| 同梱ファイルの読み込み | なし（`web_accessible_resources` は宣言していません） | **辞書**（`src/dict.js`）と**見た目の定義**（`src/styles.js`）は、コンテンツスクリプトの JS として拡張と一緒に読み込みます。ページへ公開する同梱ファイルは無く、github.com 側のスクリプトから `chrome-extension://` の中身を読むことはできません（v1.8.22 から。それまでは `locales/dict.json`・`styles.css` をページから読める状態にしていました）。見た目の定義は雛形で、読み込みごとに変わる合言葉を選択子へ埋めてから使います。**外部サーバーからは取得しません**。機密情報も含みません |
 
 ホスト権限（`host_permissions`）、`tabs`、`activeTab`、`scripting`、常駐処理（background）は要求していません。閲覧履歴も読み取りません。
+
+### 4-2. github.com 側から分かること
+
+本拡張はデータを送りませんが、github.com のページへ要素を差し込むため、**ページのスクリプトからは拡張が入っていることが分かりえます**。
+
+- 一致した用語の横の ⓘ と、画面右下の切り替えボタン（「解説 ON」／「解説 OFF」）はページの中の要素です。ページのスクリプトはこれらを読めるので、本拡張が入っていること、ON / OFF のどちらかが分かりえます。OFF でも切り替えボタンは表示されます。
+- **拡張の ID と版は、ページから読める形では出していません。** v1.8.22 から `web_accessible_resources` をやめ、`chrome-extension://<ID>/…` の同梱ファイルをページのスクリプトが読もうとしても拒否されます（E2E で実測）。版番号をページへ書き出すこともしていません。ただし、印の付き方や要素の形は版によって変わることがあるため、そこから版の見当を付けられる可能性は残ります。
 
 ### 5. 第三者への提供
 
@@ -150,7 +157,7 @@ While a `github.com` page is open, the extension **reads and uses text on that p
 
 **Markers are only placed on matches judged to be visible.** Invisible matches get no marker.
 
-- The text is used solely to match against the bundled dictionary (`locales/dict.json`) and to decide whether the spot is visible.
+- The text is used solely to match against the bundled dictionary (`src/dict.js`) and to decide whether the spot is visible.
 - All matching happens locally, inside the user's browser. Nothing leaves the device.
 - The only result is a small ⓘ marker next to a matched term, showing a Japanese explanation as a tooltip.
 - Read text is never stored. Nothing remains once the page is closed.
@@ -189,9 +196,16 @@ Chrome separates API permissions from the sites a content script may be injected
 |---|---|---|
 | Chrome API permission | `storage` | To remember the on/off setting. Nothing else |
 | Site access | `content_scripts.matches` = `https://github.com/*` | To match visible text against the dictionary and place ⓘ markers on GitHub pages |
-| Bundled file access | `web_accessible_resources` (`locales/dict.json`, `styles.css`) | So the content script can load the **dictionary** and the **UI stylesheet** bundled with the extension. `styles.css` is a template: a per-load random token is substituted into its selectors before use (since v1.8.18, so the extension's look never lands on the page's own elements). Both live inside `chrome-extension://` and are **never fetched from a server**. Neither holds secrets |
+| Bundled file access | None (`web_accessible_resources` is not declared) | The **dictionary** (`src/dict.js`) and the **UI stylesheet** (`src/styles.js`) are loaded as content-script JS together with the extension. No bundled file is exposed to the page, so scripts on github.com cannot read anything inside `chrome-extension://` (since v1.8.22; earlier versions exposed `locales/dict.json` and `styles.css` to the page). The stylesheet is a template: a per-load random token is substituted into its selectors before use. Nothing is **fetched from a server**. Neither holds secrets |
 
 No `host_permissions`, `tabs`, `activeTab`, `scripting`, or background service worker is requested. Browsing history is not read.
+
+### 4-2. What github.com can tell
+
+The extension sends no data, but because it inserts elements into github.com pages, **scripts on the page can tell that the extension is installed**.
+
+- The ⓘ markers next to matched terms and the toggle button at the bottom right ("解説 ON" / "解説 OFF") are elements in the page. Page scripts can read them and so learn that RepoGloss is installed and whether it is on or off. The toggle button is shown even when off.
+- **The extension ID and version are not exposed in a readable form.** Since v1.8.22 there are no `web_accessible_resources`, so a page script trying to read a bundled file at `chrome-extension://<ID>/…` is refused (measured in the E2E test). The version number is never written into the page. Because marker placement and element shapes can differ between versions, a rough guess at the version from them remains possible.
 
 ### 5. Sharing with third parties
 

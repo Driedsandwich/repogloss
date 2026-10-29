@@ -1,0 +1,371 @@
+// 自動生成。手で直さない。正本は styles.css（作り直しは node scripts/embed-assets.mjs）。
+globalThis.RepoGlossCss = `/* すべてカスケードレイヤーへ入れる（v1.8.13）。
+   ページ側の指定は layer に属さないので、**同じ性質を指定していれば必ずページが勝つ**。
+   以前は、ページ側が同じ class を名乗る要素へ自分の見た目が乗るのを、走り出しに足す
+   \`revert\` の規則で打ち消していた。しかしそれは**ページ自身の指定まで打ち消して**いた
+   （実測: ページの \`display:grid\`・赤・140×30px が block・黒・740×24px になった）。
+   レイヤーなら、打ち消さずに譲れる。
+
+   ⚠️ **このファイルは雛形で、そのままは使われない**（v1.8.18）。\`content.js\` が
+   走り出しに読み込み、\`RG_LOOK\` / \`RG_SCOPE\` を読み込みごとのレイヤー名へ、
+   \`[data-iiyaku-owner]\` を**値まで含む形**（\`[data-iiyaku-owner="iiyaku-xxxxxxxx"]\`）
+   へ書き換えてから \`<style>\` として入れる。\`manifest.json\` の
+   \`content_scripts.css\` には入れない（静的なファイルには読み込みごとに変わる
+   合言葉を書けないため）。
+
+   ⚠️ 固定のレイヤー名では、ページが順序を握れた（第19回 RG-19-06。3巡持ち越し）。
+   レイヤーの順序は**名前が最初に宣言された場所**で決まるので、ページが
+   \`@layer repogloss-e7b41d-scope, repogloss-e7b41d;\` を先に宣言して自分の規則を
+   その中へ書くと、こちらの絞り込みが勝つ。実測では**ページ自身の指定が UA 既定へ
+   差し戻されて**いた（display:grid → inline、赤 → 黒、140×30px → auto）。
+   名前が毎回変われば、そもそも同じレイヤーへ入れない。
+
+   ⚠️ 選択子も合言葉の**値まで**見る。ページが同じ class と \`data-iiyaku-owner\` を
+   持つ要素を作っても一致しないので、打ち消す規則（revert）が要らない。
+   打ち消す側は、ページ自身の指定まで巻き込む事故を2度起こしている。 */
+@layer RG_LOOK, RG_SCOPE;
+
+@layer RG_LOOK {
+
+/* RepoGloss – styles.css
+
+   色は GitHub 側の変数（Primer）を先に見て、無ければ OS の配色、
+   それも無ければ固定値へ落とす。GitHub はライト／ダーク／高コントラスト等を
+   OS と独立に選べるため、OS の配色だけを見ると片方だけ暗い、という食い違いが起きる。
+   変数名が将来変わっても、後ろの固定値が残るので壊れない。 */
+
+/* ① 情報アイコン
+   文字コードの記号は使わない。U+1F6C8（🛈）は Windows の Segoe UI Symbol には
+   収録されているが macOS の標準フォントには無く、豆腐（□）として表示される。
+   どのフォントにも必ずある ASCII の "i" を、CSS で描いた丸の中に置く。
+   ::after で描くので、本文をコピーしても印が混ざらない。 */
+.iiyaku-icon[data-iiyaku-owner] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 1.15em;
+  height: 1.15em;
+  margin-left: 0.25em;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  color: var(--fgColor-accent, var(--color-accent-fg, #2563eb));
+  font-size: 0.78em;
+  font-weight: 700;
+  font-style: normal;
+  line-height: 1;
+  vertical-align: middle;
+  text-decoration: none;
+  cursor: help;
+  user-select: none;
+  opacity: 0.8;
+  transition: opacity 0.15s ease, background-color 0.15s ease;
+}
+
+.iiyaku-icon[data-iiyaku-owner]::after {
+  content: "i";
+  /* Windows は Times New Roman / Georgia、macOS は Georgia / Hiragino Mincho、
+     Linux は Liberation Serif。どれかは必ずあるので、印の "i" は豆腐にならない。 */
+  font-family: Georgia, "Times New Roman", "Liberation Serif", "Hiragino Mincho ProN", serif;
+}
+
+.iiyaku-icon[data-iiyaku-owner]:hover,
+.iiyaku-icon[data-iiyaku-owner]:focus-visible {
+  opacity: 1;
+  background-color: currentColor;
+}
+
+.iiyaku-icon[data-iiyaku-owner]:hover::after,
+.iiyaku-icon[data-iiyaku-owner]:focus-visible::after {
+  color: var(--bgColor-default, var(--color-canvas-default, #ffffff));
+}
+
+/* キーボードで止まったことが分かるようにする。マウス操作では出さない。 */
+.iiyaku-icon[data-iiyaku-owner]:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+/* ⚠️ **shadow root を持つ印は、light DOM 側で絵を描かない**（v1.8.21）。
+   v1.8.20 で単独の印を closed shadow root へ移したとき、この上の規則を
+   そのままにしていたため、**輪が二重になり、"i" が箱の外へはみ出していた**
+   （実測: 印を8倍に拡大して撮影。host の 14px の輪と、中の button の 8×11 の輪が
+   重なり、host の \`::after\` の "i" が flex の2つ目の項目として右へ押し出されていた）。
+   単独の印の絵は、中の button が全部描く。ここでは場所を取る箱だけ残す。
+
+   見分け方は、いま付いている意味づけだけで足りる:
+     - 装飾扱いの印   … \`data-iiyaku-for\` が付く（入口の説明として使う）→ light DOM で描く
+     - shadow の無い印 … \`role="button"\` が付く（Chrome 105 未満の落としどころ）→ 同上
+     - shadow のある印 … どちらも付かない → ここで描くのをやめる
+   ページが shadow のある host へ \`role\` を足しても、\`isCoherent\` がその印を
+   退役させるので、二重の輪が残ることはない。 */
+.iiyaku-icon[data-iiyaku-owner]:not([data-iiyaku-for]):not([role]) {
+  /* ⚠️ 色ではなく**幅ごと** 0 にする。\`box-sizing: border-box\` なので箱の大きさは
+     変わらず、中の button が \`width: 100%\` で host と**同じ大きさ**になる。
+     色だけ透明にすると 1px ずつ内側へ入り、12×12 の輪が 14×14 の箱に描かれる（実測）。 */
+  border-width: 0;
+}
+
+.iiyaku-icon[data-iiyaku-owner]:not([data-iiyaku-for]):not([role])::after {
+  content: none;
+}
+
+/* ⚠️ **hover でも、light DOM の host は地を描かない**（第23回 RG-23-02）。
+   上の hover / focus-visible の規則は host にも当たる（shadow の中を指していれば host も
+   \`:hover\` になる）。そのため host が印の色の円を描き、中の button の絵と重なって
+   外縁だけが残っていた（実測: host の地は rgb(37,99,235)、中は白地に白）。
+   単独の印の絵は、hover でも focus でも中の button が全部描く。 */
+.iiyaku-icon[data-iiyaku-owner]:not([data-iiyaku-for]):not([role]):hover,
+.iiyaku-icon[data-iiyaku-owner]:not([data-iiyaku-for]):not([role]):focus-visible {
+  background-color: transparent;
+}
+
+/* OFF のときに印を隠す規則は、ここには書かない（v1.8.15）。
+   以前は \`<html>\` へ \`iiyaku-off\` という class を付けていたが、**ページが同じ名前の
+   class を持っていると起動時に消していた**（第16回 RG-16-06。実測: ページの
+   \`html.iiyaku-off\` が消え、それに紐づく背景色まで失われた）。
+   いまは読み込みごとに変わる合言葉つきの属性を使い、その規則は content.js が
+   走り出しに足す（→ ownStyleRules）。ページの class には一切触れない。 */
+
+/* ② ツールチップ
+   ブラウザ標準の title 属性は表示までに1秒前後の待ちがあり、こちらから
+   短くできない。自前で描いて、カーソルが乗った瞬間に出す。
+   transition を付けないのは、フェードインでも「遅い」と感じられるため。 */
+.iiyaku-tooltip[data-iiyaku-owner] {
+  /* 画面（viewport）の座標で置く。狭い画面や 200%／400% の拡大表示でも
+     上下左右を余白の内側へ収めたいので、絶対座標ではなく固定座標にする。
+     スクロールや画面の変化では、消さずに位置を追従させる（キーボードで画面外の
+     印へ移るとブラウザが自動でスクロールするため、消すと読めなくなる）。
+     印が画面から出たときだけ閉じるので、貼り付いたままにはならない。 */
+  position: fixed;
+  /* z-index は最大値を使う。他の拡張（英和辞典のポップアップなど）が
+     2147483647 を使っており、それ未満だと重なったときに隠れる。
+     同値の場合は後から DOM に入ったほうが上に来るので、表示のたびに
+     append し直しているこちらが前に出る。 */
+  z-index: 2147483647;
+  /* padding を含めた実寸で幅を決める。box-sizing が無いと、
+     320px + padding が画面幅を超えて横に切れる。 */
+  box-sizing: border-box;
+  max-width: min(320px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  overflow: auto;
+  overflow-wrap: anywhere;
+  padding: 8px 11px;
+  border-radius: 6px;
+  background: var(--bgColor-emphasis, var(--color-neutral-emphasis-plus, #1f2328));
+  color: var(--fgColor-onEmphasis, var(--color-fg-on-emphasis, #ffffff));
+  /* 説明文は日本語なので、字形を持つフォントを OS ごとに明示する。
+     指定しないと GitHub の指定（Windows では Segoe UI）が効き、日本語の
+     字形が無いために OS 既定のフォントへ落ちる。どれに落ちるかは環境任せで、
+     行の高さや字面が揃わない。Windows は Yu Gothic UI / Meiryo、
+     macOS は Hiragino Sans、Linux は Noto Sans CJK JP を先に見る。 */
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Yu Gothic UI",
+               "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans CJK JP",
+               Meiryo, sans-serif;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.7;
+  text-align: left;
+  white-space: normal;
+  /* 日本語は語の途中で折り返してよい。英単語は overflow-wrap 側で処理する */
+  word-break: normal;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  /* 説明が長いときに、カーソルを吹き出しへ移して読めるようにする。
+     移した瞬間に消えると、拡大表示している人が最後まで読めない。 */
+  pointer-events: auto;
+}
+
+/* 1つのリンクに複数の用語があるとき、説明をまとめて出す。
+   どの語の説明かが分かるよう、2件以上のときだけ見出しを付ける。 */
+.iiyaku-tooltip[data-iiyaku-owner] .iiyaku-tooltip-item + .iiyaku-tooltip-item {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.22);
+}
+
+.iiyaku-tooltip[data-iiyaku-owner] .iiyaku-tooltip-term {
+  display: block;
+  font-weight: 700;
+  opacity: 0.85;
+}
+
+/* ③ トグルボタン – ON/OFF */
+.iiyaku-toggle[data-iiyaku-owner] {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Yu Gothic UI",
+               "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans CJK JP",
+               Meiryo, sans-serif;
+  font-size: 13px;
+  background: var(--bgColor-muted, var(--color-canvas-subtle, #f3f4f6));
+  color: var(--fgColor-default, var(--color-fg-default, #1f2937));
+  border: 1px solid var(--borderColor-default, var(--color-border-default, #d1d5db));
+  border-radius: 6px;
+  padding: 4px 8px;
+  cursor: pointer;
+  z-index: 10001;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+.iiyaku-toggle[data-iiyaku-owner]:hover {
+  background: var(--bgColor-neutral-muted, var(--color-neutral-muted, #e5e7eb));
+}
+
+.iiyaku-toggle[data-iiyaku-owner]:focus-visible {
+  outline: 2px solid var(--fgColor-accent, var(--color-accent-fg, #2563eb));
+  outline-offset: 2px;
+}
+
+/* GitHub の変数が取れない場合の受け皿。OS がダークのときだけ効く。 */
+@media (prefers-color-scheme: dark) {
+  .iiyaku-icon[data-iiyaku-owner] {
+    color: var(--fgColor-accent, var(--color-accent-fg, #60a5fa));
+  }
+
+  .iiyaku-icon[data-iiyaku-owner]:hover::after,
+  .iiyaku-icon[data-iiyaku-owner]:focus-visible::after {
+    color: var(--bgColor-default, var(--color-canvas-default, #0d1117));
+  }
+
+  .iiyaku-toggle[data-iiyaku-owner] {
+    background: var(--bgColor-muted, var(--color-canvas-subtle, #1f2937));
+    color: var(--fgColor-default, var(--color-fg-default, #f3f4f6));
+    border: 1px solid var(--borderColor-default, var(--color-border-default, #4b5563));
+  }
+
+  .iiyaku-toggle[data-iiyaku-owner]:hover {
+    background: var(--bgColor-neutral-muted, var(--color-neutral-muted, #374151));
+  }
+}
+
+/* 動きを減らす設定にしている人には、装飾のための変化を出さない。 */
+@media (prefers-reduced-motion: reduce) {
+  .iiyaku-icon[data-iiyaku-owner],
+  .iiyaku-toggle[data-iiyaku-owner] {
+    transition: none;
+  }
+}
+
+/* PWA（standalone）モード時は少し内側に寄せる */
+@media (display-mode: standalone) {
+  .iiyaku-toggle[data-iiyaku-owner] {
+    bottom: 80px; /* タスクバーやアプリバーと被らないように */
+    right: 24px;
+  }
+}
+
+}
+
+/* ===== RG_SHADOW_BEGIN =====
+   単独で押せる印の中身。**closed shadow root の中だけ**で使う（第21回 RG-21-06）。
+   \`content.js\` がこの区間だけを切り出し、\`CSSStyleSheet\` を1枚だけ作って
+   すべての shadow root へ \`adoptedStyleSheets\` で配る（印ごとに \`<style>\` を
+   入れると、印の数だけ規則が増える）。
+
+   ⚠️ ここはレイヤーへ入れない。shadow root の中はページの規則が届かないので、
+   譲る相手がいない。ページから見えるのは host だけで、\`host.shadowRoot\` は
+   \`null\` を返す（実測）。
+
+   ⚠️ 見た目を host ではなく**中の button** に載せる。host に載せると、ページが
+   \`.iiyaku-icon{opacity:0!important}\` のような規則で消せてしまう（第20回 RG-20-03）。
+   host に残すのは、行の中で場所を取るための箱だけ。 */
+:host {
+  display: inline-flex;
+  vertical-align: middle;
+  margin-left: 0.25em;
+  line-height: 1;
+}
+
+button {
+  /* 印の色（ふだんの字と枠・hover/focus の地）と、地の色（hover/focus の字）。
+     ⚠️ **2つを別の名前で持つ**（第23回 RG-23-02）。以前は hover / focus で
+     \`background-color: currentColor\` と \`color: <地の色>\` を同じ button に書いていた。
+     \`currentColor\` は「変える前の印の色」ではなく**その要素のいまの \`color\`** なので、
+     地も字も枠も outline も全部「地の色」になり、ライトの配色では白地に白で消えていた
+     （実測: 実 Tab で止まると印の白でない画素が 104 → 0。button の字・地・枠・outline が
+     すべて rgb(255,255,255)）。\`--rg-fg\` / \`--rg-bg\` は \`content.js\` が塗れないときだけ
+     この button のインラインへ書く（→ ensureShadowPaint）。 */
+  --rg-ink: var(--rg-fg, var(--fgColor-accent, var(--color-accent-fg, #2563eb)));
+  --rg-ground: var(--rg-bg, var(--bgColor-default, var(--color-canvas-default, #ffffff)));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  /* ⚠️ **host いっぱいに広げる。** v1.8.20 は light DOM の規則をそのまま写して
+     \`1.15em\` にしていたが、host には既に \`font-size: .78em\` が効いているので
+     二重に縮み、14px の host の中に 8×11 の輪が入れ子で描かれていた（実測）。
+     大きさは host（＝ページの文字の大きさに合わせた箱）から取る。 */
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  background: transparent;
+  /* ⚠️ \`--rg-fg\` を先に見る（第22回 RG-22-02）。custom property は shadow の境界を
+     越えて継承するので、ページが \`--fgColor-accent: transparent\` を置くと、ここまで
+     届いて字も枠も 0 画素になる（実測: 印の矩形で白でない画素が 129 → 0。それでも
+     Tab では止まっていた）。\`content.js\` が実際の塗りを測り、塗れないときだけ
+     \`--rg-fg\` をこの button のインラインへ書く（closed shadow root の中なので
+     ページからは触れない）。塗れているあいだは書かないので、テーマ追従は変わらない。 */
+  color: var(--rg-ink);
+  /* 字の大きさは host から継いだものをそのまま使う（\`.78em\` を掛け直さない）。 */
+  font: 700 1em/1 Georgia, "Times New Roman", "Liberation Serif", "Hiragino Mincho ProN", serif;
+  font-style: normal;
+  text-decoration: none;
+  /* 線は引かない（↑）ので見た目には出ない。hover / focus でしか使わない「地の色」を、
+     ふだんの状態でも \`content.js\` が測れるように写しておく（→ ensureShadowPaint）。 */
+  text-decoration-color: var(--rg-ground);
+  cursor: help;
+  user-select: none;
+  opacity: 0.8;
+  transition: opacity 0.15s ease, background-color 0.15s ease;
+}
+
+/* 印の "i"。**light DOM ではなくここで描く**（v1.8.21。→ 上の :not(...) の注記）。
+   本文をコピーしても印が混ざらないよう、文字ではなく生成内容として置く。 */
+button::after {
+  content: "i";
+  /* Windows は Times New Roman / Georgia、macOS は Georgia / Hiragino Mincho、
+     Linux は Liberation Serif。どれかは必ずあるので、印の "i" は豆腐にならない。 */
+  font-family: Georgia, "Times New Roman", "Liberation Serif", "Hiragino Mincho ProN", serif;
+}
+
+/* hover / focus では反転する。地＝印の色、"i"＝地の色。\`currentColor\` は使わない（↑）。 */
+button:hover,
+button:focus-visible {
+  opacity: 1;
+  background-color: var(--rg-ink);
+  border-color: var(--rg-ink);
+  color: var(--rg-ground);
+}
+
+/* キーボードで止まったことが分かるようにする。マウス操作では出さない。
+   輪の色も印の色で固定する（\`currentColor\` だと反転後の "i" の色＝地の色になる）。 */
+button:focus-visible {
+  outline: 2px solid var(--rg-ink);
+  outline-offset: 2px;
+}
+
+/* GitHub の変数が取れない場合の受け皿（light DOM 側の同じ規則と合わせる）。 */
+@media (prefers-color-scheme: dark) {
+  button {
+    --rg-ink: var(--rg-fg, var(--fgColor-accent, var(--color-accent-fg, #60a5fa)));
+    --rg-ground: var(--rg-bg, var(--bgColor-default, var(--color-canvas-default, #0d1117)));
+  }
+}
+
+/* 動きを減らす設定にしている人には、装飾のための変化を出さない（第23回 RG-23-02）。
+   ⚠️ light DOM 側の同じ規則は shadow の中まで届かない。ここにも置く
+   （実測: reduced-motion でも中の button の \`transition-duration\` が 0.15s のままだった）。 */
+@media (prefers-reduced-motion: reduce) {
+  button {
+    transition: none;
+  }
+}
+
+/* 説明文は読み上げ用。shadow の外の ID を指せないので、同じ中に置く。 */
+span[hidden] { display: none; }
+/* ===== RG_SHADOW_END ===== */
+`;

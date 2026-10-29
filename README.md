@@ -107,7 +107,7 @@ npm run test:e2e                   # 拡張として実際に読み込んで動�
 
 `reset` `revert` `token` `ssh key` `force push` など取り返しのつかない操作については、何を失うかを説明に含めています。たとえば `reset` と `revert` は、前者では記録に残していない編集が消えること、後者では前の記録が消えないことを、それぞれ明記しています。
 
-辞書の実体は [`locales/dict.json`](./locales/dict.json) です。追加・修正の方法と、語の選び方は [DESIGN.md](./DESIGN.md) にあります。
+辞書の正本はリポジトリの `locales/dict.json` で、拡張はその写しの [`src/dict.js`](./src/dict.js) を読み込みます（写しは `node scripts/embed-assets.mjs` で作り直します）。追加・修正の方法と、語の選び方は [DESIGN.md](./DESIGN.md) にあります。
 
 ## ライセンス
 

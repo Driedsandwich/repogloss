@@ -723,6 +723,9 @@ export async function launchChrome({ port } = {}) {
   const args = [
     '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
     '--ignore-certificate-errors',
+    // 環境変数のプロキシ（https_proxy など）を Chrome は拾う。拾うと github.com が
+    // テストサーバへ写されず、プロキシへ出ていく。テストは手元のサーバだけを相手にする。
+    '--no-proxy-server',
     '--remote-debugging-pipe', '--enable-unsafe-extension-debugging',
     `--user-data-dir=${profile}`,
     // CI（コンテナ内・非特権）ではサンドボックスと /dev/shm で Chrome が起動できない。

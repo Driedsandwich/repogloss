@@ -2387,3 +2387,78 @@ export const STOP_FAST23 = js => js.replace(
 export const STOP_IDLE23 = js => js.replace(
   'function scheduleIdleCheck() {\n    if (!observing || idleTimer !== null) return;',
   'function scheduleIdleCheck() {\n    return;   // 試験の写し: 暇なときの確認を止める\n    if (!observing || idleTimer !== null) return;');
+
+/* ===================== 第24回監査（v1.8.22）の反例・群 A ===================== */
+
+/* RG-24-01。切り取りの祖先（`overflow:hidden`）が縮小されていると、`clientWidth` などは
+   変形を無視した寸法なので、画面上の切り取りより広く見積もっていた（回答の見本そのまま
+   ＋場面を足した）。前方の語 h-<id> は場面の中、後方の同じ語 l-<id> は場面の外。
+   覆いと数えれば [前方, 後方] = [0, 1]、数えなければ [1, 0]。
+     sc    … 切り取り自身が scale(.5)（100px → 画面で 50px）。語は y=65 で見えている
+     up    … 切り取りの**親**が scale(.5)。語は y=65 で見えている
+     plain … 縮小なしの切り取り（100px）。語は y=65 で本当に覆われている（対照）
+     scin  … 縮小した切り取り（200px → 画面で 100px）の中で、語は本当に覆われている（対照）
+     bd    … 境界 40px の切り取り（100px）を scale(.5)。画面では外側 90px・中身は 20〜70px。
+             語は y=70 で見えている（印は y≈76〜90）。境界の太さを縮めずに足すと、中身を
+             40〜90px と見積もり、印を覆われた側にしてしまう
+   場面は横 1 列に並べる（試験の画面は高さ 469px。画面の外の印は覆いを判定しない）。
+   ⚠️ 切り取りの箱にも `pointer-events:none` を付ける。付けないと、語に重なる切り取りの
+      箱そのものが当たり判定に出て、覆いの計算（solidCover）を通らずに決まってしまう
+      （plain・scin がそうだった）。 */
+const CLIPSCALE24_CSS = `.row24{display:flex}.sc{position:relative;height:130px;width:150px;flex:none}
+.sc>p{position:absolute;left:10px;margin:0}
+.clip24{position:absolute;left:0;top:0;width:100px;height:100px;overflow:hidden;z-index:10;pointer-events:none}
+.clip24.big{width:200px;height:200px}
+.clip24.bd{border:40px solid transparent}
+.half{transform:scale(.5);transform-origin:0 0}
+.outer24{position:absolute;left:0;top:0;width:100px;height:100px;z-index:10;transform:scale(.5);transform-origin:0 0;pointer-events:none}
+.cover24{position:absolute;left:0;top:0;width:400px;height:400px;background:white;pointer-events:none}`;
+export const CLIPSCALE24_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>clipscale24</title><style>${BASE23}${CLIPSCALE24_CSS}</style></head><body>
+  <button id="before">before</button>
+  <div class="row24">
+  <div class="sc"><p id="h-sc" style="top:65px">A branch sc.</p>
+    <div class="clip24 half"><div class="cover24"></div></div></div>
+  <div class="sc"><p id="h-up" style="top:65px">A commit up.</p>
+    <div class="outer24"><div class="clip24"><div class="cover24"></div></div></div></div>
+  <div class="sc"><p id="h-bd" style="top:70px">A clone bd.</p>
+    <div class="clip24 bd half"><div class="cover24"></div></div></div>
+  <div class="sc"><p id="h-plain" style="top:65px">A merge pl.</p>
+    <div class="clip24"><div class="cover24"></div></div></div>
+  <div class="sc"><p id="h-scin" style="top:15px">A fetch in.</p>
+    <div class="clip24 big half"><div class="cover24"></div></div></div>
+  </div>
+  <p id="l-sc">A branch sc later.</p>
+  <p id="l-up">A commit up later.</p>
+  <p id="l-plain">A merge plain later.</p>
+  <p id="l-scin">A fetch scin later.</p>
+  <p id="l-bd">A clone bd later.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-24-03。祖先の clip-path の**形だけ**を CSSOM で変える（外接矩形は変わらない）。
+   印の位置指定は最初から固定。右上の角の丸め 100px の中に印が入るので、最初は描かれず
+   引き取られる。1px にすると描かれる。#ctl は同じ形のまま何も変えない対照。 */
+export const SHAPE24_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>shape24</title><style>${BASE23}</style>
+<style id="s24">#first,#ctl{position:relative;box-sizing:border-box;width:200px;height:100px;
+  padding:50px 0 0 20px;font:16px monospace}
+ #first{clip-path:inset(0 round 0 100px 0 0)}
+ #ctl{clip-path:inset(0 round 0 100px 0 0)}
+ #first .iiyaku-icon,#ctl .iiyaku-icon{position:absolute;left:180px;top:0}</style></head><body>
+  <script>
+    window.__ev = [];
+    new MutationObserver(rs => {
+      for (const r of rs) {
+        for (const n of r.addedNodes)
+          if (n.nodeType === 1 && n.classList && n.classList.contains('iiyaku-icon')) __ev.push('add:' + (n.parentNode && n.parentNode.id));
+        for (const n of r.removedNodes)
+          if (n.nodeType === 1 && n.classList && n.classList.contains('iiyaku-icon')) __ev.push('rm:' + r.target.id);
+      }
+    }).observe(document.documentElement, { childList: true, subtree: true });
+  </script>
+  <button id="before">before</button>
+  <div id="first">branch</div>
+  <div id="ctl">commit</div>
+  <button id="after">after</button>
+</body></html>`;

@@ -1128,7 +1128,11 @@
     // `polygon(0 0,0 0,0 0)` の中の語が確実に見えるものとして扱われて**いた
     // （実測: 語も印も0画素・印の5点すべてが BODY・それでも Tab の順路に入った）。
     // 解けないときは「断定できない」を返す。
+    // 形の入力（計算後の clip-path と、形を回す変形）。判定関数は中身を比べられないので、
+    // 引き取った語を入れ直すかの署名にはこちらを使う（第24回 RG-24-03 → rejectSig）。
+    let shapeKey = '';
     if (cs.clipPath && cs.clipPath !== 'none') {
+      shapeKey = cs.clipPath + (skewed ? '@' + [L.a, L.b, L.c, L.d].map(v => v.toFixed(4)).join(',') : '') + ';';
       const { shape: sh, box } = splitGeometryBox(cs.clipPath.trim());
       if (!skewed) {
         const ref = refBoxRect(cs, border, false, box);
@@ -1176,7 +1180,7 @@
         tests.push(() => 'unknown');
       }
     }
-    return { overflow, shape, tests, scroller };
+    return { overflow, shape, tests, scroller, shapeKey };
   }
 
   // 形そのものとの交差判定。矩形で足りる形は null を返す（外接矩形だけで決まる）。
@@ -1244,6 +1248,7 @@
   // 祖先までさかのぼって、その場所の文字に効く事情を1回で集める。
   //   clip        … 積み上げた切り取り（null は制限なし）
   //   tests       … 形そのものとの交差判定の並び
+  //   shapeKey    … その判定を作った形の入力を連ねた文字列（tests の中身の代わりに比べる）
   //   hidden      … 描画効果だけで完全に消えている
   //   transformed … 途中に変形があり、箱の寸法から見た目を推し量れない
   // 逃げ方（mode）によって答えが変わるので、覚えるときも mode ごとに分ける。
@@ -1252,7 +1257,7 @@
   function paintChain(el, mode) {
     if (!el) return { clip: null, tests: [], hidden: false, transformed: false, fixed: false,
                       captured: false, paintUnknown: false, scrolls: [],
-                      linear: IDENTITY, flat: true };
+                      linear: IDENTITY, flat: true, shapeKey: '' };
     const cache = chainCache && chainCache[mode];
     if (cache) { const hit = cache.get(el); if (hit !== undefined) return hit; }
     const cs = getComputedStyle(el);
@@ -1297,7 +1302,8 @@
                 captured,
                 scrolls: (applies && own && own.scroller)
                   ? [own.scroller].concat(up.scrolls) : up.scrolls,
-                linear, flat };
+                linear, flat,
+                shapeKey: own && own.shapeKey ? up.shapeKey + own.shapeKey : up.shapeKey };
     if (cache) cache.set(el, v);
     return v;
   }
@@ -1634,6 +1640,22 @@
     (s.overflowX !== 'visible' || s.overflowY !== 'visible' ||
      /\b(paint|strict|content)\b/.test(s.contain || '') || s.contentVisibility === 'auto');
 
+  // 要素の変形が、画面の座標へどう効くか（第24回 RG-24-01）。
+  //   'id'    … 座標を変えない（変形なし・平行移動だけ）
+  //   'scale' … 軸に沿った正の拡大縮小（と平行移動）だけ
+  //   'bad'   … それ以外（反転・回転・傾き・3D・perspective・zoom）。解かない
+  // ⚠️ `zoom` は、`zoom` の下の `clientWidth` などがどの単位で返るかが Chrome の版で
+  // 揺れるので、拡大縮小と同じには扱わない。
+  const coordKind = s => {
+    const z = parseFloat(s.zoom);
+    if (isFinite(z) && z !== 1) return 'bad';
+    if (!isNoneVal(s.perspective)) return 'bad';
+    const t = ownLinear(s);
+    if (!t.flat) return 'bad';
+    if (t.m === null || isIdentity(t.m)) return 'id';
+    return t.m.b === 0 && t.m.c === 0 && t.m.a > 0 && t.m.d > 0 ? 'scale' : 'bad';
+  };
+
   // 矩形のとおりに塗りつぶされていると言える覆いなら、その矩形を返す（祖先の切り取りで
   // 狭める）。言えなければ null。祖先の opacity・visibility も見る（旧 opaqueChain）。
   function solidCover(el, cs, r) {
@@ -1641,6 +1663,27 @@
     // 地の色は、いちばん下の層の background-clip で切られる
     if (String(cs.backgroundClip).split(',').pop().trim() !== 'border-box') return null;
     let x1 = r.left, y1 = r.top, x2 = r.right, y2 = r.bottom;
+    // 祖先の切り取りは、**画面の座標で**狭める（第24回 RG-24-01）。以前は
+    // `getBoundingClientRect()`（変形後）に `clientWidth` など（変形を無視した寸法）を
+    // そのまま足していたので、縮小された切り取りを広く見積もり、見えている語の印を
+    // 「覆われた」と断定していた（実測: `scale(.5)` の 100px の切り取り＝画面で 50px の
+    // 中の覆いを 100px まで広げ、y=65 で見えている語の印を後方へ移した。切り取りの親が
+    // 縮小されている形も同じ）。
+    // 切り取りの祖先**とその上の祖先**に軸に沿った正の拡大縮小があるときは、画面上の
+    // 縮尺（外接矩形 ÷ `offsetWidth`）を `clientLeft` などに掛ける。境界の太さも同じ縮尺で
+    // 描かれる（実測: 境界 40px・scale(.5) の切り取りで、境界だけ縮めずに足す写しは、画面で
+    // 見えている印を覆われた側へ移した）。
+    // それ以外の変形があれば、その覆いは**断定しない**（null）。覆いと切り取りの祖先の
+    // あいだの変形は `r` に反映済みなので、ここでは見ない。
+    // 縮尺は上の祖先まで歩かないと分からないので、切り取りは控えておき、最後に狭める。
+    const clips = [];                                       // { n, scaled }
+    const scaleAbove = s => {                               // 控えた切り取りへ効く変形か
+      if (!clips.length) return true;
+      const k = coordKind(s);
+      if (k === 'bad') return false;
+      if (k === 'scale') for (const c of clips) c.scaled = true;
+      return true;
+    };
     for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
       const s = n === el ? cs : getComputedStyle(n);
       if (s.visibility !== 'visible' || s.display === 'none') return null;
@@ -1651,12 +1694,23 @@
       // 「覆っている範囲を少なく見積もる」向き（＝断定しない側）なので構わない。
       if (n !== el && n !== document.body && clipsInside(s)) {
         if (hasRadius(s)) return null;
-        const b = n.getBoundingClientRect();
-        const px = b.left + n.clientLeft, py = b.top + n.clientTop;
-        x1 = Math.max(x1, px); y1 = Math.max(y1, py);
-        x2 = Math.min(x2, px + n.clientWidth); y2 = Math.min(y2, py + n.clientHeight);
-        if (!(x2 > x1 && y2 > y1)) return null;
+        clips.push({ n, scaled: false });
       }
+      if (!scaleAbove(s)) return null;
+    }
+    // 上の歩みは <html> の手前で止まる。<html> の変形も切り取りの寸法を変える
+    if (!scaleAbove(getComputedStyle(document.documentElement))) return null;
+    for (const { n, scaled } of clips) {
+      const b = n.getBoundingClientRect();
+      let sx = 1, sy = 1;
+      if (scaled) {
+        sx = b.width / n.offsetWidth; sy = b.height / n.offsetHeight;
+        if (!(isFinite(sx) && sx > 0 && isFinite(sy) && sy > 0)) return null;
+      }
+      const px = b.left + n.clientLeft * sx, py = b.top + n.clientTop * sy;
+      x1 = Math.max(x1, px); y1 = Math.max(y1, py);
+      x2 = Math.min(x2, px + n.clientWidth * sx); y2 = Math.min(y2, py + n.clientHeight * sy);
+      if (!(x2 > x1 && y2 > y1)) return null;
     }
     // 祖先の content-visibility なども、まとめて聞いておく
     if (HAS_CHECK_VISIBILITY && !el.checkVisibility(CHECK_VISIBILITY_OPTS)) return null;
@@ -3311,11 +3365,18 @@
   //               周期の見直しと、自分が出し入れした印の記録では進まない
   //   語の矩形・祖先の切り取り・描画効果・テーマ色 … CSSOM の値だけの書き換えのように
   //               合図の出ない変化でも、印の置き場所が変わればここが変わる
+  //   祖先の切り抜きの形の入力（計算後の clip-path と、形を回す変形）… 外接矩形が同じまま
+  //               形だけが変わっても、描ける領域は変わる（第24回 RG-24-03）。以前は判定関数の
+  //               **本数**だけを控えていたので、`inset(0 round 0 100px 0 0)` を
+  //               `inset(0 round 0 1px 0 0)` へ CSSOM で変えても（外接矩形も DOM も同じ）、
+  //               角の外から内へ入った印を入れ直さなかった（実測: 変えてから 4 秒待っても印 0）
   //   stylesheet の枚数と形の指紋 … 印を名指しする規則の追加・削除
-  // 変わっていても、ページの observer と押し合いにならないよう、入れ直しの間隔は
-  // 引き取るたびに倍にする（400ms から 30 秒まで）。入れて描かれれば記録は消す。
+  // 変わっていても、ページの observer と押し合いにならないよう、引き取るたびに次に
+  // 見るまでの間を倍にする（400ms から 30 秒まで）。**30 秒は間の上限で、入れ直しの
+  // 期限ではない**——状態が変わらなければ、何秒たっても入れ直さない。入れて描かれれば
+  // 記録は消す。
   // ⚠️ 残る限界: 印を名指しする規則の**値だけ**を CSSOM で書き換えた変化（語の場所も
-  // 合図も変わらない）は、次にページ側の合図が来るまで入れ直さない。
+  // 祖先の形も合図も変わらない）は、次にページ側の合図が来るまで入れ直さない。
   const rejected = new WeakMap();        // Text → { sig, at, gap }
   const REJECT_GAP = 400;
   const REJECT_GAP_MAX = 30000;
@@ -3332,7 +3393,8 @@
     let s = extSerial + '|' + styleSerial + '|' + printVal + '|' +
       [b.left, b.top, b.right, b.bottom].map(Math.round).join(',') + '|' +
       (c ? [c.x1, c.y1, c.x2, c.y2].map(Math.round).join(',') : '-') + '|' +
-      (ch.hidden ? 'h' : '') + (ch.paintUnknown ? 'u' : '') + ch.tests.length + '|' + cs.color;
+      (ch.hidden ? 'h' : '') + (ch.paintUnknown ? 'u' : '') + ch.tests.length + '|' + ch.shapeKey + '|' +
+      cs.color;
     for (const v of THEME_VARS) s += '' + cs.getPropertyValue(v).trim();
     return s;
   }

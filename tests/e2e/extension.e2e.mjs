@@ -5939,6 +5939,229 @@ test('第24回 RG-24-03: 祖先の切り抜きの形だけが変わっても、�
   await tab.close();
 });
 
+/* ===================== 第24回監査（v1.8.22）の反例・群 B ===================== */
+/* 文字影の色（RG-24-02）・nesting の展開（RG-24-05）・候補を集める段の上限（RG-24-06）。
+   どれも回答の見本を土台にし、**直す前の ddfce22 で落ちる**ことを確かめてある。
+   対照は【対照】。 */
+import { SHADOW24_PAGE, NEST24_PAGE, POOLFLAT24_PAGE, POOLDUP24_PAGE } from './helpers/chrome.mjs';
+
+/*
+ * Tab で 1 周を歩き、止まった先の段落の id を順に返す（#before から #before へ戻るまで）。
+ * ⚠️ countTabStops は使わない。RG-24-02 の見本では 3 つ目以降の印を 0 と数えた（直した後の
+ * 実測。1 歩ずつ見ると、その印に止まっていた）。印どうしが続くと「移った」の目印（id か
+ * tagName:className）が同じになることは分かっているが、それが原因かは確かめていない
+ * （この件の外）。ここでは歩くたびに少し待って読み、2 周の結果が同じことと、#after まで
+ * 歩き切ったことを確かめる。
+ */
+async function tabWalk24(cdp, tab) {
+  const walk = async () => {
+    await tab.evaluate(`document.getElementById('before').focus(); true`);
+    const seen = [];
+    for (let i = 0; i < 40; i++) {
+      await pressKey(cdp, tab.sessionId, 'Tab');
+      await sleep(200);
+      const r = await tab.evaluate(`(() => { const a = document.activeElement;
+        if (!a || a.id === 'before') return '#wrap';
+        const p = a.closest && a.closest('p'); return p ? p.id : (a.id || a.tagName); })()`);
+      if (r === '#wrap') break;
+      seen.push(r);
+    }
+    return seen;
+  };
+  const a = await walk(), b = await walk();
+  assert.deepEqual(a, b, '2 周で止まる先が違う（数えられていない）');
+  assert.ok(a.includes('after'), `1 周を歩き切っていない: ${JSON.stringify(a)}`);
+  return a;
+}
+const stopsOf24 = (seen, ids) => Object.fromEntries(ids.map(id => [id, seen.filter(x => x === id).length]));
+
+test('第24回 RG-24-02: 透明な color() / oklch() の影だけの語は、見えると断定しない', async t => {
+  const srv = await startTestServer(SHADOW24_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  await waitFor('6 語すべてに印が付く', async () => await count23(tab, '.iiyaku-icon') === 6);
+  await sleep(800);
+
+  await t.test('前提: 影の計算済みの値は rgb/rgba 以外の書き方のまま返る', async () => {
+    const v = await tab.evaluate(`['h-fn', 'h-ok', 'h-cf']
+      .map(id => getComputedStyle(document.getElementById(id)).textShadow)`);
+    assert.match(v[0], /^color\(srgb /, `見本が rgba へ直されている: ${v[0]}`);
+    assert.match(v[1], /^oklch\(/, `見本が rgba へ直されている: ${v[1]}`);
+    assert.match(v[2], /^color\(srgb /, `見本が rgba へ直されている: ${v[2]}`);
+  });
+
+  const HIDDEN = [
+    ['fn', 'branch', '`color(srgb 0 0 0 / 0)` の影'],
+    ['ok', 'commit', '`oklch(0 0 0 / 0)` の影'],
+    ['rg', 'merge', '【対照】`rgba(0,0,0,0)` の影'],
+    ['far', 'clone', '【対照】不透明だが横へ 10,000px ずらした影']
+  ];
+  for (const [id, word, why] of HIDDEN) {
+    await t.test(`${why}: 0 画素の前方の語ではなく、後方の読める語に付く`, async () => {
+      assert.equal(await wordInk23(cdp, tab, id, word), 0, '前提が崩れている（前方の語が描かれている）');
+      const lr = await wordRect23(tab, `#l-${id}`, word);
+      assert.ok((await pixelsAt(cdp, tab, lr)).nonwhite > 0, '前提が崩れている（後方の語が見えていない）');
+      assert.deepEqual(await settle23(() => pair23(tab, id), v => v[0] === 0 && v[1] === 1, 2000), [0, 1],
+        '描かれていない語を見えると判定して、後方の読める語を説明しなかった');
+    });
+  }
+
+  const SEEN = [
+    ['on', 'fetch', '【対照】不透明な黒の影（ずらし 0）'],
+    ['cf', 'fork', '【対照】不透明な `color(srgb 0 0 0)` の影（ずらし 0）']
+  ];
+  for (const [id, word, why] of SEEN) {
+    await t.test(`${why}: 影で描かれた前方の語に付く`, async () => {
+      assert.ok(await wordInk23(cdp, tab, id, word) > 0, '前提が崩れている（影が語を描いていない）');
+      assert.deepEqual(await settle23(() => pair23(tab, id), v => v[0] === 1, 2000), [1, 0]);
+      const ink = await inkAt(cdp, tab, innerRect(await rectOf23(tab, `#h-${id} .iiyaku-icon`)));
+      assert.ok(ink.colors >= 2, `前方の印が描かれていない: ${JSON.stringify(ink)}`);
+    });
+  }
+
+  await t.test('Tab は透明な影の語では止まらず、影で描かれた語と後方の語で止まる', async () => {
+    const seen = await tabWalk24(cdp, tab);
+    assert.deepEqual(stopsOf24(seen, ['h-fn', 'h-ok', 'l-fn', 'l-ok', 'h-on', 'h-cf']),
+      { 'h-fn': 0, 'h-ok': 0, 'l-fn': 1, 'l-ok': 1, 'h-on': 1, 'h-cf': 1 }, `止まった先: ${JSON.stringify(seen)}`);
+  });
+
+  await tab.close();
+});
+
+test('第24回 RG-24-05: nesting の展開で、引用符と escape の中の & を書き換えない', async t => {
+  const srv = await startTestServer(NEST24_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  // ⚠️ 全要素を歩く経路が見落としを救っていないことを確かめるため、試験のためだけに
+  //    索引を作り終えたところで「歩くか」と「引いた選択子」を localStorage へ書き出す
+  //    （判定は変えない。書き換えが当たらなければ stageExtensionPatched が例外にする）。
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtensionPatched(js => js.replace(
+    'ghostSelWalk = walk;',
+    "ghostSelWalk = walk; localStorage.setItem('rg-ghost-sel', JSON.stringify({ walk, sels: [...sels] }));")) });
+  const tab = await openPage(cdp, PAGE);
+  await waitFor('拡張が動き出す', async () => await count23(tab, '.iiyaku-toggle'));
+  await sleep(2500);   // 暇なときの確認を1周
+  const index = async () => JSON.parse(await tab.evaluate(`localStorage.getItem('rg-ghost-sel')`) || 'null');
+
+  await t.test('前提: 索引は全要素を歩かず、選択子で引いている（偶然の救済が無い）', async () => {
+    const ix = await index();
+    assert.ok(ix, '索引の書き出しが無い（書き換えが効いていない）');
+    assert.equal(ix.walk, false, `全要素を歩く経路に落ちている: ${JSON.stringify(ix)}`);
+    assert.equal(await tab.evaluate(`document.querySelectorAll('[style*="pointer-events" i]').length`), 0);
+  });
+
+  await t.test('引用符と escape の中の & は、索引の選択子にそのまま残る', async () => {
+    const { sels } = await index();
+    const has = (re, what) => assert.ok(sels.some(s => re.test(s)), `${what} が無い: ${JSON.stringify(sels)}`);
+    has(/\[data-note="&"\]/, '`[data-note="&"]`');
+    has(/\[data-k="&"\]|\[data-k='&'\]/, '`[data-k="&"]`');
+    has(/\.c\\&v/, '`.c\\&v`');
+    assert.ok(!sels.some(s => /"[^"]*:is\(/.test(s) || /\\:is\(/.test(s)),
+      `引用符か escape の中の & を親の選択子に書き換えた: ${JSON.stringify(sels)}`);
+  });
+
+  const CASES = [
+    ['aud', 'branch', '回答の見本 `& [data-note="&"]`'],
+    ['sq', 'commit', "一重引用符の中の & `& [data-k='&']`"],
+    ['esc', 'merge', 'escape した & `& .c\\&v`'],
+    ['top', 'rebase', '【対照】入れ子でない規則の引用符の中の &'],
+    ['ds', 'fetch', '【対照】`& .cv24`'],
+    ['pc', 'clone', '【対照】`&:not(:hover)`'],
+    ['ls', 'fork', '【対照】親が選択子のリスト'],
+    ['deep', 'webhook', '【対照】2 段の入れ子']
+  ];
+  for (const [id, word, why] of CASES) {
+    await t.test(`${why}: 覆われた前方は説明済みにせず、後方に付く`, async () => {
+      assert.equal(await wordInk23(cdp, tab, id, word), 0, '前提が崩れている（覆いが語を隠していない）');
+      const lr = await wordRect23(tab, `#l-${id}`, word);
+      assert.ok((await pixelsAt(cdp, tab, lr)).nonwhite > 0, '前提が崩れている（後方の語が見えていない）');
+      assert.deepEqual(await settle23(() => pair23(tab, id), v => v[0] === 0 && v[1] === 1, 3000), [0, 1],
+        '覆いの選択子を取り違えて見落とし、0 画素の語を説明済みにした');
+    });
+  }
+
+  await t.test('Tab は覆われた前方の語で止まらず、後方の語で止まる', async () => {
+    const seen = await tabWalk24(cdp, tab);
+    const ids = CASES.flatMap(([id]) => [`h-${id}`, `l-${id}`]);
+    const want = Object.fromEntries(ids.map(id => [id, id.startsWith('l-') ? 1 : 0]));
+    assert.deepEqual(stopsOf24(seen, ids), want, `止まった先: ${JSON.stringify(seen)}`);
+  });
+
+  await tab.close();
+});
+
+test('第24回 RG-24-06: 候補を集める段で上限を見て、20,001 件より多くは集めない', async t => {
+  const srv = await startTestServer(POOLFLAT24_PAGE,
+    { '/octocat/dup': ['text/html; charset=utf-8', POOLDUP24_PAGE] });
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  const errs = collectErrors23(cdp);
+  t.after(async () => { errs.off(); chrome.kill(); await srv.close(); });
+  // 隔離された世界の Set を数える計測器を、content.js より先に読み込む（→ set-probe.js）
+  await cdp.send('Extensions.loadUnpacked', {
+    path: stageExtensionWith({ 'set-probe.js': 'tests/e2e/set-probe.js' },
+      js => ['set-probe.js', ...js]) });
+  const sets = async tab => JSON.parse(await tab.evaluate(`localStorage.getItem('rg-set')`) || 'null');
+  const three = tab => tab.evaluate(`['first', 'second', 'third']
+    .map(id => document.getElementById(id).querySelectorAll('.iiyaku-icon').length)`);
+
+  // 1枚目: 回答の見本（1 つの選択子が 30,000 要素に当たる）
+  const tab = await openPage(cdp, PAGE);
+  await waitFor('3語とも付く', async () => (await three(tab)).every(n => n === 1), { timeout: 30000 });
+  await sleep(2500);   // 暇なときの確認を1周
+
+  await t.test('計る仕掛けが効いている（陽性対照）', async () => {
+    assert.equal(await tab.evaluate(`localStorage.getItem('rg-set-selftest')`), '3', 'Set.add を包めていない');
+    assert.equal(await tab.evaluate(`document.querySelectorAll('.candidate').length`), 30000, '前提が崩れている');
+    const s = await sets(tab);
+    assert.ok(s && s.adds > 0, `1回も数えられていない: ${JSON.stringify(s)}`);
+  });
+
+  await t.test('一致が 30,000 でも、候補の集合は 20,001 件で打ち切る', async () => {
+    /*
+     * getComputedStyle の回数（RG-23-08 の試験）とは別に、**集める段**を見る。上限を
+     * 全部足した後で見ると、集合はいったん 30,000 件になる。
+     */
+    const s = await sets(tab);
+    assert.ok(s.max <= 20001, `Set が ${s.max} 件まで膨らんだ（上限 20,000 ＋ 超えを知る 1 件）`);
+    assert.ok(s.max >= 20000, `前提が崩れている（上限まで集めていない: ${s.max}）`);
+  });
+
+  await t.test('【対照】上限を超えても、3語とも説明される', async () => {
+    assert.deepEqual(await three(tab), [1, 1, 1]);
+  });
+  await tab.close();
+
+  // 2枚目: 3 つの選択子が同じ 8,000 要素に当たる（重複は上限を食わない）
+  const tab2 = await openPage(cdp, 'https://github.com/octocat/dup');
+  await waitFor('拡張が動き出す', async () => await count23(tab2, '.iiyaku-toggle'));
+  await sleep(2500);
+
+  await t.test('【対照】重複は上限を食わず、候補の中のほんとうの覆いを見つける', async () => {
+    assert.equal(await tab2.evaluate(`document.querySelectorAll('.d1.d2.d3').length`), 8000, '前提が崩れている');
+    const s = await sets(tab2);
+    assert.ok(s.max >= 8000 && s.max <= 20001, `候補を集めていない／膨らんだ: ${JSON.stringify(s)}`);
+    assert.ok(s.adds >= 24000, `前提が崩れている（重複を足していない: ${JSON.stringify(s)}）`);
+    assert.equal(await wordInk23(cdp, tab2, 'dup', 'fetch'), 0, '前提が崩れている（覆いが語を隠していない）');
+    assert.deepEqual(await settle23(() => tab2.evaluate(`['h-dup', 'l-dup']
+      .map(i => document.getElementById(i).querySelectorAll('.iiyaku-icon').length)`),
+      v => v[0] === 0 && v[1] === 1, 3000), [0, 1], '重複で上限を食い、覆いを見落とした');
+    assert.deepEqual(await tab2.evaluate(`['first', 'second']
+      .map(id => document.getElementById(id).querySelectorAll('.iiyaku-icon').length)`), [1, 1]);
+  });
+
+  await t.test('例外も、覆いの判定の失敗も記録されない（2枚とも）', async () => {
+    assert.deepEqual(errs.exceptions, [], '例外が出た');
+    assert.deepEqual(errs.consoleErrors.filter(m => m.includes('[iiyaku]')), [], '失敗が記録された');
+  });
+
+  await tab2.close();
+});
+
 test('ページ側から同梱物を読めず、通信はテストサーバと拡張の中だけ', async t => {
   const srv = await startTestServer();
   const chrome = await launchChrome({ port: srv.port });

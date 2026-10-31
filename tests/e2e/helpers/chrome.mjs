@@ -2462,3 +2462,147 @@ export const SHAPE24_PAGE = `<!doctype html><html lang="en"><head><meta charset=
   <div id="ctl">commit</div>
   <button id="after">after</button>
 </body></html>`;
+
+/* ===================== 第24回監査（v1.8.22）の反例・群 B ===================== */
+
+/* RG-24-02。文字の塗りは透明で、影だけを持つ語（前方 h-…）と、ふつうに読める同じ語（後方 l-…）。
+   影の色を rgb/rgba 以外の書き方で透明にする（回答の見本 `color(srgb 0 0 0 / 0)` と
+   `oklch(0 0 0 / 0)`）。
+     fn  … color(srgb 0 0 0 / 0) の影     ok  … oklch(0 0 0 / 0) の影
+     rg  … rgba(0,0,0,0) の影（対照・前から透明と読めた形）
+     on  … 不透明な黒の影・ずらし 0（対照・影が語を描く）
+     cf  … 不透明な color(srgb 0 0 0) の影・ずらし 0（対照・関数の形でも不透明なら描く）
+     far … 不透明な黒の影・横へ 10,000px（対照・語の位置には何も来ない）
+   ⚠️ 前方と後方をそれぞれ横 1 列に並べ、列の間を 240px 空ける。語を縦に詰めて並べると、
+      Tab で 1 周した後、2 周目には後方の印が 1〜3 個止まらなくなった（実測）。Tab で印に
+      止まると吹き出しが印の**下**に開くので、それが下の印を覆ったためと推し量っているが、
+      確かめてはいない（第24回の群 A でも見えた、この件の外の振る舞い）。 */
+const ROW24 = '.row24{display:flex;gap:28px;margin:0 8px}.row24 p{margin:0}';
+export const SHADOW24_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>shadow24</title><style>${BASE23}${ROW24}
+#hrow{margin-top:40px}#lrow{margin-top:240px}
+.tx{color:transparent}
+#h-fn{text-shadow:0 0 0 color(srgb 0 0 0 / 0)}
+#h-ok{text-shadow:0 0 0 oklch(0 0 0 / 0)}
+#h-rg{text-shadow:0 0 0 rgba(0,0,0,0)}
+#h-on{text-shadow:0 0 0 black}
+#h-cf{text-shadow:0 0 0 color(srgb 0 0 0)}
+#h-far{text-shadow:10000px 0 0 black}</style></head><body>
+  <button id="before">before</button>
+  <div class="row24" id="hrow">
+  <p id="h-fn" class="tx">branch</p>
+  <p id="h-ok" class="tx">commit</p>
+  <p id="h-rg" class="tx">merge</p>
+  <p id="h-on" class="tx">fetch</p>
+  <p id="h-cf" class="tx">fork</p>
+  <p id="h-far" class="tx">clone</p>
+  </div>
+  <div class="row24" id="lrow">
+  <p id="l-fn">branch</p>
+  <p id="l-ok">commit</p>
+  <p id="l-rg">merge</p>
+  <p id="l-on">fetch</p>
+  <p id="l-cf">fork</p>
+  <p id="l-far">clone</p>
+  </div>
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-24-05。CSS nesting の中で `pointer-events` を宣言した覆い。
+   aud は回答の見本そのまま（`& [data-note="&"]`・位置指定も回答のとおり。前方の語を
+   fixed の白い箱が覆う）。ほかは枠ごとに1場面（前方 h-… は枠の中、後方 l-… は枠の外）。
+     sq   … 一重引用符の中の `&`（`& [data-k='&']`）
+     esc  … escape した `&`（`& .c\&v`）
+     top  … 入れ子でない規則の引用符の中の `&`（対照・前から正しく引けた形）
+     ds   … `& .cv24`（対照・ふつうの子孫）
+     pc   … `&:not(:hover)`（対照・`&` に擬似クラスを続ける形）
+     ls   … 親が選択子のリスト `.la24, .lb24`（対照）
+     deep … 2 段の入れ子（対照）
+   ⚠️ **読めない stylesheet も、`style` 属性の `pointer-events` も置かない。** どちらかが
+      あると全要素を歩く経路へ落ち、選択子の見落としが偶然救われる（回答の注）。
+      宣言のある選択子も 64 個より少なくする（多いと引かずに歩く）。
+   ⚠️ 覆いの位置と塗りの規則（.cv24）には `pointer-events` を書かない。
+   ⚠️ 枠と後方の語は、それぞれ横 1 列に並べて画面（800×600）の中に収める。画面の外の
+      矩形を撮影から切り出すと透明＝「白でない」と数えられ、前提の画素の確かめが狂う。
+      横に並べるのは、Tab で開いた吹き出しが下の印を覆わないため（→ SHADOW24_PAGE）。 */
+export const NEST24_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>nest24</title><style>${BASE23}${ROW24}
+#h-aud{position:absolute;left:10px;top:20px;margin:0}
+#l-aud{position:absolute;left:10px;top:160px;margin:0}
+.wrap {
+  & [data-note="&"] {
+    position:fixed; left:0; top:0;
+    width:300px; height:100px;
+    background:white; z-index:10;
+    pointer-events:none;
+  }
+}
+#hrow{margin-top:200px}#lrow{margin-top:200px}
+.slot24{position:relative}
+.cv24{position:absolute;inset:0;z-index:5;background:white}
+.sq24 { & [data-k='&'] { pointer-events:none } }
+.esc24 { & .c\\&v { pointer-events:none } }
+[data-t="&"] { pointer-events:none }
+.ds24 { & .cv24 { pointer-events:none } }
+.pc24 { &:not(:hover) { pointer-events:none } }
+.la24, .lb24 { & > .cv24 { pointer-events:none } }
+.m124 { .m224 { & .cv24 { pointer-events:none } } }</style></head><body>
+  <button id="before">before</button>
+  <p id="h-aud">branch</p>
+  <div class="wrap"><div data-note="&amp;"></div></div>
+  <p id="l-aud">branch</p>
+  <div class="row24" id="hrow">
+  <div class="slot24 sq24" id="s-sq"><p id="h-sq">commit</p><div class="cv24" data-k="&amp;"></div></div>
+  <div class="slot24 esc24" id="s-esc"><p id="h-esc">merge</p><div class="cv24 c&amp;v"></div></div>
+  <div class="slot24" id="s-top"><p id="h-top">rebase</p><div class="cv24" data-t="&amp;"></div></div>
+  <div class="slot24 ds24" id="s-ds"><p id="h-ds">fetch</p><div class="cv24"></div></div>
+  <div class="slot24" id="s-pc"><p id="h-pc">clone</p><div class="cv24 pc24"></div></div>
+  <div class="slot24 lb24" id="s-ls"><p id="h-ls">fork</p><div class="cv24"></div></div>
+  <div class="slot24 m124" id="s-deep"><div class="m224"><p id="h-deep">webhook</p><div class="cv24"></div></div></div>
+  </div>
+  <div class="row24" id="lrow">
+  <p id="l-sq">commit</p>
+  <p id="l-esc">merge</p>
+  <p id="l-top">rebase</p>
+  <p id="l-ds">fetch</p>
+  <p id="l-pc">clone</p>
+  <p id="l-ls">fork</p>
+  <p id="l-deep">webhook</p>
+  </div>
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-24-06。1 つの選択子が 30,000 要素に当たる（回答の見本そのまま）。候補の上限 20,000 を超える。 */
+export const POOLFLAT24_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>poolflat24</title><style>${BASE23}
+.candidate { pointer-events:none }</style></head><body>
+  <button id="before">before</button>
+  <p id="first">A branch first.</p>
+  <p id="second">A commit second.</p>
+  <p id="third">A merge third.</p>
+  <button id="after">after</button>
+  <div id="bulk"></div>
+  <script>
+    document.getElementById('bulk').innerHTML = '<div class="candidate"></div>'.repeat(30000);
+  </script>
+</body></html>`;
+
+/* RG-24-06 の対照。3 つの選択子が**同じ** 8,000 要素に当たる（足す回数は 24,000 で上限を
+   超えるが、一意な候補は 8,000 で上限の内）。重複が上限を食えば候補を諦め、前方の
+   ほんとうの覆い（#cv-dup）を見落とす。 */
+export const POOLDUP24_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>pooldup24</title><style>${BASE23}${SLOT23}
+.d1 { pointer-events:none }
+.d2 { pointer-events:none }
+.d3 { pointer-events:none }
+#cv-dup{z-index:5;background:white;pointer-events:none}</style></head><body>
+  <button id="before">before</button>
+  ${slot23('dup', 'fetch')}
+  <p id="first">A branch first.</p>
+  <p id="second">A commit second.</p>
+  <button id="after">after</button>
+  <div id="bulk"></div>
+  <script>
+    document.getElementById('bulk').innerHTML = '<div class="d1 d2 d3"></div>'.repeat(8000);
+  </script>
+</body></html>`;

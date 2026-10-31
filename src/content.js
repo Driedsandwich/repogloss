@@ -700,18 +700,33 @@
   // `text-shadow: 10000px 0 0 black` の語は0画素なのに印が付いた）。影は文字の形を
   // ずらして描くので、ずらし量が語の大きさ（＋ぼかし）を超えると、その語の場所には
   // 何も来ない。
+  // ⚠️ **影の色は rgb/rgba だけではない**（第24回 RG-24-02）。以前は色を
+  // `/rgba?\([^)]*\)/` だけで取り出していた。Chrome は `color(srgb 0 0 0 / 0)` や
+  // `oklch(0 0 0 / 0)` の影を**その形のまま**計算済みの値として返すので、色が取れず
+  // 「透明か」を見ないまま、ずらし量だけで「描かれる」と答えていた（実測: 塗りが透明で
+  // 透明な `color()` の影だけを持つ語は0画素なのに印が付き、後方の読める同じ語が
+  // 説明されなかった）。色は colorAlpha と同じ関数の並びで取り出し、alpha で見る。
+  // 読めない（色が1つに決まらない・alpha が読めない・ずらし量が読めない）層は、
+  // 以前は「描かれる側へ倒す」としていたが、語の可視性は「断定できない語には印を
+  // 付けない」（AUDIT.md §7-1 #25）に合わせて **'unknown'** を返す。
+  //   true … 届く／false … 届かない／'unknown' … 断定できない
+  const SHADOW_COLOR = /(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\([^()]*\)/g;
   function shadowPaintsAt(v, rect) {
     if (!v || v === 'none') return false;
+    let unknown = false;
     for (const layer of splitTopLevel(v)) {
-      const color = (layer.match(/rgba?\([^)]*\)/) || [])[0];
-      if (color && isClearColor(color)) continue;          // 透明な影は描かない
-      const lens = (layer.replace(/rgba?\([^)]*\)/g, '').match(/-?[0-9.]+px/g) || []).map(parseFloat);
-      if (lens.length < 2) return true;                        // 読めない＝描かれる側へ倒す
+      const colors = layer.match(SHADOW_COLOR) || [];
+      if (colors.length !== 1) { unknown = true; continue; }   // 色が読めない
+      const a = colorAlpha(colors[0]);
+      if (a === 0) continue;                                    // 透明な影は描かない
+      if (a === null) { unknown = true; continue; }
+      const lens = (layer.replace(SHADOW_COLOR, '').match(/-?[0-9.]+px/g) || []).map(parseFloat);
+      if (lens.length < 2) { unknown = true; continue; }        // ずらし量が読めない
       const [dx, dy] = lens;
       const blur = lens.length > 2 ? Math.abs(lens[2]) : 0;
       if (Math.abs(dx) < rect.width + blur && Math.abs(dy) < rect.height + blur) return true;
     }
-    return false;
+    return unknown ? 'unknown' : false;
   }
 
   // `background-clip: text` の塗りが、**その語の位置に**届くか。
@@ -820,8 +835,10 @@
     const sw = parseFloat(cs.webkitTextStrokeWidth || '0');
     const sc = cs.webkitTextStrokeColor || '';
     if (sw > 0 && !isClearColor(sc)) return true;
-    // ② 影。色と**ずらし量**を見る
-    if (shadowPaintsAt(cs.textShadow, rect)) return true;
+    // ② 影。色と**ずらし量**を見る。'unknown' は真として扱わない（第24回 RG-24-02）——
+    // ③で確実に描かれると分かればそちらを取り、そうでなければ最後に 'unknown' を返す。
+    const shadow = shadowPaintsAt(cs.textShadow, rect);
+    if (shadow === true) return true;
     // ③ 背景を文字型に抜く指定。塗りが語の位置に届くかを見る。
     // ⚠️ 入口も**層ごと**に見る（第20回 RG-20-05）。文字列全体で `=== 'text'` を
     // 見ていたため、`background-clip: text, border-box` の見本を素通りしていた。
@@ -830,7 +847,7 @@
       const s = bgClipTextPaintsAt(el, cs, rect);
       if (s !== false) return s;                                    // true か 'unknown'
     }
-    return false;
+    return shadow;                                                  // false か 'unknown'
   }
 
   // 色の並びのうち、1つでも不透明なものがあるか。`none` は無し。
@@ -1488,6 +1505,33 @@
   // `& .b`・`&:hover`・`& > .c` と `&` つきで返す（実測 Chrome 155）。そのまま
   // `querySelectorAll` へ渡すと `&` は `:scope`（＝`<html>`）になり、`&:hover` は
   // `<html>` だけを指す——親の選択子で置き換える。`@scope` の中は解かない（null）。
+  // ⚠️ **置き換えるのは入れ子の `&` だけ**（第24回 RG-24-05）。以前は
+  // `own.replace(/&/g, …)` で、属性値の引用符の中の `&` まで書き換えていた
+  // （`& [data-note="&"]` → `:is(.wrap) [data-note=":is(.wrap)"]`）。有効な選択子のまま
+  // なので例外にもならず、覆いの候補を黙って落としていた（実測: 白い覆いの下の0画素の
+  // 語に印が付き、後方の読める同じ語は説明されなかった）。`.c\&v` の escape も壊していた。
+  // 1文字ずつ読み、引用符の中と `\` の直後の1文字はそのまま写す。引用符が閉じない・
+  // `\` で終わる形は解かずに null（→ 全要素を歩くほう。そちらも GHOST_POOL_MAX で打ち切る）。
+  // 意味の違う選択子に変えて黙って通すより、上限のある道へ送る。
+  function nestExpand(own, up) {
+    let out = '', nested = false, quote = '';
+    for (let i = 0; i < own.length; i++) {
+      const ch = own[i];
+      if (ch === '\\') {                          // escape: 次の1文字ごとそのまま
+        if (i + 1 >= own.length) return null;
+        out += ch + own[++i];
+      } else if (quote) {
+        if (ch === quote) quote = '';
+        out += ch;
+      } else if (ch === '"' || ch === "'") {
+        quote = ch; out += ch;
+      } else if (ch === '&') {
+        nested = true; out += ':is(' + up + ')';
+      } else out += ch;
+    }
+    if (quote) return null;
+    return nested ? out : ':is(' + up + ') ' + own;
+  }
   function ruleSelector(r) {
     let p = r.parentRule;
     while (p && typeof p.selectorText !== 'string') {
@@ -1497,8 +1541,7 @@
     if (!p) return r.selectorText;
     const up = ruleSelector(p);
     if (up === null) return null;
-    const own = r.selectorText;
-    return own.includes('&') ? own.replace(/&/g, ':is(' + up + ')') : ':is(' + up + ') ' + own;
+    return nestExpand(r.selectorText, up);
   }
 
   function ghostSelectorList() {
@@ -1572,7 +1615,19 @@
     }
     // 選択子はページの持ち物。読めない形が混じっても、その1つだけを捨てる。
     const pool = new Set();
-    const add = list => { for (const el of list) pool.add(el); return pool.size <= GHOST_POOL_MAX; };
+    // ⚠️ **上限は足すたびに見る**（第24回 RG-24-06）。以前は1つの選択子の一致を全部
+    //    足してから `pool.size` を見ていたので、30,000 要素に当たる選択子1つで集合が
+    //    30,000 件になってから諦めていた（実測: 隔離された世界の Set の最大が 30,000）。
+    //    いまは超えたと分かった1件（20,001 件目）で止める。重複は `size` を増やさないので
+    //    上限を食わない。`querySelectorAll` が作る NodeList そのものの手間は、ここでは
+    //    減らない（選択子の数と要素の数の積は GHOST_MATCH_MAX で抑えている）。
+    const add = list => {
+      for (const el of list) {
+        pool.add(el);
+        if (pool.size > GHOST_POOL_MAX) return false;
+      }
+      return true;
+    };
     for (const sel of sels) {
       let hit;
       try { hit = document.querySelectorAll(sel); } catch (e) { continue; }

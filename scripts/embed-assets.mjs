@@ -31,6 +31,20 @@ export function embeddedFiles(root = ROOT) {
   };
 }
 
+// 写しが正本と食い違っている（または無い）ものの一覧。空なら一致。
+// 梱包の入口（package-stage・package-zip）は、作るときも検査するときも最初にこれを呼び、
+// 空でなければ止める。npm test を通さずに梱包だけを実行すると、正本だけを直して
+// 写しを作り直し忘れたまま、古い辞書や見た目を詰められたため（2026-10-30 の点検 F03）。
+export function staleCopies(root = ROOT) {
+  const stale = [];
+  for (const [rel, body] of Object.entries(embeddedFiles(root))) {
+    let now = null;
+    try { now = readFileSync(join(root, rel), 'utf8'); } catch (e) { /* 無い＝食い違い */ }
+    if (now !== body) stale.push(rel);
+  }
+  return stale;
+}
+
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const check = process.argv.includes('--check');
   let stale = 0;

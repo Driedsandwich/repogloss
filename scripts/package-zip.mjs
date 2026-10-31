@@ -15,6 +15,7 @@ import { PACKAGE_FILES } from './package-files.mjs';
 import { writeZip } from './zip.mjs';
 import { verifyZipBuffer } from './verify-zip.mjs';
 import { validateProvenance } from './provenance.mjs';
+import { staleCopies } from './embed-assets.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const VERIFY_ONLY = process.argv.includes('--verify');
@@ -23,6 +24,14 @@ const ALLOW_DIRTY = process.argv.includes('--allow-uncommitted');
 const sha256 = buf => createHash('sha256').update(buf).digest('hex');
 
 const version = JSON.parse(readFileSync(join(ROOT, 'manifest.json'), 'utf8')).version;
+
+// 写しが正本と合わないまま梱包しない（→ embed-assets.mjs の staleCopies）
+const staleList = staleCopies(ROOT);
+if (staleList.length) {
+  console.error(`NG: 写しが正本と一致しない: ${staleList.join(', ')}`);
+  console.error('node scripts/embed-assets.mjs で作り直してから梱包する');
+  process.exit(1);
+}
 
 /* いま作っている中身が、どのコミットのものか（CI の外で作ったときの記録用） */
 function gitRev() {

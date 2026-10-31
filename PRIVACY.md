@@ -98,7 +98,9 @@ Chrome の権限は、`permissions` に書く API の権限と、コンテンツ
 本拡張はデータを送りませんが、github.com のページへ要素を差し込むため、**ページのスクリプトからは拡張が入っていることが分かりえます**。
 
 - 一致した用語の横の ⓘ と、画面右下の切り替えボタン（「解説 ON」／「解説 OFF」）はページの中の要素です。ページのスクリプトはこれらを読めるので、本拡張が入っていること、ON / OFF のどちらかが分かりえます。OFF でも切り替えボタンは表示されます。
-- **拡張の ID と版は、ページから読める形では出していません。** v1.8.22 から `web_accessible_resources` をやめ、`chrome-extension://<ID>/…` の同梱ファイルをページのスクリプトが読もうとしても拒否されます（E2E で実測）。版番号をページへ書き出すこともしていません。ただし、印の付き方や要素の形は版によって変わることがあるため、そこから版の見当を付けられる可能性は残ります。
+- ⓘ には、その語の説明文（辞書の中身）と辞書の見出しを属性として付けています。開いた吹き出しの本文もページの中の要素です。どちらもページのスクリプトから読めます。辞書は公開している解説で、このリポジトリの `locales/dict.json` と同じものです。いったん付いた ⓘ は、OFF にしても隠すだけで属性は残ります。
+- ⓘ と切り替えボタンの見た目の規則（CSS）も、ページの中の `<style>` に置くので読めます。
+- **拡張の ID と版は、ページから読める形では出していません。** v1.8.22 から `web_accessible_resources` をやめ、`chrome-extension://<ID>/…` の同梱ファイルをページのスクリプトが読もうとしても拒否されます（E2E で実測）。版番号をページへ書き出すこともしていません（ページへ入れる見た目の規則からは、開発用の注釈を外しています。v1.8.22 の公開前の点検までは、注釈に過去の版の番号が含まれていました）。ただし、印の付き方や要素の形は版によって変わることがあるため、そこから版の見当を付けられる可能性は残ります。
 
 ### 5. 第三者への提供
 
@@ -205,7 +207,9 @@ No `host_permissions`, `tabs`, `activeTab`, `scripting`, or background service w
 The extension sends no data, but because it inserts elements into github.com pages, **scripts on the page can tell that the extension is installed**.
 
 - The ⓘ markers next to matched terms and the toggle button at the bottom right ("解説 ON" / "解説 OFF") are elements in the page. Page scripts can read them and so learn that RepoGloss is installed and whether it is on or off. The toggle button is shown even when off.
-- **The extension ID and version are not exposed in a readable form.** Since v1.8.22 there are no `web_accessible_resources`, so a page script trying to read a bundled file at `chrome-extension://<ID>/…` is refused (measured in the E2E test). The version number is never written into the page. Because marker placement and element shapes can differ between versions, a rough guess at the version from them remains possible.
+- Each ⓘ carries the explanation for its term (the dictionary text) and the dictionary headword as attributes, and an open tooltip's text is also an element in the page. Page scripts can read both. The dictionary is published explanatory text, identical to `locales/dict.json` in this repository. Once a marker has been added, turning the extension off only hides it; the attributes remain.
+- The style rules (CSS) for the markers and the toggle button are placed in a `<style>` element in the page, so they can be read too.
+- **The extension ID and version are not exposed in a readable form.** Since v1.8.22 there are no `web_accessible_resources`, so a page script trying to read a bundled file at `chrome-extension://<ID>/…` is refused (measured in the E2E test). The version number is never written into the page (development comments are removed from the style rules inserted into the page; before the pre-release review of v1.8.22 those comments contained past version numbers). Because marker placement and element shapes can differ between versions, a rough guess at the version from them remains possible.
 
 ### 5. Sharing with third parties
 

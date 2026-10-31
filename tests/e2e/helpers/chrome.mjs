@@ -2606,3 +2606,57 @@ export const POOLDUP24_PAGE = `<!doctype html><html lang="en"><head><meta charse
     document.getElementById('bulk').innerHTML = '<div class="d1 d2 d3"></div>'.repeat(8000);
   </script>
 </body></html>`;
+
+/* ===================== 第24回監査（v1.8.22）の反例・群 C ===================== */
+
+/* RG-24-04。実 Tab で印に止まって開いた説明が、ポインタを無関係な場所へ動かすだけで閉じる。
+   回答の見本（#before・語・右下の #elsewhere）に、リンクを入口にする装飾の印（#lnk）を足した。
+   ⚠️ 2 つの入口のあいだは空ける。詰めると #first の吹き出しが #lnk の印に重なり、
+      下の「自分で発見」の件（吹き出しを覆いと数える）が混ざる。 */
+export const FOCUSTIP24_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>focustip24</title><style>html,body{margin:0;background:white;color:black;font:16px Arial}
+ p{margin:40px} .gap24{height:150px}</style></head><body>
+  <button id="before">start</button>
+  <p id="first">A branch here.</p>
+  <div class="gap24"></div>
+  <p><a href="#x" id="lnk">A commit link</a></p>
+  <div id="elsewhere" style="position:fixed;right:40px;bottom:100px;padding:30px">elsewhere</div>
+  <button id="after">after</button>
+</body></html>`;
+
+/* 第24回（自分で発見）。語を縦に詰めて並べ、上の印の吹き出しが下の印に重なるようにする。
+   #h-cov は**ページ側の**不透明な箱で語と印を覆った対照（覆いと数える＝後方の #l-cov に付く）。
+   吹き出しの届かない高さに置く。
+   #h-tg は**自分の切替ボタン**の下に印が入る対照（覆いと数える＝後方の #l-tg に付く）。
+   ボタンの幅は OS の字体で変わるので、ページの script がボタンの位置を測ってから、語の終わりが
+   ボタンの左端の 2px 内側に来るよう置き、それから #h-tg と #l-tg の本文を同時に入れる
+   （先に #l-tg だけが現れると、そちらに印が付いて対照にならない）。 */
+export const TIPCOVER24_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>tipcover24</title><style>${BASE23} p{margin:0}
+ .gap24{height:150px} .slot24{position:relative}
+ .slot24>.cv{position:absolute;inset:0;background:white;z-index:5}</style></head><body>
+  <button id="before">before</button>
+  <p id="a">A branch here.</p>
+  <p id="b">A commit here.</p>
+  <p id="c">A merge here.</p>
+  <div class="gap24"></div>
+  <div class="slot24"><p id="h-cov">A clone here.</p><div class="cv" id="cv-cov"></div></div>
+  <p id="l-cov">A clone later.</p>
+  <p id="h-tg" style="position:fixed;left:0;top:0;margin:0;line-height:1;white-space:nowrap"></p>
+  <p id="l-tg"></p>
+  <button id="after">after</button>
+  <script>
+    const timer = setInterval(() => {
+      const b = document.querySelector('.iiyaku-toggle');
+      if (!b) return;
+      clearInterval(timer);
+      const r = b.getBoundingClientRect();
+      const p = document.getElementById('h-tg');
+      p.textContent = 'A rebase';
+      const w = p.getBoundingClientRect().width, h = p.getBoundingClientRect().height;
+      p.style.left = (r.left + 2 - w) + 'px';
+      p.style.top = (r.top + (r.height - h) / 2) + 'px';
+      document.getElementById('l-tg').textContent = 'A rebase later.';
+    }, 50);
+  </script>
+</body></html>`;

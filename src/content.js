@@ -2019,7 +2019,23 @@
       // `pointer-events: none` の箱は hit testing から外れるので、`elementFromPoint`
       // は印を返し続ける。点ごとに見るので、**部分的な覆いでは残りの点が露出と数えられ**、
       // 「全面が覆われている」とは判定されない。
-      const hit = document.elementFromPoint(x, y);
+      let hit = document.elementFromPoint(x, y);
+      // ⚠️ **自分の吹き出しは覆いと数えない**（第24回・本体が見つけた件）。
+      // 吹き出しは印の 6px 下に、本文より手前へ出る。語を縦に詰めたページでは、実 Tab で
+      // 上の印に止まると吹き出しが下の印に重なり、ここで「全面が覆われた」と判定されて
+      // 下の印が引き取られていた。引き取った語の控え（rejectSig）は吹き出しが閉じても
+      // 変わらないので、**印は戻らず、Tab でも止まらなくなった**（実測）。
+      // 自分の持ち物の除外は ghostCovers にもあるが、そこは `pointer-events: none` の
+      // 箱だけを見る段で、吹き出しは（カーソルを受けるので）その段に入らない（実測）。
+      // 吹き出しが最前面なら、その下（重なり順で次の、吹き出しでない要素）で判定する。
+      // ⚠️ **切替ボタンは除かない。** ボタンは右下に常に居るので、その下に本当に隠れた印を
+      // 「覆われていない」とすると、見えないのに Tab で止まる点ができる（AUDIT.md §7-1 #25）。
+      // 吹き出しは開いている間だけ出る物で、閉じれば下の印は見える。
+      const onTip = el => !!(tip && (el === tip || tip.contains(el)));
+      if (hit && onTip(hit)) {
+        hit = document.elementsFromPoint(x, y).find(el => !onTip(el)) || null;
+        if (!hit) { if (!coveredAt(x, y)) exposed++; continue; }   // 下に何も無い＝当たり判定では覆いと断定しない
+      }
       if (hit && (hit === icon || icon.contains(hit)) && !coveredAt(x, y)) exposed++;
     }
     if (inView > 0 && exposed === 0 && visibleNow(b, chain)) return false;   // 全面が覆われている
@@ -3062,6 +3078,20 @@
     return x >= l - P && x <= r + P && y >= t - P && y <= b + P;
   }
 
+  // いまのフォーカスが、出している説明の入口にあるか。
+  // 単独の印では、フォーカスは closed shadow root の中の button にあり、文書からは
+  // host（＝印）として見える。リンクなどを入口にする装飾の印では、入口そのもの
+  // （aria-describedby を足した相手）か、その中にある。
+  // ⚠️ `document.hasFocus()` は条件に入れない。Chrome（headless）ではウィンドウが一瞬
+  // フォーカスを失うことがあり（→ escClosedAt の注記）、その瞬間のカーソルの移動で
+  // 閉じてしまう。ウィンドウから本当にフォーカスが去れば focusout が閉じる。
+  function focusHoldsTip() {
+    const a = document.activeElement;
+    if (!a || a === document.body || a === document.documentElement) return false;
+    if (tipIcons.includes(a)) return true;
+    return !!(tipDescribed && (a === tipDescribed || tipDescribed.contains(a)));
+  }
+
   // カーソルが印（入口）と吹き出しの外へ出た。
   // ⚠️ 猶予を与えるのは、**移った先の要素があり**（relatedTarget。ウィンドウの外から
   // 来た／出たときは null）、その位置が上の矩形の中のときだけ。ページの script が
@@ -3069,6 +3099,14 @@
   // これまでどおり即時に閉じる。
   function leaveTip(e) {
     if (!tip) return;
+    // ⚠️ **カーソルが離れても、フォーカスがこの説明の入口に残っていれば閉じない**（第24回 RG-24-04）。
+    // 説明を支えているのは hover と focus の 2 つで、ここ（mouseover / mouseout）が
+    // 知らせるのは hover が無くなったことだけ。以前は focus を見ずに閉じていたので、
+    // 実 Tab で印に止まって開いた説明が、ポインタを別の場所へ動かすだけで即時に消えた
+    // （実測: 猶予の 250ms も無し。WCAG 1.4.13 の Persistent に合わない）。
+    // focus のほうが無くなったときは、focusout・Escape・OFF・退役がそれぞれ hideTip を
+    // 直接呼ぶので、ここで待っても閉じ忘れない。
+    if (focusHoldsTip()) { cancelTipClose(); return; }
     if (e && e.relatedTarget && inTipCorridor(e.clientX, e.clientY)) {
       if (tipCloseTimer === null) {          // 矩形の中で要素をまたいでも延長しない
         const which = tip;

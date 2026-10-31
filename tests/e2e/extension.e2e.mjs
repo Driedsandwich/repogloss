@@ -6162,6 +6162,281 @@ test('第24回 RG-24-06: 候補を集める段で上限を見て、20,001 件よ
   await tab2.close();
 });
 
+/* ===================== 第24回監査（v1.8.22）の反例・群 C ===================== */
+import { FOCUSTIP24_PAGE, TIPCOVER24_PAGE } from './helpers/chrome.mjs';
+
+/*
+ * 実 Tab の前提をそろえる（回答 §8: Windows の runner で「Tab で印に止まれない」が揺れた）。
+ * タブを前面へ出し、文書がフォーカスを持ち、見えていることを**期限つきで**待つ。
+ * 成り立たなければ、そのときの停止先とフォーカスの状態を添えて落とす。固定の sleep で通さない。
+ */
+const focusState24 = tab => tab.evaluate(`(() => { const a = document.activeElement;
+  const p = a && a.closest && a.closest('p');
+  return { active: a ? (a.id || a.tagName) : null, inP: p ? (p.id || 'P') : null,
+           hasFocus: document.hasFocus(), visibility: document.visibilityState }; })()`);
+async function readyForTab24(cdp, tab) {
+  await cdp.send('Page.bringToFront', {}, tab.sessionId);
+  try {
+    await waitFor('タブが前面で、文書がフォーカスを持つ', () => tab.evaluate(
+      `document.hasFocus() && document.visibilityState === 'visible'`), { timeout: 5000, interval: 50 });
+  } catch (e) {
+    throw new Error(`${e.message}: ${JSON.stringify(await focusState24(tab))}`);
+  }
+}
+// 実 Tab で止まる（開始位置の固定にだけ focus() を使う＝tabUntil）。止まれなければ状態を添えて落とす。
+async function tabTo24(cdp, tab, expr, what) {
+  await readyForTab24(cdp, tab);
+  const hit = await tabUntil(cdp, tab, expr, { steps: 12 });
+  assert.ok(hit, `Tab で${what}に止まれない: ${JSON.stringify(await focusState24(tab))}`);
+}
+
+test('第24回 RG-24-04: 実 Tab で開いた説明は、ポインタを無関係な場所へ動かしても閉じない', async t => {
+  const srv = await startTestServer(FOCUSTIP24_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  await waitFor('印が付く（単独とリンク）', async () => await count23(tab, '#first .iiyaku-icon') === 1 &&
+    await count23(tab, '#lnk .iiyaku-icon') === 1);
+  await sleep(600);
+  await tipRecorder23(tab);
+
+  const TIP = '.iiyaku-tooltip[data-iiyaku-owner]';
+  const er = await rectOf23(tab, '#elsewhere');
+  const ex = Math.round(er.x + er.w / 2), ey = Math.round(er.y + er.h / 2);
+  const PARK = [5, 440];                 // 何も無い本文の点（印・入口・吹き出しの外）
+  const park = () => mouse23(cdp, tab, PARK[0], PARK[1]);
+  const onFirst = () => tab.evaluate(`!!(document.activeElement && document.activeElement.closest('#first'))`);
+  const onLnk = () => tab.evaluate(`!!(document.activeElement && document.activeElement.id === 'lnk')`);
+
+  // 本物のカーソルを #elsewhere へ動かし、**実際にそこへ入った**ことをページの記録（mouseover）で、
+  // そこが吹き出しから離れた点であることを当たり判定と矩形で、それぞれ前提として取る。
+  const pointElsewhere = async () => {
+    await tipRecorder23(tab);
+    await mouse23(cdp, tab, ex, ey);
+    await waitFor('カーソルが #elsewhere に入る', async () =>
+      (await tab.evaluate(`window.__tip23`)).some(x => x[1] === 'over' && x[2] === 'elsewhere'),
+      { timeout: 3000, interval: 20 });
+    assert.equal(await kindAt23(tab, ex, ey), 'other', '前提: #elsewhere の点が印か吹き出しに当たる');
+    const tr = await rectOf23(tab, TIP);
+    if (tr) assert.ok(ex > tr.x + tr.w + 50 || ey > tr.y + tr.h + 50 || ey < tr.y - 50,
+      `前提: #elsewhere が吹き出しの近く: ${JSON.stringify({ ex, ey, tr })}`);
+  };
+  // 説明が出ていることを、DOM の数・当たり判定・画素で別々に見る
+  const tipShown = async why => {
+    assert.equal(await tips23(tab), 1, `${why}（吹き出しの数）`);
+    const tr = await rectOf23(tab, TIP);
+    const cx = Math.round(tr.x + tr.w / 2), cy = Math.round(tr.y + tr.h / 2);
+    assert.equal(await kindAt23(tab, cx, cy), 'tip', `${why}（吹き出しの中心に吹き出しが無い）`);
+    const px = await pixelsAt(cdp, tab, innerRect(tr));
+    assert.ok(px.nonwhite > px.total * 0.5, `${why}（吹き出しが描かれていない: ${JSON.stringify(px)}）`);
+  };
+
+  for (const [what, expr, onIt] of [
+    ['単独の印', `el.closest && el.closest('#first')`, onFirst],
+    ['装飾の印（入口はリンク）', `el.id === 'lnk'`, onLnk]
+  ]) {
+    await t.test(`${what}: 実 Tab で止まって開いた説明は、カーソルを #elsewhere へ動かしても閉じない`, async () => {
+      await park();
+      await tabTo24(cdp, tab, expr, what);
+      await waitFor('Tab で止まると説明が出る', async () => await tips23(tab) === 1, { timeout: 3000 });
+      await pointElsewhere();
+      await sleep(600);                                   // 猶予（250ms）より長く待つ
+      assert.ok(await onIt(), `前提: フォーカスが入口から動いた: ${JSON.stringify(await focusState24(tab))}`);
+      const log = await tab.evaluate(`window.__tip23.map(x => x[1] + ':' + x[2]).join(' ')`);
+      await tipShown(`フォーカスが入口に残るのに、カーソルを動かしただけで説明が閉じた（記録: ${log}）`);
+      // もう 1 か所、無関係な本文の点へ動かしても同じ
+      await park();
+      await sleep(400);
+      assert.ok(await onIt(), '前提: フォーカスが入口から動いた（2 回目）');
+      await tipShown('2 か所目へ動かしたら閉じた');
+    });
+  }
+
+  await t.test('【対照】フォーカスを次へ移すと（実 Tab）、説明は閉じる', async () => {
+    await park();
+    await tabTo24(cdp, tab, `el.id === 'lnk'`, 'リンク');
+    await waitFor('説明が出る', async () => await tips23(tab) === 1, { timeout: 3000 });
+    await pressKey(cdp, tab.sessionId, 'Tab');
+    await waitFor('閉じる', async () => await tips23(tab) === 0, { timeout: 3000 });
+    assert.ok(!(await onLnk()), '前提: フォーカスがリンクから動いていない');
+  });
+
+  await t.test('【対照】マウスだけで開いた説明は、#elsewhere へ動かすと待たずに閉じる', async () => {
+    await tab.evaluate(`document.getElementById('before').focus(); true`);   // 入口の外にフォーカス
+    const ir = await rectOf23(tab, '#first .iiyaku-icon');
+    await mouse23(cdp, tab, Math.round(ir.x + ir.w / 2), Math.round(ir.y + ir.h / 2));
+    await waitFor('印に乗ると説明が出る', async () => await tips23(tab) === 1, { timeout: 3000 });
+    await pointElsewhere();
+    await waitFor('閉じる', async () => await tips23(tab) === 0, { timeout: 3000 });
+    const lag = await closeLag23(tab, ['out', 'over']);
+    assert.ok(lag !== null && lag < 100, `マウスだけで開いた説明が閉じるまで ${lag}ms（猶予を広く掛けすぎ）`);
+  });
+
+  await t.test('【対照】マウスだけで開き隙間で止まれば猶予の後に閉じ、吹き出しへ入れば猶予を取り消す（RG-23-15）', async () => {
+    await tab.evaluate(`document.getElementById('before').focus(); true`);
+    const ir = await rectOf23(tab, '#first .iiyaku-icon');
+    const cx = Math.round(ir.x + ir.w / 2), cy = Math.round(ir.y + ir.h / 2);
+    const gy = Math.round(ir.y + ir.h) + 3;               // 印の下端から 3px 下（6px の隙間の途中）
+    await park();
+    await mouse23(cdp, tab, cx, cy);
+    await waitFor('説明が出る', async () => await tips23(tab) === 1, { timeout: 3000 });
+    await mouse23(cdp, tab, cx, gy);
+    assert.equal(await kindAt23(tab, cx, gy), 'other', '前提: 隙間の点ではない');
+    assert.equal(await tips23(tab), 1, '隙間へ入った瞬間に閉じた（猶予が無い）');
+    await sleep(700);
+    assert.equal(await tips23(tab), 0, '隙間で止まったのに閉じない');
+    // 取り消し: 隙間から吹き出しの中へ入る
+    await park();
+    await mouse23(cdp, tab, cx, cy);
+    await waitFor('説明が出る（2 回目）', async () => await tips23(tab) === 1, { timeout: 3000 });
+    await mouse23(cdp, tab, cx, gy);
+    const tr = await rectOf23(tab, TIP);
+    await sleep(100);
+    await mouse23(cdp, tab, cx, Math.round(tr.y + tr.h / 2));
+    await sleep(600);
+    assert.equal(await tips23(tab), 1, '吹き出しの中へ入ったのに、猶予の後に閉じた');
+    await park();
+    await waitFor('外へ出ると閉じる', async () => await tips23(tab) === 0, { timeout: 3000 });
+  });
+
+  await t.test('【対照】フォーカスで開いた説明も、印が退役すれば閉じる', async () => {
+    await park();
+    await tabTo24(cdp, tab, `el.closest && el.closest('#first')`, '単独の印');
+    await waitFor('説明が出る', async () => await tips23(tab) === 1, { timeout: 3000 });
+    // ページが印の説明文を書き換える（→ isCoherent が偽になり退役する）
+    await tab.evaluate(`document.querySelector('#first .iiyaku-icon').dataset.iiyaku = 'x'; true`);
+    await waitFor('退役で閉じる', async () => await tips23(tab) === 0, { timeout: 5000 });
+    await waitFor('付け直される', async () => await count23(tab, '#first .iiyaku-icon') === 1, { timeout: 8000 });
+  });
+
+  await t.test('【対照】フォーカスで開いた説明も、OFF で閉じる（切替ボタンへの移動ではフォーカスを動かさない）', async () => {
+    await park();
+    await tabTo24(cdp, tab, `el.closest && el.closest('#first')`, '単独の印');
+    await waitFor('説明が出る', async () => await tips23(tab) === 1, { timeout: 3000 });
+    // 押してもフォーカスが切替ボタンへ移らないようにする（閉じる理由を OFF だけにする）
+    await tab.evaluate(`document.addEventListener('mousedown', e => {
+      if (e.target.closest && e.target.closest('.iiyaku-toggle')) e.preventDefault(); }, true); true`);
+    await clickToggle(cdp, tab);
+    await waitFor('OFF で閉じる', async () => await tips23(tab) === 0, { timeout: 3000 });
+    assert.equal(await tab.evaluate(`document.querySelector('.iiyaku-toggle').getAttribute('aria-pressed')`), 'false',
+      '前提: OFF になっていない');
+    await clickToggle(cdp, tab);                           // ON へ戻す
+    await waitFor('ON で印が戻る', async () => await count23(tab, '#first .iiyaku-icon') === 1, { timeout: 8000 });
+    await park();
+  });
+
+  // ⚠️ Escape は**最後に**押す（RG-23-15 の注記: headless では最初の Escape でウィンドウが一瞬 blur し、
+  //    後のカーソルの入力が遅れて届く）。
+  await t.test('【対照】フォーカスで開いた説明は Escape で待たずに閉じ、フォーカスが残っても出直さない', async () => {
+    await tabTo24(cdp, tab, `el.closest && el.closest('#first')`, '単独の印');
+    await waitFor('説明が出る', async () => await tips23(tab) === 1, { timeout: 3000 });
+    await tipRecorder23(tab);
+    await pressKey(cdp, tab.sessionId, 'Escape');
+    await waitFor('閉じる', async () => await tips23(tab) === 0, { timeout: 3000 });
+    const lag = await closeLag23(tab, 'key', 'Escape');
+    assert.ok(lag !== null && lag < 100, `Escape から閉じるまで ${lag}ms`);
+    await sleep(800);
+    assert.equal(await tips23(tab), 0, 'Escape で閉じた説明が出直した');
+    assert.ok(await onFirst(), `前提: フォーカスが印から動いた: ${JSON.stringify(await focusState24(tab))}`);
+  });
+
+  await tab.close();
+});
+
+test('第24回（自分で発見）: 自分の吹き出しが下の印に重なっても、覆いと数えて引き取らない', async t => {
+  /*
+   * 実 Tab で上の印（#a）に止まると、吹き出しが 6px 下に出て、詰めて並べた下の段の印（#b）に重なる。
+   * 直す前の版は、印の当たり判定で吹き出しを「覆い」と数えて #b の印を引き取り、吹き出しが
+   * 閉じても入れ直さなかった（ddfce22 でも同じ・群 A の E2E が CLIPSCALE24 の見本で見つけた）。
+   * 除くのが吹き出しだけであることは、ページの不透明な箱で覆った #h-cov と、**自分の切替ボタン**の
+   * 下に入る #h-tg が、引き続き覆いと数えられる（後方の #l-cov・#l-tg に付く）ことで確かめる。
+   * 切替ボタンは右下に常に居るので、その下の印を残すと見えない押せる点になる（AUDIT.md §7-1 #25）。
+   */
+  const srv = await startTestServer(TIPCOVER24_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  const IDS = ['a', 'b', 'c', 'h-cov', 'l-cov', 'h-tg', 'l-tg'];
+  const ALL = [1, 1, 1, 0, 1, 0, 1];
+  const rows = () => tab.evaluate(`${JSON.stringify(IDS)}
+    .map(id => document.getElementById(id).querySelectorAll('.iiyaku-icon').length)`);
+  // #h-tg / #l-tg はどちらに付くかを対照の小試験で見るので、ここでは「どちらか 1 つ」まで待つ
+  await waitFor('印が付く', async () => { const v = await rows();
+    return v.slice(0, 5).join() === ALL.slice(0, 5).join() && v[5] + v[6] === 1; }, { timeout: 20000 });
+  await sleep(800);
+  // 矩形の中の、印の色（青）の画素の数。切替ボタンの地と字（灰）や本文（黒）は数えない
+  const blueAt = async r => {
+    const clip = { x: r.x, y: r.y, width: Math.max(1, r.w), height: Math.max(1, r.h), scale: 4 };
+    const { data } = await cdp.send('Page.captureScreenshot', { format: 'png', clip }, tab.sessionId);
+    return await tab.evaluate(`(async () => {
+      const img = new Image(); img.src = 'data:image/png;base64,${data}'; await img.decode();
+      const c = document.createElement('canvas'); c.width = img.width; c.height = img.height;
+      const g = c.getContext('2d'); g.drawImage(img, 0, 0);
+      const d = g.getImageData(0, 0, c.width, c.height).data;
+      let n = 0;
+      for (let i = 0; i < d.length; i += 4) if (d[i + 2] > 150 && d[i + 2] - d[i] > 60) n++;
+      return n; })()`);
+  };
+
+  await t.test('【対照】ページの不透明な箱で覆った語は、覆いと数える（後方に付く）', async () => {
+    assert.equal(await wordInk23(cdp, tab, 'cov', 'clone'), 0, '前提: 箱が語を隠していない');
+    assert.deepEqual(await settle23(() => pair23(tab, 'cov'), v => v[0] === 0 && v[1] === 1, 2000), [0, 1]);
+  });
+
+  await t.test('【対照】自分の切替ボタンの下に本当に隠れた印は、覆いと数える（画素 0・後方に付く）', async () => {
+    assert.ok(await wordInk23(cdp, tab, 'tg', 'rebase') > 0, '前提: #h-tg の語が見えていない');
+    const wr = await wordRect23(tab, '#h-tg', 'rebase');
+    const slot = { x: wr.x + wr.w, y: wr.y, w: 16, h: wr.h };   // 語の直後＝印が入る場所
+    const kind = await tab.evaluate(`(() => { const e = document.elementFromPoint(${slot.x + slot.w / 2}, ${slot.y + slot.h / 2});
+      return e ? (e.closest('.iiyaku-toggle') ? 'toggle' : (e.id || e.tagName)) : 'none'; })()`);
+    assert.equal(kind, 'toggle', '前提: 語の直後が切替ボタンに覆われていない');
+    assert.deepEqual(await settle23(() => pair23(tab, 'tg'), v => v[0] === 0 && v[1] === 1, 2000), [0, 1],
+      '切替ボタンの下に隠れた印を、覆われていないと数えて残した');
+    assert.equal(await blueAt(slot), 0, '語の直後に印の色が描かれている');
+    const lr = await rectOf23(tab, '#l-tg .iiyaku-icon');
+    assert.ok(await blueAt(lr) > 0, '前提: 物差しが印の色を拾えていない（後方の印で 0）');
+  });
+
+  await t.test('実 Tab で上の印に止まり、吹き出しが下の印に重なっている間も、下の印は残る', async () => {
+    await tabTo24(cdp, tab, `el.closest && el.closest('#a')`, '#a の印');
+    await waitFor('説明が出る', async () => await tips23(tab) === 1, { timeout: 3000 });
+    const br = await rectOf23(tab, '#b .iiyaku-icon');
+    assert.equal(await kindAt23(tab, Math.round(br.x + br.w / 2), Math.round(br.y + br.h / 2)), 'tip',
+      '前提: 吹き出しが #b の印に重なっていない');
+    // 見直しの周期（約 2 秒）を越えて見張る。1 回でも消えたら落とす
+    const seen = [];
+    const t0 = Date.now();
+    while (Date.now() - t0 < 3000) {
+      seen.push((await rows()).join());
+      await sleep(150);
+    }
+    const lost = seen.find(v => v.split(',')[1] !== '1');
+    assert.equal(lost, undefined, `吹き出しに重なった #b の印が引き取られた（[${IDS}] の推移: ${[...new Set(seen)].join(' → ')}）`);
+    assert.equal(await tips23(tab), 1, '前提: 見張るあいだに説明が閉じた');
+  });
+
+  await t.test('吹き出しが閉じた後も、下の印は描かれていて、実 Tab で止まる', async () => {
+    await pressKey(cdp, tab.sessionId, 'Tab');               // #b へ（#a の説明は閉じる）
+    await tab.evaluate(`document.getElementById('before').focus(); true`);
+    await waitFor('説明が閉じる', async () => await tips23(tab) === 0, { timeout: 3000 });
+    await sleep(2500);                                       // 入れ直すなら入る時間
+    assert.deepEqual(await rows(), ALL, '印の数が戻らない');
+    const ink = await inkAt(cdp, tab, innerRect(await rectOf23(tab, '#b .iiyaku-icon')));
+    assert.ok(ink.colors >= 2, `#b の印が描かれていない: ${JSON.stringify(ink)}`);
+    await readyForTab24(cdp, tab);
+    const seen = await tabWalk24(cdp, tab);                  // 2 周して同じことも見る
+    assert.deepEqual(stopsOf24(seen, IDS),
+      { a: 1, b: 1, c: 1, 'h-cov': 0, 'l-cov': 1, 'h-tg': 0, 'l-tg': 1 }, `Tab の停止先: ${JSON.stringify(seen)}`);
+    assert.deepEqual(await rows(), ALL, 'Tab で巡った後に印が欠けた');
+  });
+
+  await tab.close();
+});
+
 test('ページ側から同梱物を読めず、通信はテストサーバと拡張の中だけ', async t => {
   const srv = await startTestServer();
   const chrome = await launchChrome({ port: srv.port });

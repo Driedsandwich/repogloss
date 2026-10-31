@@ -2387,3 +2387,276 @@ export const STOP_FAST23 = js => js.replace(
 export const STOP_IDLE23 = js => js.replace(
   'function scheduleIdleCheck() {\n    if (!observing || idleTimer !== null) return;',
   'function scheduleIdleCheck() {\n    return;   // 試験の写し: 暇なときの確認を止める\n    if (!observing || idleTimer !== null) return;');
+
+/* ===================== 第24回監査（v1.8.22）の反例・群 A ===================== */
+
+/* RG-24-01。切り取りの祖先（`overflow:hidden`）が縮小されていると、`clientWidth` などは
+   変形を無視した寸法なので、画面上の切り取りより広く見積もっていた（回答の見本そのまま
+   ＋場面を足した）。前方の語 h-<id> は場面の中、後方の同じ語 l-<id> は場面の外。
+   覆いと数えれば [前方, 後方] = [0, 1]、数えなければ [1, 0]。
+     sc    … 切り取り自身が scale(.5)（100px → 画面で 50px）。語は y=65 で見えている
+     up    … 切り取りの**親**が scale(.5)。語は y=65 で見えている
+     plain … 縮小なしの切り取り（100px）。語は y=65 で本当に覆われている（対照）
+     scin  … 縮小した切り取り（200px → 画面で 100px）の中で、語は本当に覆われている（対照）
+     bd    … 境界 40px の切り取り（100px）を scale(.5)。画面では外側 90px・中身は 20〜70px。
+             語は y=70 で見えている（印は y≈76〜90）。境界の太さを縮めずに足すと、中身を
+             40〜90px と見積もり、印を覆われた側にしてしまう
+   場面は横 1 列に並べる（試験の画面は高さ 469px。画面の外の印は覆いを判定しない）。
+   ⚠️ 切り取りの箱にも `pointer-events:none` を付ける。付けないと、語に重なる切り取りの
+      箱そのものが当たり判定に出て、覆いの計算（solidCover）を通らずに決まってしまう
+      （plain・scin がそうだった）。 */
+const CLIPSCALE24_CSS = `.row24{display:flex}.sc{position:relative;height:130px;width:150px;flex:none}
+.sc>p{position:absolute;left:10px;margin:0}
+.clip24{position:absolute;left:0;top:0;width:100px;height:100px;overflow:hidden;z-index:10;pointer-events:none}
+.clip24.big{width:200px;height:200px}
+.clip24.bd{border:40px solid transparent}
+.half{transform:scale(.5);transform-origin:0 0}
+.outer24{position:absolute;left:0;top:0;width:100px;height:100px;z-index:10;transform:scale(.5);transform-origin:0 0;pointer-events:none}
+.cover24{position:absolute;left:0;top:0;width:400px;height:400px;background:white;pointer-events:none}`;
+export const CLIPSCALE24_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>clipscale24</title><style>${BASE23}${CLIPSCALE24_CSS}</style></head><body>
+  <button id="before">before</button>
+  <div class="row24">
+  <div class="sc"><p id="h-sc" style="top:65px">A branch sc.</p>
+    <div class="clip24 half"><div class="cover24"></div></div></div>
+  <div class="sc"><p id="h-up" style="top:65px">A commit up.</p>
+    <div class="outer24"><div class="clip24"><div class="cover24"></div></div></div></div>
+  <div class="sc"><p id="h-bd" style="top:70px">A clone bd.</p>
+    <div class="clip24 bd half"><div class="cover24"></div></div></div>
+  <div class="sc"><p id="h-plain" style="top:65px">A merge pl.</p>
+    <div class="clip24"><div class="cover24"></div></div></div>
+  <div class="sc"><p id="h-scin" style="top:15px">A fetch in.</p>
+    <div class="clip24 big half"><div class="cover24"></div></div></div>
+  </div>
+  <p id="l-sc">A branch sc later.</p>
+  <p id="l-up">A commit up later.</p>
+  <p id="l-plain">A merge plain later.</p>
+  <p id="l-scin">A fetch scin later.</p>
+  <p id="l-bd">A clone bd later.</p>
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-24-03。祖先の clip-path の**形だけ**を CSSOM で変える（外接矩形は変わらない）。
+   印の位置指定は最初から固定。右上の角の丸め 100px の中に印が入るので、最初は描かれず
+   引き取られる。1px にすると描かれる。#ctl は同じ形のまま何も変えない対照。 */
+export const SHAPE24_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>shape24</title><style>${BASE23}</style>
+<style id="s24">#first,#ctl{position:relative;box-sizing:border-box;width:200px;height:100px;
+  padding:50px 0 0 20px;font:16px monospace}
+ #first{clip-path:inset(0 round 0 100px 0 0)}
+ #ctl{clip-path:inset(0 round 0 100px 0 0)}
+ #first .iiyaku-icon,#ctl .iiyaku-icon{position:absolute;left:180px;top:0}</style></head><body>
+  <script>
+    window.__ev = [];
+    new MutationObserver(rs => {
+      for (const r of rs) {
+        for (const n of r.addedNodes)
+          if (n.nodeType === 1 && n.classList && n.classList.contains('iiyaku-icon')) __ev.push('add:' + (n.parentNode && n.parentNode.id));
+        for (const n of r.removedNodes)
+          if (n.nodeType === 1 && n.classList && n.classList.contains('iiyaku-icon')) __ev.push('rm:' + r.target.id);
+      }
+    }).observe(document.documentElement, { childList: true, subtree: true });
+  </script>
+  <button id="before">before</button>
+  <div id="first">branch</div>
+  <div id="ctl">commit</div>
+  <button id="after">after</button>
+</body></html>`;
+
+/* ===================== 第24回監査（v1.8.22）の反例・群 B ===================== */
+
+/* RG-24-02。文字の塗りは透明で、影だけを持つ語（前方 h-…）と、ふつうに読める同じ語（後方 l-…）。
+   影の色を rgb/rgba 以外の書き方で透明にする（回答の見本 `color(srgb 0 0 0 / 0)` と
+   `oklch(0 0 0 / 0)`）。
+     fn  … color(srgb 0 0 0 / 0) の影     ok  … oklch(0 0 0 / 0) の影
+     rg  … rgba(0,0,0,0) の影（対照・前から透明と読めた形）
+     on  … 不透明な黒の影・ずらし 0（対照・影が語を描く）
+     cf  … 不透明な color(srgb 0 0 0) の影・ずらし 0（対照・関数の形でも不透明なら描く）
+     far … 不透明な黒の影・横へ 10,000px（対照・語の位置には何も来ない）
+   ⚠️ 前方と後方をそれぞれ横 1 列に並べ、列の間を 240px 空ける。語を縦に詰めて並べると、
+      Tab で 1 周した後、2 周目には後方の印が 1〜3 個止まらなくなった（実測）。Tab で印に
+      止まると吹き出しが印の**下**に開くので、それが下の印を覆ったためと推し量っているが、
+      確かめてはいない（第24回の群 A でも見えた、この件の外の振る舞い）。 */
+const ROW24 = '.row24{display:flex;gap:28px;margin:0 8px}.row24 p{margin:0}';
+export const SHADOW24_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>shadow24</title><style>${BASE23}${ROW24}
+#hrow{margin-top:40px}#lrow{margin-top:240px}
+.tx{color:transparent}
+#h-fn{text-shadow:0 0 0 color(srgb 0 0 0 / 0)}
+#h-ok{text-shadow:0 0 0 oklch(0 0 0 / 0)}
+#h-rg{text-shadow:0 0 0 rgba(0,0,0,0)}
+#h-on{text-shadow:0 0 0 black}
+#h-cf{text-shadow:0 0 0 color(srgb 0 0 0)}
+#h-far{text-shadow:10000px 0 0 black}</style></head><body>
+  <button id="before">before</button>
+  <div class="row24" id="hrow">
+  <p id="h-fn" class="tx">branch</p>
+  <p id="h-ok" class="tx">commit</p>
+  <p id="h-rg" class="tx">merge</p>
+  <p id="h-on" class="tx">fetch</p>
+  <p id="h-cf" class="tx">fork</p>
+  <p id="h-far" class="tx">clone</p>
+  </div>
+  <div class="row24" id="lrow">
+  <p id="l-fn">branch</p>
+  <p id="l-ok">commit</p>
+  <p id="l-rg">merge</p>
+  <p id="l-on">fetch</p>
+  <p id="l-cf">fork</p>
+  <p id="l-far">clone</p>
+  </div>
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-24-05。CSS nesting の中で `pointer-events` を宣言した覆い。
+   aud は回答の見本そのまま（`& [data-note="&"]`・位置指定も回答のとおり。前方の語を
+   fixed の白い箱が覆う）。ほかは枠ごとに1場面（前方 h-… は枠の中、後方 l-… は枠の外）。
+     sq   … 一重引用符の中の `&`（`& [data-k='&']`）
+     esc  … escape した `&`（`& .c\&v`）
+     top  … 入れ子でない規則の引用符の中の `&`（対照・前から正しく引けた形）
+     ds   … `& .cv24`（対照・ふつうの子孫）
+     pc   … `&:not(:hover)`（対照・`&` に擬似クラスを続ける形）
+     ls   … 親が選択子のリスト `.la24, .lb24`（対照）
+     deep … 2 段の入れ子（対照）
+   ⚠️ **読めない stylesheet も、`style` 属性の `pointer-events` も置かない。** どちらかが
+      あると全要素を歩く経路へ落ち、選択子の見落としが偶然救われる（回答の注）。
+      宣言のある選択子も 64 個より少なくする（多いと引かずに歩く）。
+   ⚠️ 覆いの位置と塗りの規則（.cv24）には `pointer-events` を書かない。
+   ⚠️ 枠と後方の語は、それぞれ横 1 列に並べて画面（800×600）の中に収める。画面の外の
+      矩形を撮影から切り出すと透明＝「白でない」と数えられ、前提の画素の確かめが狂う。
+      横に並べるのは、Tab で開いた吹き出しが下の印を覆わないため（→ SHADOW24_PAGE）。 */
+export const NEST24_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>nest24</title><style>${BASE23}${ROW24}
+#h-aud{position:absolute;left:10px;top:20px;margin:0}
+#l-aud{position:absolute;left:10px;top:160px;margin:0}
+.wrap {
+  & [data-note="&"] {
+    position:fixed; left:0; top:0;
+    width:300px; height:100px;
+    background:white; z-index:10;
+    pointer-events:none;
+  }
+}
+#hrow{margin-top:200px}#lrow{margin-top:200px}
+.slot24{position:relative}
+.cv24{position:absolute;inset:0;z-index:5;background:white}
+.sq24 { & [data-k='&'] { pointer-events:none } }
+.esc24 { & .c\\&v { pointer-events:none } }
+[data-t="&"] { pointer-events:none }
+.ds24 { & .cv24 { pointer-events:none } }
+.pc24 { &:not(:hover) { pointer-events:none } }
+.la24, .lb24 { & > .cv24 { pointer-events:none } }
+.m124 { .m224 { & .cv24 { pointer-events:none } } }</style></head><body>
+  <button id="before">before</button>
+  <p id="h-aud">branch</p>
+  <div class="wrap"><div data-note="&amp;"></div></div>
+  <p id="l-aud">branch</p>
+  <div class="row24" id="hrow">
+  <div class="slot24 sq24" id="s-sq"><p id="h-sq">commit</p><div class="cv24" data-k="&amp;"></div></div>
+  <div class="slot24 esc24" id="s-esc"><p id="h-esc">merge</p><div class="cv24 c&amp;v"></div></div>
+  <div class="slot24" id="s-top"><p id="h-top">rebase</p><div class="cv24" data-t="&amp;"></div></div>
+  <div class="slot24 ds24" id="s-ds"><p id="h-ds">fetch</p><div class="cv24"></div></div>
+  <div class="slot24" id="s-pc"><p id="h-pc">clone</p><div class="cv24 pc24"></div></div>
+  <div class="slot24 lb24" id="s-ls"><p id="h-ls">fork</p><div class="cv24"></div></div>
+  <div class="slot24 m124" id="s-deep"><div class="m224"><p id="h-deep">webhook</p><div class="cv24"></div></div></div>
+  </div>
+  <div class="row24" id="lrow">
+  <p id="l-sq">commit</p>
+  <p id="l-esc">merge</p>
+  <p id="l-top">rebase</p>
+  <p id="l-ds">fetch</p>
+  <p id="l-pc">clone</p>
+  <p id="l-ls">fork</p>
+  <p id="l-deep">webhook</p>
+  </div>
+  <button id="after">after</button>
+</body></html>`;
+
+/* RG-24-06。1 つの選択子が 30,000 要素に当たる（回答の見本そのまま）。候補の上限 20,000 を超える。 */
+export const POOLFLAT24_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>poolflat24</title><style>${BASE23}
+.candidate { pointer-events:none }</style></head><body>
+  <button id="before">before</button>
+  <p id="first">A branch first.</p>
+  <p id="second">A commit second.</p>
+  <p id="third">A merge third.</p>
+  <button id="after">after</button>
+  <div id="bulk"></div>
+  <script>
+    document.getElementById('bulk').innerHTML = '<div class="candidate"></div>'.repeat(30000);
+  </script>
+</body></html>`;
+
+/* RG-24-06 の対照。3 つの選択子が**同じ** 8,000 要素に当たる（足す回数は 24,000 で上限を
+   超えるが、一意な候補は 8,000 で上限の内）。重複が上限を食えば候補を諦め、前方の
+   ほんとうの覆い（#cv-dup）を見落とす。 */
+export const POOLDUP24_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>pooldup24</title><style>${BASE23}${SLOT23}
+.d1 { pointer-events:none }
+.d2 { pointer-events:none }
+.d3 { pointer-events:none }
+#cv-dup{z-index:5;background:white;pointer-events:none}</style></head><body>
+  <button id="before">before</button>
+  ${slot23('dup', 'fetch')}
+  <p id="first">A branch first.</p>
+  <p id="second">A commit second.</p>
+  <button id="after">after</button>
+  <div id="bulk"></div>
+  <script>
+    document.getElementById('bulk').innerHTML = '<div class="d1 d2 d3"></div>'.repeat(8000);
+  </script>
+</body></html>`;
+
+/* ===================== 第24回監査（v1.8.22）の反例・群 C ===================== */
+
+/* RG-24-04。実 Tab で印に止まって開いた説明が、ポインタを無関係な場所へ動かすだけで閉じる。
+   回答の見本（#before・語・右下の #elsewhere）に、リンクを入口にする装飾の印（#lnk）を足した。
+   ⚠️ 2 つの入口のあいだは空ける。詰めると #first の吹き出しが #lnk の印に重なり、
+      下の「自分で発見」の件（吹き出しを覆いと数える）が混ざる。 */
+export const FOCUSTIP24_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>focustip24</title><style>html,body{margin:0;background:white;color:black;font:16px Arial}
+ p{margin:40px} .gap24{height:150px}</style></head><body>
+  <button id="before">start</button>
+  <p id="first">A branch here.</p>
+  <div class="gap24"></div>
+  <p><a href="#x" id="lnk">A commit link</a></p>
+  <div id="elsewhere" style="position:fixed;right:40px;bottom:100px;padding:30px">elsewhere</div>
+  <button id="after">after</button>
+</body></html>`;
+
+/* 第24回（自分で発見）。語を縦に詰めて並べ、上の印の吹き出しが下の印に重なるようにする。
+   #h-cov は**ページ側の**不透明な箱で語と印を覆った対照（覆いと数える＝後方の #l-cov に付く）。
+   吹き出しの届かない高さに置く。
+   #h-tg は**自分の切替ボタン**の下に印が入る対照（覆いと数える＝後方の #l-tg に付く）。
+   ボタンの幅は OS の字体で変わるので、ページの script がボタンの位置を測ってから、語の終わりが
+   ボタンの左端の 2px 内側に来るよう置き、それから #h-tg と #l-tg の本文を同時に入れる
+   （先に #l-tg だけが現れると、そちらに印が付いて対照にならない）。 */
+export const TIPCOVER24_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>tipcover24</title><style>${BASE23} p{margin:0}
+ .gap24{height:150px} .slot24{position:relative}
+ .slot24>.cv{position:absolute;inset:0;background:white;z-index:5}</style></head><body>
+  <button id="before">before</button>
+  <p id="a">A branch here.</p>
+  <p id="b">A commit here.</p>
+  <p id="c">A merge here.</p>
+  <div class="gap24"></div>
+  <div class="slot24"><p id="h-cov">A clone here.</p><div class="cv" id="cv-cov"></div></div>
+  <p id="l-cov">A clone later.</p>
+  <p id="h-tg" style="position:fixed;left:0;top:0;margin:0;line-height:1;white-space:nowrap"></p>
+  <p id="l-tg"></p>
+  <button id="after">after</button>
+  <script>
+    const timer = setInterval(() => {
+      const b = document.querySelector('.iiyaku-toggle');
+      if (!b) return;
+      clearInterval(timer);
+      const r = b.getBoundingClientRect();
+      const p = document.getElementById('h-tg');
+      p.textContent = 'A rebase';
+      const w = p.getBoundingClientRect().width, h = p.getBoundingClientRect().height;
+      p.style.left = (r.left + 2 - w) + 'px';
+      p.style.top = (r.top + (r.height - h) / 2) + 'px';
+      document.getElementById('l-tg').textContent = 'A rebase later.';
+    }, 50);
+  </script>
+</body></html>`;

@@ -700,18 +700,33 @@
   // `text-shadow: 10000px 0 0 black` の語は0画素なのに印が付いた）。影は文字の形を
   // ずらして描くので、ずらし量が語の大きさ（＋ぼかし）を超えると、その語の場所には
   // 何も来ない。
+  // ⚠️ **影の色は rgb/rgba だけではない**（第24回 RG-24-02）。以前は色を
+  // `/rgba?\([^)]*\)/` だけで取り出していた。Chrome は `color(srgb 0 0 0 / 0)` や
+  // `oklch(0 0 0 / 0)` の影を**その形のまま**計算済みの値として返すので、色が取れず
+  // 「透明か」を見ないまま、ずらし量だけで「描かれる」と答えていた（実測: 塗りが透明で
+  // 透明な `color()` の影だけを持つ語は0画素なのに印が付き、後方の読める同じ語が
+  // 説明されなかった）。色は colorAlpha と同じ関数の並びで取り出し、alpha で見る。
+  // 読めない（色が1つに決まらない・alpha が読めない・ずらし量が読めない）層は、
+  // 以前は「描かれる側へ倒す」としていたが、語の可視性は「断定できない語には印を
+  // 付けない」（AUDIT.md §7-1 #25）に合わせて **'unknown'** を返す。
+  //   true … 届く／false … 届かない／'unknown' … 断定できない
+  const SHADOW_COLOR = /(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\([^()]*\)/g;
   function shadowPaintsAt(v, rect) {
     if (!v || v === 'none') return false;
+    let unknown = false;
     for (const layer of splitTopLevel(v)) {
-      const color = (layer.match(/rgba?\([^)]*\)/) || [])[0];
-      if (color && isClearColor(color)) continue;          // 透明な影は描かない
-      const lens = (layer.replace(/rgba?\([^)]*\)/g, '').match(/-?[0-9.]+px/g) || []).map(parseFloat);
-      if (lens.length < 2) return true;                        // 読めない＝描かれる側へ倒す
+      const colors = layer.match(SHADOW_COLOR) || [];
+      if (colors.length !== 1) { unknown = true; continue; }   // 色が読めない
+      const a = colorAlpha(colors[0]);
+      if (a === 0) continue;                                    // 透明な影は描かない
+      if (a === null) { unknown = true; continue; }
+      const lens = (layer.replace(SHADOW_COLOR, '').match(/-?[0-9.]+px/g) || []).map(parseFloat);
+      if (lens.length < 2) { unknown = true; continue; }        // ずらし量が読めない
       const [dx, dy] = lens;
       const blur = lens.length > 2 ? Math.abs(lens[2]) : 0;
       if (Math.abs(dx) < rect.width + blur && Math.abs(dy) < rect.height + blur) return true;
     }
-    return false;
+    return unknown ? 'unknown' : false;
   }
 
   // `background-clip: text` の塗りが、**その語の位置に**届くか。
@@ -820,8 +835,10 @@
     const sw = parseFloat(cs.webkitTextStrokeWidth || '0');
     const sc = cs.webkitTextStrokeColor || '';
     if (sw > 0 && !isClearColor(sc)) return true;
-    // ② 影。色と**ずらし量**を見る
-    if (shadowPaintsAt(cs.textShadow, rect)) return true;
+    // ② 影。色と**ずらし量**を見る。'unknown' は真として扱わない（第24回 RG-24-02）——
+    // ③で確実に描かれると分かればそちらを取り、そうでなければ最後に 'unknown' を返す。
+    const shadow = shadowPaintsAt(cs.textShadow, rect);
+    if (shadow === true) return true;
     // ③ 背景を文字型に抜く指定。塗りが語の位置に届くかを見る。
     // ⚠️ 入口も**層ごと**に見る（第20回 RG-20-05）。文字列全体で `=== 'text'` を
     // 見ていたため、`background-clip: text, border-box` の見本を素通りしていた。
@@ -830,7 +847,7 @@
       const s = bgClipTextPaintsAt(el, cs, rect);
       if (s !== false) return s;                                    // true か 'unknown'
     }
-    return false;
+    return shadow;                                                  // false か 'unknown'
   }
 
   // 色の並びのうち、1つでも不透明なものがあるか。`none` は無し。
@@ -1128,7 +1145,11 @@
     // `polygon(0 0,0 0,0 0)` の中の語が確実に見えるものとして扱われて**いた
     // （実測: 語も印も0画素・印の5点すべてが BODY・それでも Tab の順路に入った）。
     // 解けないときは「断定できない」を返す。
+    // 形の入力（計算後の clip-path と、形を回す変形）。判定関数は中身を比べられないので、
+    // 引き取った語を入れ直すかの署名にはこちらを使う（第24回 RG-24-03 → rejectSig）。
+    let shapeKey = '';
     if (cs.clipPath && cs.clipPath !== 'none') {
+      shapeKey = cs.clipPath + (skewed ? '@' + [L.a, L.b, L.c, L.d].map(v => v.toFixed(4)).join(',') : '') + ';';
       const { shape: sh, box } = splitGeometryBox(cs.clipPath.trim());
       if (!skewed) {
         const ref = refBoxRect(cs, border, false, box);
@@ -1176,7 +1197,7 @@
         tests.push(() => 'unknown');
       }
     }
-    return { overflow, shape, tests, scroller };
+    return { overflow, shape, tests, scroller, shapeKey };
   }
 
   // 形そのものとの交差判定。矩形で足りる形は null を返す（外接矩形だけで決まる）。
@@ -1244,6 +1265,7 @@
   // 祖先までさかのぼって、その場所の文字に効く事情を1回で集める。
   //   clip        … 積み上げた切り取り（null は制限なし）
   //   tests       … 形そのものとの交差判定の並び
+  //   shapeKey    … その判定を作った形の入力を連ねた文字列（tests の中身の代わりに比べる）
   //   hidden      … 描画効果だけで完全に消えている
   //   transformed … 途中に変形があり、箱の寸法から見た目を推し量れない
   // 逃げ方（mode）によって答えが変わるので、覚えるときも mode ごとに分ける。
@@ -1252,7 +1274,7 @@
   function paintChain(el, mode) {
     if (!el) return { clip: null, tests: [], hidden: false, transformed: false, fixed: false,
                       captured: false, paintUnknown: false, scrolls: [],
-                      linear: IDENTITY, flat: true };
+                      linear: IDENTITY, flat: true, shapeKey: '' };
     const cache = chainCache && chainCache[mode];
     if (cache) { const hit = cache.get(el); if (hit !== undefined) return hit; }
     const cs = getComputedStyle(el);
@@ -1297,7 +1319,8 @@
                 captured,
                 scrolls: (applies && own && own.scroller)
                   ? [own.scroller].concat(up.scrolls) : up.scrolls,
-                linear, flat };
+                linear, flat,
+                shapeKey: own && own.shapeKey ? up.shapeKey + own.shapeKey : up.shapeKey };
     if (cache) cache.set(el, v);
     return v;
   }
@@ -1482,6 +1505,33 @@
   // `& .b`・`&:hover`・`& > .c` と `&` つきで返す（実測 Chrome 155）。そのまま
   // `querySelectorAll` へ渡すと `&` は `:scope`（＝`<html>`）になり、`&:hover` は
   // `<html>` だけを指す——親の選択子で置き換える。`@scope` の中は解かない（null）。
+  // ⚠️ **置き換えるのは入れ子の `&` だけ**（第24回 RG-24-05）。以前は
+  // `own.replace(/&/g, …)` で、属性値の引用符の中の `&` まで書き換えていた
+  // （`& [data-note="&"]` → `:is(.wrap) [data-note=":is(.wrap)"]`）。有効な選択子のまま
+  // なので例外にもならず、覆いの候補を黙って落としていた（実測: 白い覆いの下の0画素の
+  // 語に印が付き、後方の読める同じ語は説明されなかった）。`.c\&v` の escape も壊していた。
+  // 1文字ずつ読み、引用符の中と `\` の直後の1文字はそのまま写す。引用符が閉じない・
+  // `\` で終わる形は解かずに null（→ 全要素を歩くほう。そちらも GHOST_POOL_MAX で打ち切る）。
+  // 意味の違う選択子に変えて黙って通すより、上限のある道へ送る。
+  function nestExpand(own, up) {
+    let out = '', nested = false, quote = '';
+    for (let i = 0; i < own.length; i++) {
+      const ch = own[i];
+      if (ch === '\\') {                          // escape: 次の1文字ごとそのまま
+        if (i + 1 >= own.length) return null;
+        out += ch + own[++i];
+      } else if (quote) {
+        if (ch === quote) quote = '';
+        out += ch;
+      } else if (ch === '"' || ch === "'") {
+        quote = ch; out += ch;
+      } else if (ch === '&') {
+        nested = true; out += ':is(' + up + ')';
+      } else out += ch;
+    }
+    if (quote) return null;
+    return nested ? out : ':is(' + up + ') ' + own;
+  }
   function ruleSelector(r) {
     let p = r.parentRule;
     while (p && typeof p.selectorText !== 'string') {
@@ -1491,8 +1541,7 @@
     if (!p) return r.selectorText;
     const up = ruleSelector(p);
     if (up === null) return null;
-    const own = r.selectorText;
-    return own.includes('&') ? own.replace(/&/g, ':is(' + up + ')') : ':is(' + up + ') ' + own;
+    return nestExpand(r.selectorText, up);
   }
 
   function ghostSelectorList() {
@@ -1566,7 +1615,19 @@
     }
     // 選択子はページの持ち物。読めない形が混じっても、その1つだけを捨てる。
     const pool = new Set();
-    const add = list => { for (const el of list) pool.add(el); return pool.size <= GHOST_POOL_MAX; };
+    // ⚠️ **上限は足すたびに見る**（第24回 RG-24-06）。以前は1つの選択子の一致を全部
+    //    足してから `pool.size` を見ていたので、30,000 要素に当たる選択子1つで集合が
+    //    30,000 件になってから諦めていた（実測: 隔離された世界の Set の最大が 30,000）。
+    //    いまは超えたと分かった1件（20,001 件目）で止める。重複は `size` を増やさないので
+    //    上限を食わない。`querySelectorAll` が作る NodeList そのものの手間は、ここでは
+    //    減らない（選択子の数と要素の数の積は GHOST_MATCH_MAX で抑えている）。
+    const add = list => {
+      for (const el of list) {
+        pool.add(el);
+        if (pool.size > GHOST_POOL_MAX) return false;
+      }
+      return true;
+    };
     for (const sel of sels) {
       let hit;
       try { hit = document.querySelectorAll(sel); } catch (e) { continue; }
@@ -1634,6 +1695,22 @@
     (s.overflowX !== 'visible' || s.overflowY !== 'visible' ||
      /\b(paint|strict|content)\b/.test(s.contain || '') || s.contentVisibility === 'auto');
 
+  // 要素の変形が、画面の座標へどう効くか（第24回 RG-24-01）。
+  //   'id'    … 座標を変えない（変形なし・平行移動だけ）
+  //   'scale' … 軸に沿った正の拡大縮小（と平行移動）だけ
+  //   'bad'   … それ以外（反転・回転・傾き・3D・perspective・zoom）。解かない
+  // ⚠️ `zoom` は、`zoom` の下の `clientWidth` などがどの単位で返るかが Chrome の版で
+  // 揺れるので、拡大縮小と同じには扱わない。
+  const coordKind = s => {
+    const z = parseFloat(s.zoom);
+    if (isFinite(z) && z !== 1) return 'bad';
+    if (!isNoneVal(s.perspective)) return 'bad';
+    const t = ownLinear(s);
+    if (!t.flat) return 'bad';
+    if (t.m === null || isIdentity(t.m)) return 'id';
+    return t.m.b === 0 && t.m.c === 0 && t.m.a > 0 && t.m.d > 0 ? 'scale' : 'bad';
+  };
+
   // 矩形のとおりに塗りつぶされていると言える覆いなら、その矩形を返す（祖先の切り取りで
   // 狭める）。言えなければ null。祖先の opacity・visibility も見る（旧 opaqueChain）。
   function solidCover(el, cs, r) {
@@ -1641,6 +1718,27 @@
     // 地の色は、いちばん下の層の background-clip で切られる
     if (String(cs.backgroundClip).split(',').pop().trim() !== 'border-box') return null;
     let x1 = r.left, y1 = r.top, x2 = r.right, y2 = r.bottom;
+    // 祖先の切り取りは、**画面の座標で**狭める（第24回 RG-24-01）。以前は
+    // `getBoundingClientRect()`（変形後）に `clientWidth` など（変形を無視した寸法）を
+    // そのまま足していたので、縮小された切り取りを広く見積もり、見えている語の印を
+    // 「覆われた」と断定していた（実測: `scale(.5)` の 100px の切り取り＝画面で 50px の
+    // 中の覆いを 100px まで広げ、y=65 で見えている語の印を後方へ移した。切り取りの親が
+    // 縮小されている形も同じ）。
+    // 切り取りの祖先**とその上の祖先**に軸に沿った正の拡大縮小があるときは、画面上の
+    // 縮尺（外接矩形 ÷ `offsetWidth`）を `clientLeft` などに掛ける。境界の太さも同じ縮尺で
+    // 描かれる（実測: 境界 40px・scale(.5) の切り取りで、境界だけ縮めずに足す写しは、画面で
+    // 見えている印を覆われた側へ移した）。
+    // それ以外の変形があれば、その覆いは**断定しない**（null）。覆いと切り取りの祖先の
+    // あいだの変形は `r` に反映済みなので、ここでは見ない。
+    // 縮尺は上の祖先まで歩かないと分からないので、切り取りは控えておき、最後に狭める。
+    const clips = [];                                       // { n, scaled }
+    const scaleAbove = s => {                               // 控えた切り取りへ効く変形か
+      if (!clips.length) return true;
+      const k = coordKind(s);
+      if (k === 'bad') return false;
+      if (k === 'scale') for (const c of clips) c.scaled = true;
+      return true;
+    };
     for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
       const s = n === el ? cs : getComputedStyle(n);
       if (s.visibility !== 'visible' || s.display === 'none') return null;
@@ -1651,12 +1749,23 @@
       // 「覆っている範囲を少なく見積もる」向き（＝断定しない側）なので構わない。
       if (n !== el && n !== document.body && clipsInside(s)) {
         if (hasRadius(s)) return null;
-        const b = n.getBoundingClientRect();
-        const px = b.left + n.clientLeft, py = b.top + n.clientTop;
-        x1 = Math.max(x1, px); y1 = Math.max(y1, py);
-        x2 = Math.min(x2, px + n.clientWidth); y2 = Math.min(y2, py + n.clientHeight);
-        if (!(x2 > x1 && y2 > y1)) return null;
+        clips.push({ n, scaled: false });
       }
+      if (!scaleAbove(s)) return null;
+    }
+    // 上の歩みは <html> の手前で止まる。<html> の変形も切り取りの寸法を変える
+    if (!scaleAbove(getComputedStyle(document.documentElement))) return null;
+    for (const { n, scaled } of clips) {
+      const b = n.getBoundingClientRect();
+      let sx = 1, sy = 1;
+      if (scaled) {
+        sx = b.width / n.offsetWidth; sy = b.height / n.offsetHeight;
+        if (!(isFinite(sx) && sx > 0 && isFinite(sy) && sy > 0)) return null;
+      }
+      const px = b.left + n.clientLeft * sx, py = b.top + n.clientTop * sy;
+      x1 = Math.max(x1, px); y1 = Math.max(y1, py);
+      x2 = Math.min(x2, px + n.clientWidth * sx); y2 = Math.min(y2, py + n.clientHeight * sy);
+      if (!(x2 > x1 && y2 > y1)) return null;
     }
     // 祖先の content-visibility なども、まとめて聞いておく
     if (HAS_CHECK_VISIBILITY && !el.checkVisibility(CHECK_VISIBILITY_OPTS)) return null;
@@ -1910,7 +2019,23 @@
       // `pointer-events: none` の箱は hit testing から外れるので、`elementFromPoint`
       // は印を返し続ける。点ごとに見るので、**部分的な覆いでは残りの点が露出と数えられ**、
       // 「全面が覆われている」とは判定されない。
-      const hit = document.elementFromPoint(x, y);
+      let hit = document.elementFromPoint(x, y);
+      // ⚠️ **自分の吹き出しは覆いと数えない**（第24回・本体が見つけた件）。
+      // 吹き出しは印の 6px 下に、本文より手前へ出る。語を縦に詰めたページでは、実 Tab で
+      // 上の印に止まると吹き出しが下の印に重なり、ここで「全面が覆われた」と判定されて
+      // 下の印が引き取られていた。引き取った語の控え（rejectSig）は吹き出しが閉じても
+      // 変わらないので、**印は戻らず、Tab でも止まらなくなった**（実測）。
+      // 自分の持ち物の除外は ghostCovers にもあるが、そこは `pointer-events: none` の
+      // 箱だけを見る段で、吹き出しは（カーソルを受けるので）その段に入らない（実測）。
+      // 吹き出しが最前面なら、その下（重なり順で次の、吹き出しでない要素）で判定する。
+      // ⚠️ **切替ボタンは除かない。** ボタンは右下に常に居るので、その下に本当に隠れた印を
+      // 「覆われていない」とすると、見えないのに Tab で止まる点ができる（AUDIT.md §7-1 #25）。
+      // 吹き出しは開いている間だけ出る物で、閉じれば下の印は見える。
+      const onTip = el => !!(tip && (el === tip || tip.contains(el)));
+      if (hit && onTip(hit)) {
+        hit = document.elementsFromPoint(x, y).find(el => !onTip(el)) || null;
+        if (!hit) { if (!coveredAt(x, y)) exposed++; continue; }   // 下に何も無い＝当たり判定では覆いと断定しない
+      }
       if (hit && (hit === icon || icon.contains(hit)) && !coveredAt(x, y)) exposed++;
     }
     if (inView > 0 && exposed === 0 && visibleNow(b, chain)) return false;   // 全面が覆われている
@@ -2953,6 +3078,20 @@
     return x >= l - P && x <= r + P && y >= t - P && y <= b + P;
   }
 
+  // いまのフォーカスが、出している説明の入口にあるか。
+  // 単独の印では、フォーカスは closed shadow root の中の button にあり、文書からは
+  // host（＝印）として見える。リンクなどを入口にする装飾の印では、入口そのもの
+  // （aria-describedby を足した相手）か、その中にある。
+  // ⚠️ `document.hasFocus()` は条件に入れない。Chrome（headless）ではウィンドウが一瞬
+  // フォーカスを失うことがあり（→ escClosedAt の注記）、その瞬間のカーソルの移動で
+  // 閉じてしまう。ウィンドウから本当にフォーカスが去れば focusout が閉じる。
+  function focusHoldsTip() {
+    const a = document.activeElement;
+    if (!a || a === document.body || a === document.documentElement) return false;
+    if (tipIcons.includes(a)) return true;
+    return !!(tipDescribed && (a === tipDescribed || tipDescribed.contains(a)));
+  }
+
   // カーソルが印（入口）と吹き出しの外へ出た。
   // ⚠️ 猶予を与えるのは、**移った先の要素があり**（relatedTarget。ウィンドウの外から
   // 来た／出たときは null）、その位置が上の矩形の中のときだけ。ページの script が
@@ -2960,6 +3099,14 @@
   // これまでどおり即時に閉じる。
   function leaveTip(e) {
     if (!tip) return;
+    // ⚠️ **カーソルが離れても、フォーカスがこの説明の入口に残っていれば閉じない**（第24回 RG-24-04）。
+    // 説明を支えているのは hover と focus の 2 つで、ここ（mouseover / mouseout）が
+    // 知らせるのは hover が無くなったことだけ。以前は focus を見ずに閉じていたので、
+    // 実 Tab で印に止まって開いた説明が、ポインタを別の場所へ動かすだけで即時に消えた
+    // （実測: 猶予の 250ms も無し。WCAG 1.4.13 の Persistent に合わない）。
+    // focus のほうが無くなったときは、focusout・Escape・OFF・退役がそれぞれ hideTip を
+    // 直接呼ぶので、ここで待っても閉じ忘れない。
+    if (focusHoldsTip()) { cancelTipClose(); return; }
     if (e && e.relatedTarget && inTipCorridor(e.clientX, e.clientY)) {
       if (tipCloseTimer === null) {          // 矩形の中で要素をまたいでも延長しない
         const which = tip;
@@ -3311,11 +3458,18 @@
   //               周期の見直しと、自分が出し入れした印の記録では進まない
   //   語の矩形・祖先の切り取り・描画効果・テーマ色 … CSSOM の値だけの書き換えのように
   //               合図の出ない変化でも、印の置き場所が変わればここが変わる
+  //   祖先の切り抜きの形の入力（計算後の clip-path と、形を回す変形）… 外接矩形が同じまま
+  //               形だけが変わっても、描ける領域は変わる（第24回 RG-24-03）。以前は判定関数の
+  //               **本数**だけを控えていたので、`inset(0 round 0 100px 0 0)` を
+  //               `inset(0 round 0 1px 0 0)` へ CSSOM で変えても（外接矩形も DOM も同じ）、
+  //               角の外から内へ入った印を入れ直さなかった（実測: 変えてから 4 秒待っても印 0）
   //   stylesheet の枚数と形の指紋 … 印を名指しする規則の追加・削除
-  // 変わっていても、ページの observer と押し合いにならないよう、入れ直しの間隔は
-  // 引き取るたびに倍にする（400ms から 30 秒まで）。入れて描かれれば記録は消す。
+  // 変わっていても、ページの observer と押し合いにならないよう、引き取るたびに次に
+  // 見るまでの間を倍にする（400ms から 30 秒まで）。**30 秒は間の上限で、入れ直しの
+  // 期限ではない**——状態が変わらなければ、何秒たっても入れ直さない。入れて描かれれば
+  // 記録は消す。
   // ⚠️ 残る限界: 印を名指しする規則の**値だけ**を CSSOM で書き換えた変化（語の場所も
-  // 合図も変わらない）は、次にページ側の合図が来るまで入れ直さない。
+  // 祖先の形も合図も変わらない）は、次にページ側の合図が来るまで入れ直さない。
   const rejected = new WeakMap();        // Text → { sig, at, gap }
   const REJECT_GAP = 400;
   const REJECT_GAP_MAX = 30000;
@@ -3332,7 +3486,8 @@
     let s = extSerial + '|' + styleSerial + '|' + printVal + '|' +
       [b.left, b.top, b.right, b.bottom].map(Math.round).join(',') + '|' +
       (c ? [c.x1, c.y1, c.x2, c.y2].map(Math.round).join(',') : '-') + '|' +
-      (ch.hidden ? 'h' : '') + (ch.paintUnknown ? 'u' : '') + ch.tests.length + '|' + cs.color;
+      (ch.hidden ? 'h' : '') + (ch.paintUnknown ? 'u' : '') + ch.tests.length + '|' + ch.shapeKey + '|' +
+      cs.color;
     for (const v of THEME_VARS) s += '' + cs.getPropertyValue(v).trim();
     return s;
   }

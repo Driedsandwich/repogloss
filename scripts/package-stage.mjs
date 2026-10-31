@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join, relative, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { PACKAGE_FILES } from './package-files.mjs';
+import { staleCopies } from './embed-assets.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const VERIFY_ONLY = process.argv.includes('--verify');
@@ -18,6 +19,14 @@ const STAGE = join(DIST, `repogloss-${version}`);
 const LIST = join(DIST, `repogloss-${version}.files.json`);   // 拡張の中には置かない
 
 const sha256 = buf => createHash('sha256').update(buf).digest('hex');
+
+// 写しが正本と合わないまま梱包しない（→ embed-assets.mjs の staleCopies）
+const staleList = staleCopies(ROOT);
+if (staleList.length) {
+  console.error(`NG: 写しが正本と一致しない: ${staleList.join(', ')}`);
+  console.error('node scripts/embed-assets.mjs で作り直してから梱包する');
+  process.exit(1);
+}
 
 function walk(dir, base = dir) {
   const out = [];

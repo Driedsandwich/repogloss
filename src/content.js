@@ -4404,6 +4404,10 @@
     const mine = `[data-iiyaku-owner="${CSS.escape(UID)}"]`;
     const body = CSS_TEXT
       .replace(SHADOW_SECTION, '')       // shadow 専用の区間はページへ入れない
+      // 注釈も入れない。ページのスクリプトはこの style を読めるので、開発の経緯と
+      // 過去の版の番号（v1.8.13 など）がそのまま出ていた（2026-10-30 の点検 F01）。
+      // 区間の目印も注釈なので、区間を外した後で剥がす。文字列の値に `/*` は無い。
+      .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/\bRG_LOOK\b/g, MAIN_LAYER)
       .replace(/\bRG_SCOPE\b/g, SCOPE_LAYER)
       .replace(/\[data-iiyaku-owner\]/g, mine);

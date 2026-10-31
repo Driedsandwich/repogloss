@@ -5855,6 +5855,19 @@ test('ページ側から同梱物を読めず、通信はテストサーバと�
     assert.deepEqual(got, files.map(f => f + ': 拒否'), `ページから読めてしまう: ${got.join(' / ')}`);
   });
 
+  // 点検 F01（2026-10-30）: ページ側の style は読めるので、注釈（開発の経緯と過去の版の番号）を入れない
+  await t.test('ページから読める自分の style に、注釈と版の番号が無い', async () => {
+    const got = await evaluate(`(() => {
+      const own = [...document.querySelectorAll('style')]
+        .map(s => s.textContent).filter(s => s.includes('[data-iiyaku-owner="'));
+      return { count: own.length, comment: own.some(s => s.includes('/*')),
+               versions: own.flatMap(s => s.match(/v\\d+\\.\\d+\\.\\d+/g) || []) };
+    })()`);
+    assert.ok(got.count >= 1, '自分の style が見つからない（何も見ていない）');
+    assert.equal(got.comment, false, 'ページから読める style に注釈が残っている');
+    assert.deepEqual(got.versions, [], `版の番号が読める: ${got.versions.join(' ')}`);
+  });
+
   await t.test('同じページで、印は付いている（読めないのは同梱物の側だけ）', async () => {
     assert.ok(await evaluate(`document.querySelectorAll('.iiyaku-icon').length`) > 0);
   });

@@ -632,16 +632,33 @@
   // 描画効果だけで完全に消えている形。**断定できるものだけ**を並べる。
   const FILTER_OPACITY_ZERO = /(^|[\s(])opacity\(\s*0(\.0+)?%?\s*\)/;
 
+  // gradient の色の止まりを**すべて**取り出す。1つでも読めない止まりがあれば null（第25回 RG-25-02）。
+  // ⚠️ 以前は色を `/rgba?\([^)]*\)/` だけで取り出していた。Chrome は `color()`・`oklch()` などの
+  // 色を計算済みの値でも**その形のまま**返す（RG-23-03・RG-24-02 と同じ型）ので、透明な
+  // `color()` の gradient は色が取れず「透明でない」、透明な rgba と不透明な `color()` が
+  // 混ざると rgba だけを見て「透明」と答えていた。色は colorAlpha と同じ関数の並びで取り出し、
+  // 取り出した残りに括弧（入れ子の `calc()`・`color-mix()` など）や、gradient の書き方に
+  // 無い語（`currentcolor`・色の名前など）が残れば、読めない止まりがあるとみなす。
+  const GRADIENT_COLOR = /(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\([^()]*\)|\btransparent\b/gi;
+  const GRADIENT_WORD = /^(to|left|right|top|bottom|center|at|circle|ellipse|closest-side|closest-corner|farthest-side|farthest-corner|from|in|srgb|srgb-linear|display-p3|a98-rgb|prophoto-rgb|rec2020|lab|oklab|xyz|xyz-d50|xyz-d65|hsl|hwb|lch|oklch|shorter|longer|increasing|decreasing|hue)$/;
+  function gradientColors(v) {
+    const i = v.indexOf('(');
+    if (i === -1 || !v.endsWith(')')) return null;
+    const inner = v.slice(i + 1, -1);
+    const colors = inner.match(GRADIENT_COLOR) || [];
+    const rest = inner.replace(GRADIENT_COLOR, ' ');
+    if (rest.includes('(') || rest.includes(')')) return null;
+    const words = rest.replace(/[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?([a-z]+|%)?/gi, ' ')
+                      .toLowerCase().match(/[a-z][a-z0-9-]*/g) || [];
+    if (words.some(w => !GRADIENT_WORD.test(w))) return null;
+    return colors;
+  }
+
   function isFullyTransparentGradient(v) {
     if (!/^(-webkit-)?(linear|radial|conic|repeating-linear|repeating-radial)-gradient\(/.test(v)) return false;
-    const colors = v.match(/rgba?\([^)]*\)/g);
+    const colors = gradientColors(v);
     if (!colors || colors.length === 0) return false;
-    return colors.every(c => {
-      const m = /^rgba\(([^)]*)\)$/.exec(c);
-      if (!m) return false;                       // rgb(...) は不透明
-      const parts = m[1].split(/\s*[,/]\s*|\s+/).filter(Boolean);
-      return parts.length >= 4 && parseFloat(parts[parts.length - 1]) === 0;
-    });
+    return colors.every(c => colorAlpha(c) === 0);   // 読めない alpha（null）は透明と断定しない
   }
 
   // 計算済みの色の alpha（0〜1）。**読めない形は null**（第23回 RG-23-03）。
@@ -924,11 +941,15 @@
     // 背景（`bgClipTextPaintsAt`）と同じ契約にそろえた。
     // ⚠️ 代償: 不透明な画像で覆った語も説明されなくなる（第17回 RG-17-04 の対照）。
     if (!isGradientLayer(layer)) return 'unknown';
-    const colors = layer.match(/rgba?\([^)]*\)/g);
+    // ⚠️ 色は isFullyTransparentGradient と同じ取り出し方にそろえる（第25回 RG-25-02）。
+    // rgba だけを見ると、透明な rgba と不透明な `color()` が混ざる覆いを「一様」と読み、
+    // 'shown' と断定してしまう。読めない止まりがあれば断定しない。
+    const colors = gradientColors(layer);
     if (!colors || !colors.length) return 'unknown';
     // 一様（すべての色が同じ）でなければ、場所によって値が変わる＝断定しない
     if (colors.some(c => c !== colors[0])) return 'unknown';
     if (mode !== 'luminance') return 'shown';                 // alpha / match-source の gradient
+    if (!/^rgba?\(/i.test(colors[0])) return 'unknown';      // luminanceOf は rgb/rgba の数字しか読めない
     const l = luminanceOf(colors[0]);
     if (l === null) return 'unknown';
     return l > 0 ? 'shown' : 'hidden';

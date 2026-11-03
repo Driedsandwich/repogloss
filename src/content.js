@@ -1147,12 +1147,19 @@
     // 解けないときは「断定できない」を返す。
     // 形の入力（計算後の clip-path と、形を回す変形）。判定関数は中身を比べられないので、
     // 引き取った語を入れ直すかの署名にはこちらを使う（第24回 RG-24-03 → rejectSig）。
+    // ⚠️ 百分率の基準になる**参照ボックスの寸法**も入れる（第25回 RG-25-03）。
+    // 文字列と傾きだけでは、`inset(0 round 50%)` の箱の幅だけが後から変わっても
+    // 同じキーになり、引き取った語を入れ直さなかった（印が戻らないまま残る）。
+    // 位置は入れない（語の矩形のほうで署名に入る）。1px 未満の揺れでキーが変わって
+    // 入れ直しが増えないよう、寸法は整数へ丸める（rejectSig の矩形と同じ）。
     let shapeKey = '';
     if (cs.clipPath && cs.clipPath !== 'none') {
-      shapeKey = cs.clipPath + (skewed ? '@' + [L.a, L.b, L.c, L.d].map(v => v.toFixed(4)).join(',') : '') + ';';
+      const refSize = r => '#' + Math.round(r.x2 - r.x1) + 'x' + Math.round(r.y2 - r.y1);
+      shapeKey = cs.clipPath + (skewed ? '@' + [L.a, L.b, L.c, L.d].map(v => v.toFixed(4)).join(',') : '');
       const { shape: sh, box } = splitGeometryBox(cs.clipPath.trim());
       if (!skewed) {
         const ref = refBoxRect(cs, border, false, box);
+        shapeKey += refSize(ref);
         const sr = shapeBoundsRect(sh, ref);
         if (sr) shape = intersectRect(shape, sr);
         const t = shapeHitTest(sh, ref);
@@ -1171,6 +1178,7 @@
         // 印が付いた）。`offsetWidth` は border box そのもので、`zoom` も変形も
         // 掛からない生の寸法なので、そのまま変形前の座標に使える。
         const bw = el.offsetWidth, bh = el.offsetHeight;
+        shapeKey += refSize(refBoxLocal(cs, bw, bh, box));
         const map = (bw > 0 && bh > 0) ? localToViewport(L, bw, bh, border) : null;
         if (map) {
           const ref = refBoxLocal(cs, bw, bh, box);
@@ -1196,6 +1204,7 @@
         // それは「確実に見える」と同じ意味になってしまう（第20回 RG-20-02）。
         tests.push(() => 'unknown');
       }
+      shapeKey += ';';
     }
     return { overflow, shape, tests, scroller, shapeKey };
   }

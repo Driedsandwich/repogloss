@@ -65,6 +65,16 @@ test('【RG-25-02】読めない色の止まりが1つでもあれば、透明�
   }
 });
 
+test('色空間の指定（`in display-p3` など）や位置・角度は、読めない止まりと数えない', () => {
+  for (const v of ['linear-gradient(in display-p3, rgba(0, 0, 0, 0), rgba(0, 0, 0, 0))',
+                   'linear-gradient(in xyz-d50 to left, rgba(0, 0, 0, 0), rgba(0, 0, 0, 0))',
+                   'linear-gradient(in oklch longer hue, oklch(0 0 0 / 0), oklch(1 0 0 / 0))',
+                   'conic-gradient(from 1.5e1deg at 10px 20%, transparent, rgba(0, 0, 0, 0) 50%)',
+                   'radial-gradient(farthest-corner at -5px .5em, color(display-p3 0 0 0 / 0), rgba(0, 0, 0, 0))']) {
+    assert.equal(isFullyTransparentGradient(v), true, v);
+  }
+});
+
 test('【対照】rgb/rgba だけの gradient は従来どおり', () => {
   assert.equal(isFullyTransparentGradient('linear-gradient(rgba(0, 0, 0, 0), rgba(255, 0, 0, 0))'), true);
   assert.equal(isFullyTransparentGradient('linear-gradient(rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0) 100%)'), true);

@@ -648,9 +648,10 @@
     const colors = inner.match(GRADIENT_COLOR) || [];
     const rest = inner.replace(GRADIENT_COLOR, ' ');
     if (rest.includes('(') || rest.includes(')')) return null;
-    const words = rest.replace(/[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?([a-z]+|%)?/gi, ' ')
-                      .toLowerCase().match(/[a-z][a-z0-9-]*/g) || [];
-    if (words.some(w => !GRADIENT_WORD.test(w))) return null;
+    // 区切りごとの1語で見る（数字だけを削ると `display-p3` が `display-p` になり読めなくなる）
+    const tokens = rest.toLowerCase().split(/[\s,/]+/).filter(Boolean);
+    if (tokens.some(t => !/^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?([a-z]+|%)?$/.test(t) &&
+                         !GRADIENT_WORD.test(t))) return null;
     return colors;
   }
 

@@ -1725,18 +1725,29 @@
     // 中の覆いを 100px まで広げ、y=65 で見えている語の印を後方へ移した。切り取りの親が
     // 縮小されている形も同じ）。
     // 切り取りの祖先**とその上の祖先**に軸に沿った正の拡大縮小があるときは、画面上の
-    // 縮尺（外接矩形 ÷ `offsetWidth`）を `clientLeft` などに掛ける。境界の太さも同じ縮尺で
-    // 描かれる（実測: 境界 40px・scale(.5) の切り取りで、境界だけ縮めずに足す写しは、画面で
-    // 見えている印を覆われた側へ移した）。
+    // padding box を、外接矩形（実数の border box）から、境界の太さ（計算後の値・実数）に
+    // 縮尺を掛けて引いて求める。境界の太さも同じ縮尺で描かれる（実測: 境界 40px・scale(.5)
+    // の切り取りで、境界だけ縮めずに足す写しは、画面で見えている印を覆われた側へ移した）。
+    // 縮尺は、歩いた祖先の変形の行列（軸に沿った拡大縮小なので対角成分）を掛け合わせて得る。
+    // ⚠️ 以前（第25回 RG-25-01 の指摘まで）は縮尺を「外接矩形 ÷ `offsetWidth`」で求め、
+    // `clientLeft`・`clientWidth` に掛けていた。どれも整数に丸めた値なので、端数の幅の箱を
+    // 大きく拡大すると（監査の例: 幅 1.375px の箱を `scaleX(100)`）切り取りの範囲が両方向に
+    // ずれた。いまは整数の寸法を縮尺の側に使わない（単体テスト tests/clip-scale.test.js。
+    // そこで使う整数への丸め方は Chrome の丸めの模型で、実測ではない）。
+    // スクロールバーの出る箱は、padding box にバーが含まれてしまうので、縮尺があるときは
+    // **断定しない**（null）。縮尺の無い切り取りは従来どおり `clientLeft` などで狭める。
     // それ以外の変形があれば、その覆いは**断定しない**（null）。覆いと切り取りの祖先の
     // あいだの変形は `r` に反映済みなので、ここでは見ない。
     // 縮尺は上の祖先まで歩かないと分からないので、切り取りは控えておき、最後に狭める。
-    const clips = [];                                       // { n, scaled }
+    const clips = [];                                       // { n, s, scaled, sx, sy }
     const scaleAbove = s => {                               // 控えた切り取りへ効く変形か
       if (!clips.length) return true;
       const k = coordKind(s);
       if (k === 'bad') return false;
-      if (k === 'scale') for (const c of clips) c.scaled = true;
+      if (k === 'scale') {
+        const m = ownLinear(s).m;                           // 'scale' なら b = c = 0・a, d > 0
+        for (const c of clips) { c.scaled = true; c.sx *= m.a; c.sy *= m.d; }
+      }
       return true;
     };
     for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
@@ -1749,22 +1760,31 @@
       // 「覆っている範囲を少なく見積もる」向き（＝断定しない側）なので構わない。
       if (n !== el && n !== document.body && clipsInside(s)) {
         if (hasRadius(s)) return null;
-        clips.push({ n, scaled: false });
+        clips.push({ n, s, scaled: false, sx: 1, sy: 1 });
       }
       if (!scaleAbove(s)) return null;
     }
     // 上の歩みは <html> の手前で止まる。<html> の変形も切り取りの寸法を変える
     if (!scaleAbove(getComputedStyle(document.documentElement))) return null;
-    for (const { n, scaled } of clips) {
+    for (const { n, s, scaled, sx, sy } of clips) {
       const b = n.getBoundingClientRect();
-      let sx = 1, sy = 1;
       if (scaled) {
-        sx = b.width / n.offsetWidth; sy = b.height / n.offsetHeight;
         if (!(isFinite(sx) && sx > 0 && isFinite(sy) && sy > 0)) return null;
+        // スクロールバーが出る（出うる）箱は断定しない
+        if (s.overflowX === 'scroll' || s.overflowY === 'scroll') return null;
+        if ((s.overflowX === 'auto' || s.overflowY === 'auto') &&
+            (n.scrollWidth > n.clientWidth || n.scrollHeight > n.clientHeight)) return null;
+        if (s.scrollbarGutter && s.scrollbarGutter !== 'auto') return null;
+        const bl = parseFloat(s.borderLeftWidth), bt = parseFloat(s.borderTopWidth);
+        const br = parseFloat(s.borderRightWidth), bb = parseFloat(s.borderBottomWidth);
+        if (![bl, bt, br, bb].every(v => isFinite(v) && v >= 0)) return null;
+        x1 = Math.max(x1, b.left + bl * sx); y1 = Math.max(y1, b.top + bt * sy);
+        x2 = Math.min(x2, b.right - br * sx); y2 = Math.min(y2, b.bottom - bb * sy);
+      } else {
+        const px = b.left + n.clientLeft, py = b.top + n.clientTop;
+        x1 = Math.max(x1, px); y1 = Math.max(y1, py);
+        x2 = Math.min(x2, px + n.clientWidth); y2 = Math.min(y2, py + n.clientHeight);
       }
-      const px = b.left + n.clientLeft * sx, py = b.top + n.clientTop * sy;
-      x1 = Math.max(x1, px); y1 = Math.max(y1, py);
-      x2 = Math.min(x2, px + n.clientWidth * sx); y2 = Math.min(y2, py + n.clientHeight * sy);
       if (!(x2 > x1 && y2 > y1)) return null;
     }
     // 祖先の content-visibility なども、まとめて聞いておく

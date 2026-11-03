@@ -2878,6 +2878,7 @@
   let tipAnchor = null;      // 位置の基準にした要素
   let tipDescribed = null;   // aria-describedby を足した相手
   let tipIcons = [];         // いま出している説明のもと
+  let tipPointer = null;     // カーソルがいま乗っている要素（→ hoverHoldsTip）
 
   const asElement = t => (t && t.nodeType === Node.ELEMENT_NODE ? t : null);
 
@@ -3092,6 +3093,21 @@
     return !!(tipDescribed && (a === tipDescribed || tipDescribed.contains(a)));
   }
 
+  // いまカーソルが乗っている要素が、出している説明を支えているか（第25回 RG-25-04）。
+  // mouseover が説明を出すのと同じ規則で見る: 吹き出しの中か、そこから出す説明
+  // （requestFrom）がいまの説明と同じ（showTip が出し直さない条件と同じ）か。
+  // カーソルの居場所（tipPointer）は mouseover / mouseout が書く。
+  // ⚠️ `el.matches(':hover')` では測れない。実測（Chrome for Testing 153・headless）:
+  // カーソルの下の button は `:hover` の規則で色が変わっているのに、`matches(':hover')` も
+  // `querySelectorAll(':hover')` も false / 0 件だった。
+  function hoverHoldsTip() {
+    if (!tip || !tipAnchor || !tipAnchor.isConnected) return false;
+    if (!tipPointer || !tipPointer.isConnected) return false;
+    if (inTooltip(tipPointer)) return true;
+    const req = requestFrom(tipPointer);
+    return !!(req && req.anchor === tipAnchor && requestKey(req.icons) === requestKey(tipIcons));
+  }
+
   // カーソルが印（入口）と吹き出しの外へ出た。
   // ⚠️ 猶予を与えるのは、**移った先の要素があり**（relatedTarget。ウィンドウの外から
   // 来た／出たときは null）、その位置が上の矩形の中のときだけ。ページの script が
@@ -3136,28 +3152,37 @@
     // 表示中に印が DOM から消えた場合（GitHub の再描画など）に
     // mouseout が来ず、ツールチップが residual として残る。
     document.addEventListener('mouseover', e => {
+      tipPointer = asElement(e.target);
       if (inTooltip(e.target)) { cancelTipClose(); return; }   // 吹き出しの上に来たら閉じない
       const req = requestFrom(e.target);
       if (req) { escClosedAt = null; show(req); } else leaveTip(e);
     }, true);
     document.addEventListener('mouseout', e => {
+      tipPointer = asElement(e.relatedTarget);   // ウィンドウの外へ出たときは null
       // 吹き出しへカーソルを移す途中で消さない（長い説明を読めるようにする）
       if (inTooltip(e.relatedTarget) || requestFrom(e.relatedTarget)) return;
       if (requestFrom(e.target)) leaveTip(e);
     }, true);
 
     // キーボード。Tab で入口に止まったら出し、離れたら消す。
+    // ⚠️ **フォーカスが離れても、カーソルがいまの説明の上に残っていれば閉じない**
+    // （第25回 RG-25-04）。説明を支えているのは hover と focus の 2 つで、ここ（focusin /
+    // focusout）が知らせるのは focus が無くなったことだけ。以前は hover を見ずに閉じていたので、
+    // 印 A にフォーカス・印 B に hover で B の説明を出している間に、フォーカスが A から説明の
+    // 無い場所へ移ると B の説明が消えた（WCAG 1.4.13 の Persistent に合わない）。
+    // focusin と focusout の**両方**を同じ規則（hoverHoldsTip）にそろえる。片方だけでは、
+    // もう片方が閉じてしまう。hover が無くなったときは leaveTip が focusHoldsTip を見て閉じる。
     document.addEventListener('focusin', e => {
       // Escape で閉じた相手へ、ウィンドウの出入りなどで戻ってきただけなら出さない
       if (escClosedAt !== null && asElement(e.target) === escClosedAt) return;
       escClosedAt = null;
       const req = requestFrom(e.target);
-      if (req) show(req); else hideTip();
+      if (req) show(req); else if (!hoverHoldsTip()) hideTip();
     }, true);
     document.addEventListener('focusout', e => {
       // 文書の中で別の場所へ移った（移り先が要素か、文書がフォーカスを保ったまま body へ）
       if (escClosedAt !== null && (e.relatedTarget || document.hasFocus())) escClosedAt = null;
-      if (requestFrom(e.target)) hideTip();
+      if (requestFrom(e.target) && !hoverHoldsTip()) hideTip();
     }, true);
     document.addEventListener('keydown', e => {
       if (e.key === 'Escape') { escClosedAt = asElement(e.target); if (tip) hideTip(); return; }

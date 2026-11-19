@@ -940,7 +940,7 @@ test('箱を持たない文字と、切り取りの判定', async t => {
     }, `判定が実際の見え方と合っていない: ${JSON.stringify(r)}`);
   });
 
-  await t.test('反例が本当に反例であることを、ブラウザ自身に確かめる（対照）', async () => {
+  await t.test('反例が本当に反例であることを、ブラウザ自身に確かめる（対照）', async st => {
     // ここが崩れると、上の試験は何も確かめていないことになる。
     const r = await tab.evaluate(`(() => {
       const OPT = { opacityProperty: true, visibilityProperty: true };
@@ -959,11 +959,16 @@ test('箱を持たない文字と、切り取りの判定', async t => {
       };
     })()`);
     // ① 中身を飛ばす先祖: 先祖自身は「見えている」と答える。
-    //    最初から飛ばされている場合は Range の矩形も 0 になる（実測）。
+    //    最初から飛ばされている場合の Range の矩形は、Chrome の版で違う（実測: 157 までは 0・
+    //    158.0.8127.37 では 1）。矩形が出ても中身は描かれないので、反例であることは変わらない
+    //    （矩形があるぶん、製品は先祖の content-visibility を見ないと上の試験に通らない）。
+    //    以前はここで 0 を求めており、158 へ上がった日に、製品と関係なくこの対照だけが落ちた
+    //    （2026-11-19・`2cd6947` の製品でも同じ）。版の差は記録に残す。
     //    一度描かれてから飛ばした場合は矩形が残る——そちらは下の別の試験で見る。
     assert.equal(r.cvHostVisible, true, '先祖が false＝別の理由で落ちており反例になっていない');
     assert.equal(r.cvHostCv, 'hidden', 'content-visibility:hidden が効いていない');
-    assert.equal(r.cvDc.rects, 0, `最初から飛ばした中身に矩形が出た（${r.cvDc.rects}）＝前提が変わった`);
+    st.diagnostic(`最初から飛ばした中身の Range の矩形: ${r.cvDc.rects}`);
+    assert.ok(Number.isInteger(r.cvDc.rects) && r.cvDc.rects >= 0, `矩形の数を読めていない（${r.cvDc.rects}）`);
     // ② visibility を戻した子: 先祖は「見えていない」と答えるが、子は visible
     assert.equal(r.vhHostVisible, false, '先祖が true＝反例になっていない');
     assert.equal(r.vhDc.visibility, 'visible', '子の visibility が visible に戻っていない');

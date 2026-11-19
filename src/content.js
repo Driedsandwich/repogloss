@@ -632,16 +632,37 @@
   // 描画効果だけで完全に消えている形。**断定できるものだけ**を並べる。
   const FILTER_OPACITY_ZERO = /(^|[\s(])opacity\(\s*0(\.0+)?%?\s*\)/;
 
+  // gradient の色の止まりを**すべて**取り出す。1つでも読めない止まりがあれば null（第25回 RG-25-02）。
+  // ⚠️ 以前は色を `/rgba?\([^)]*\)/` だけで取り出していた。Chrome は `color()`・`oklch()` などの
+  // 色を計算済みの値でも**その形のまま**返す（RG-23-03・RG-24-02 と同じ型）ので、透明な
+  // `color()` の gradient は色が取れず「透明でない」、透明な rgba と不透明な `color()` が
+  // 混ざると rgba だけを見て「透明」と答えていた。色は colorAlpha と同じ関数の並びで取り出し、
+  // 取り出した残りに括弧（入れ子の `calc()`・`color-mix()` など）や、gradient の書き方に
+  // 無い語（`currentcolor`・色の名前など）が残れば、読めない止まりがあるとみなす。
+  const GRADIENT_COLOR = /(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\([^()]*\)|\btransparent\b/gi;
+  const GRADIENT_WORD = /^(to|left|right|top|bottom|center|at|circle|ellipse|closest-side|closest-corner|farthest-side|farthest-corner|from|in|srgb|srgb-linear|display-p3|a98-rgb|prophoto-rgb|rec2020|lab|oklab|xyz|xyz-d50|xyz-d65|hsl|hwb|lch|oklch|shorter|longer|increasing|decreasing|hue)$/;
+  function gradientColors(v) {
+    const i = v.indexOf('(');
+    if (i === -1 || !v.endsWith(')')) return null;
+    const inner = v.slice(i + 1, -1);
+    const colors = inner.match(GRADIENT_COLOR) || [];
+    const rest = inner.replace(GRADIENT_COLOR, ' ');
+    if (rest.includes('(') || rest.includes(')')) return null;
+    // 区切りごとの1語で見る（数字だけを削ると `display-p3` が `display-p` になり読めなくなる）
+    const tokens = rest.toLowerCase().split(/[\s,/]+/).filter(Boolean);
+    if (tokens.some(t => !/^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?([a-z]+|%)?$/.test(t) &&
+                         !GRADIENT_WORD.test(t))) return null;
+    return colors;
+  }
+
   function isFullyTransparentGradient(v) {
-    if (!/^(-webkit-)?(linear|radial|conic|repeating-linear|repeating-radial)-gradient\(/.test(v)) return false;
-    const colors = v.match(/rgba?\([^)]*\)/g);
+    // ⚠️ repeating-conic も読む（第25回の確かめの途中で見つけた・2cd6947 から同じ）。以前の並びに
+    // repeating-conic が無く、透明な repeating-conic-gradient の文字（0 画素）に印が付いた。
+    // 並びは isGradientLayer の GRADIENT と同じ（あちらはこの関数より後で宣言するので写す）。
+    if (!/^(-webkit-)?(repeating-)?(linear|radial|conic)-gradient\(/.test(v)) return false;
+    const colors = gradientColors(v);
     if (!colors || colors.length === 0) return false;
-    return colors.every(c => {
-      const m = /^rgba\(([^)]*)\)$/.exec(c);
-      if (!m) return false;                       // rgb(...) は不透明
-      const parts = m[1].split(/\s*[,/]\s*|\s+/).filter(Boolean);
-      return parts.length >= 4 && parseFloat(parts[parts.length - 1]) === 0;
-    });
+    return colors.every(c => colorAlpha(c) === 0);   // 読めない alpha（null）は透明と断定しない
   }
 
   // 計算済みの色の alpha（0〜1）。**読めない形は null**（第23回 RG-23-03）。
@@ -788,6 +809,15 @@
       // `background-size:100% 100%` で敷いた語は0画素なのに印が付いた。
       // 中身を知るには読み込みが要る（新しい通信になる）ので、**断定しない**。
       if (!isGradientLayer(layers[i])) { unknown = true; continue; }
+      // ⚠️ **色の止まりを読めない gradient は、描くと断定しない**（第25回 RG-25-02 の受入3）。
+      // isFullyTransparentGradient は読めない止まりを「透明でない」と返すので、そのまま下へ
+      // 進むと「描く」になっていた。実測（Chrome 158・headless）: 止まりの位置の
+      // `calc(10% + 5px)` と、古い書き方の `circle cover` は計算後の値にも残って読めず、
+      // 透明な語（0 画素）に印が付き、後方の読める同じ語を説明しなかった。
+      // 直す前（2cd6947）は rgba だけを拾って透明と読めていた形で、色の止まりを全部読む
+      // 直し（gradientColors）が入れた後退。読めない alpha（null）の色も同じ扱いにする。
+      const stops = gradientColors(layers[i]);
+      if (!stops || !stops.length || stops.some(c => colorAlpha(c) === null)) { unknown = true; continue; }
       // ⚠️ **`background-origin` も層ごと**（第21回 RG-21-02）。以前はカンマ区切りの
       // 値全体を1つの origin として扱っており、`content-box, border-box` の1層目を
       // padding-box へ落としていた（実測: 語は 320画素描かれているのに印が付かなかった）。
@@ -924,11 +954,15 @@
     // 背景（`bgClipTextPaintsAt`）と同じ契約にそろえた。
     // ⚠️ 代償: 不透明な画像で覆った語も説明されなくなる（第17回 RG-17-04 の対照）。
     if (!isGradientLayer(layer)) return 'unknown';
-    const colors = layer.match(/rgba?\([^)]*\)/g);
+    // ⚠️ 色は isFullyTransparentGradient と同じ取り出し方にそろえる（第25回 RG-25-02）。
+    // rgba だけを見ると、透明な rgba と不透明な `color()` が混ざる覆いを「一様」と読み、
+    // 'shown' と断定してしまう。読めない止まりがあれば断定しない。
+    const colors = gradientColors(layer);
     if (!colors || !colors.length) return 'unknown';
     // 一様（すべての色が同じ）でなければ、場所によって値が変わる＝断定しない
     if (colors.some(c => c !== colors[0])) return 'unknown';
     if (mode !== 'luminance') return 'shown';                 // alpha / match-source の gradient
+    if (!/^rgba?\(/i.test(colors[0])) return 'unknown';      // luminanceOf は rgb/rgba の数字しか読めない
     const l = luminanceOf(colors[0]);
     if (l === null) return 'unknown';
     return l > 0 ? 'shown' : 'hidden';
@@ -1147,12 +1181,19 @@
     // 解けないときは「断定できない」を返す。
     // 形の入力（計算後の clip-path と、形を回す変形）。判定関数は中身を比べられないので、
     // 引き取った語を入れ直すかの署名にはこちらを使う（第24回 RG-24-03 → rejectSig）。
+    // ⚠️ 百分率の基準になる**参照ボックスの寸法**も入れる（第25回 RG-25-03）。
+    // 文字列と傾きだけでは、`inset(0 round 50%)` の箱の幅だけが後から変わっても
+    // 同じキーになり、引き取った語を入れ直さなかった（印が戻らないまま残る）。
+    // 位置は入れない（語の矩形のほうで署名に入る）。1px 未満の揺れでキーが変わって
+    // 入れ直しが増えないよう、寸法は整数へ丸める（rejectSig の矩形と同じ）。
     let shapeKey = '';
     if (cs.clipPath && cs.clipPath !== 'none') {
-      shapeKey = cs.clipPath + (skewed ? '@' + [L.a, L.b, L.c, L.d].map(v => v.toFixed(4)).join(',') : '') + ';';
+      const refSize = r => '#' + Math.round(r.x2 - r.x1) + 'x' + Math.round(r.y2 - r.y1);
+      shapeKey = cs.clipPath + (skewed ? '@' + [L.a, L.b, L.c, L.d].map(v => v.toFixed(4)).join(',') : '');
       const { shape: sh, box } = splitGeometryBox(cs.clipPath.trim());
       if (!skewed) {
         const ref = refBoxRect(cs, border, false, box);
+        shapeKey += refSize(ref);
         const sr = shapeBoundsRect(sh, ref);
         if (sr) shape = intersectRect(shape, sr);
         const t = shapeHitTest(sh, ref);
@@ -1171,6 +1212,7 @@
         // 印が付いた）。`offsetWidth` は border box そのもので、`zoom` も変形も
         // 掛からない生の寸法なので、そのまま変形前の座標に使える。
         const bw = el.offsetWidth, bh = el.offsetHeight;
+        shapeKey += refSize(refBoxLocal(cs, bw, bh, box));
         const map = (bw > 0 && bh > 0) ? localToViewport(L, bw, bh, border) : null;
         if (map) {
           const ref = refBoxLocal(cs, bw, bh, box);
@@ -1196,6 +1238,7 @@
         // それは「確実に見える」と同じ意味になってしまう（第20回 RG-20-02）。
         tests.push(() => 'unknown');
       }
+      shapeKey += ';';
     }
     return { overflow, shape, tests, scroller, shapeKey };
   }
@@ -1725,18 +1768,29 @@
     // 中の覆いを 100px まで広げ、y=65 で見えている語の印を後方へ移した。切り取りの親が
     // 縮小されている形も同じ）。
     // 切り取りの祖先**とその上の祖先**に軸に沿った正の拡大縮小があるときは、画面上の
-    // 縮尺（外接矩形 ÷ `offsetWidth`）を `clientLeft` などに掛ける。境界の太さも同じ縮尺で
-    // 描かれる（実測: 境界 40px・scale(.5) の切り取りで、境界だけ縮めずに足す写しは、画面で
-    // 見えている印を覆われた側へ移した）。
+    // padding box を、外接矩形（実数の border box）から、境界の太さ（計算後の値・実数）に
+    // 縮尺を掛けて引いて求める。境界の太さも同じ縮尺で描かれる（実測: 境界 40px・scale(.5)
+    // の切り取りで、境界だけ縮めずに足す写しは、画面で見えている印を覆われた側へ移した）。
+    // 縮尺は、歩いた祖先の変形の行列（軸に沿った拡大縮小なので対角成分）を掛け合わせて得る。
+    // ⚠️ 以前（第25回 RG-25-01 の指摘まで）は縮尺を「外接矩形 ÷ `offsetWidth`」で求め、
+    // `clientLeft`・`clientWidth` に掛けていた。どれも整数に丸めた値なので、端数の幅の箱を
+    // 大きく拡大すると（監査の例: 幅 1.375px の箱を `scaleX(100)`）切り取りの範囲が両方向に
+    // ずれた。いまは整数の寸法を縮尺の側に使わない（単体テスト tests/clip-scale.test.js。
+    // そこで使う整数への丸め方は Chrome の丸めの模型で、実測ではない）。
+    // スクロールバーの出る箱は、padding box にバーが含まれてしまうので、縮尺があるときは
+    // **断定しない**（null）。縮尺の無い切り取りは従来どおり `clientLeft` などで狭める。
     // それ以外の変形があれば、その覆いは**断定しない**（null）。覆いと切り取りの祖先の
     // あいだの変形は `r` に反映済みなので、ここでは見ない。
     // 縮尺は上の祖先まで歩かないと分からないので、切り取りは控えておき、最後に狭める。
-    const clips = [];                                       // { n, scaled }
+    const clips = [];                                       // { n, s, scaled, sx, sy }
     const scaleAbove = s => {                               // 控えた切り取りへ効く変形か
       if (!clips.length) return true;
       const k = coordKind(s);
       if (k === 'bad') return false;
-      if (k === 'scale') for (const c of clips) c.scaled = true;
+      if (k === 'scale') {
+        const m = ownLinear(s).m;                           // 'scale' なら b = c = 0・a, d > 0
+        for (const c of clips) { c.scaled = true; c.sx *= m.a; c.sy *= m.d; }
+      }
       return true;
     };
     for (let n = el; n && n !== document.documentElement; n = n.parentElement) {
@@ -1749,22 +1803,31 @@
       // 「覆っている範囲を少なく見積もる」向き（＝断定しない側）なので構わない。
       if (n !== el && n !== document.body && clipsInside(s)) {
         if (hasRadius(s)) return null;
-        clips.push({ n, scaled: false });
+        clips.push({ n, s, scaled: false, sx: 1, sy: 1 });
       }
       if (!scaleAbove(s)) return null;
     }
     // 上の歩みは <html> の手前で止まる。<html> の変形も切り取りの寸法を変える
     if (!scaleAbove(getComputedStyle(document.documentElement))) return null;
-    for (const { n, scaled } of clips) {
+    for (const { n, s, scaled, sx, sy } of clips) {
       const b = n.getBoundingClientRect();
-      let sx = 1, sy = 1;
       if (scaled) {
-        sx = b.width / n.offsetWidth; sy = b.height / n.offsetHeight;
         if (!(isFinite(sx) && sx > 0 && isFinite(sy) && sy > 0)) return null;
+        // スクロールバーが出る（出うる）箱は断定しない
+        if (s.overflowX === 'scroll' || s.overflowY === 'scroll') return null;
+        if ((s.overflowX === 'auto' || s.overflowY === 'auto') &&
+            (n.scrollWidth > n.clientWidth || n.scrollHeight > n.clientHeight)) return null;
+        if (s.scrollbarGutter && s.scrollbarGutter !== 'auto') return null;
+        const bl = parseFloat(s.borderLeftWidth), bt = parseFloat(s.borderTopWidth);
+        const br = parseFloat(s.borderRightWidth), bb = parseFloat(s.borderBottomWidth);
+        if (![bl, bt, br, bb].every(v => isFinite(v) && v >= 0)) return null;
+        x1 = Math.max(x1, b.left + bl * sx); y1 = Math.max(y1, b.top + bt * sy);
+        x2 = Math.min(x2, b.right - br * sx); y2 = Math.min(y2, b.bottom - bb * sy);
+      } else {
+        const px = b.left + n.clientLeft, py = b.top + n.clientTop;
+        x1 = Math.max(x1, px); y1 = Math.max(y1, py);
+        x2 = Math.min(x2, px + n.clientWidth); y2 = Math.min(y2, py + n.clientHeight);
       }
-      const px = b.left + n.clientLeft * sx, py = b.top + n.clientTop * sy;
-      x1 = Math.max(x1, px); y1 = Math.max(y1, py);
-      x2 = Math.min(x2, px + n.clientWidth * sx); y2 = Math.min(y2, py + n.clientHeight * sy);
       if (!(x2 > x1 && y2 > y1)) return null;
     }
     // 祖先の content-visibility なども、まとめて聞いておく
@@ -2878,6 +2941,7 @@
   let tipAnchor = null;      // 位置の基準にした要素
   let tipDescribed = null;   // aria-describedby を足した相手
   let tipIcons = [];         // いま出している説明のもと
+  let tipPointer = null;     // カーソルがいま乗っている要素（→ hoverHoldsTip）
 
   const asElement = t => (t && t.nodeType === Node.ELEMENT_NODE ? t : null);
 
@@ -3092,6 +3156,21 @@
     return !!(tipDescribed && (a === tipDescribed || tipDescribed.contains(a)));
   }
 
+  // いまカーソルが乗っている要素が、出している説明を支えているか（第25回 RG-25-04）。
+  // mouseover が説明を出すのと同じ規則で見る: 吹き出しの中か、そこから出す説明
+  // （requestFrom）がいまの説明と同じ（showTip が出し直さない条件と同じ）か。
+  // カーソルの居場所（tipPointer）は mouseover / mouseout が書く。
+  // ⚠️ `el.matches(':hover')` では測れない。実測（Chrome for Testing 153・headless）:
+  // カーソルの下の button は `:hover` の規則で色が変わっているのに、`matches(':hover')` も
+  // `querySelectorAll(':hover')` も false / 0 件だった。
+  function hoverHoldsTip() {
+    if (!tip || !tipAnchor || !tipAnchor.isConnected) return false;
+    if (!tipPointer || !tipPointer.isConnected) return false;
+    if (inTooltip(tipPointer)) return true;
+    const req = requestFrom(tipPointer);
+    return !!(req && req.anchor === tipAnchor && requestKey(req.icons) === requestKey(tipIcons));
+  }
+
   // カーソルが印（入口）と吹き出しの外へ出た。
   // ⚠️ 猶予を与えるのは、**移った先の要素があり**（relatedTarget。ウィンドウの外から
   // 来た／出たときは null）、その位置が上の矩形の中のときだけ。ページの script が
@@ -3136,28 +3215,37 @@
     // 表示中に印が DOM から消えた場合（GitHub の再描画など）に
     // mouseout が来ず、ツールチップが residual として残る。
     document.addEventListener('mouseover', e => {
+      tipPointer = asElement(e.target);
       if (inTooltip(e.target)) { cancelTipClose(); return; }   // 吹き出しの上に来たら閉じない
       const req = requestFrom(e.target);
       if (req) { escClosedAt = null; show(req); } else leaveTip(e);
     }, true);
     document.addEventListener('mouseout', e => {
+      tipPointer = asElement(e.relatedTarget);   // ウィンドウの外へ出たときは null
       // 吹き出しへカーソルを移す途中で消さない（長い説明を読めるようにする）
       if (inTooltip(e.relatedTarget) || requestFrom(e.relatedTarget)) return;
       if (requestFrom(e.target)) leaveTip(e);
     }, true);
 
     // キーボード。Tab で入口に止まったら出し、離れたら消す。
+    // ⚠️ **フォーカスが離れても、カーソルがいまの説明の上に残っていれば閉じない**
+    // （第25回 RG-25-04）。説明を支えているのは hover と focus の 2 つで、ここ（focusin /
+    // focusout）が知らせるのは focus が無くなったことだけ。以前は hover を見ずに閉じていたので、
+    // 印 A にフォーカス・印 B に hover で B の説明を出している間に、フォーカスが A から説明の
+    // 無い場所へ移ると B の説明が消えた（WCAG 1.4.13 の Persistent に合わない）。
+    // focusin と focusout の**両方**を同じ規則（hoverHoldsTip）にそろえる。片方だけでは、
+    // もう片方が閉じてしまう。hover が無くなったときは leaveTip が focusHoldsTip を見て閉じる。
     document.addEventListener('focusin', e => {
       // Escape で閉じた相手へ、ウィンドウの出入りなどで戻ってきただけなら出さない
       if (escClosedAt !== null && asElement(e.target) === escClosedAt) return;
       escClosedAt = null;
       const req = requestFrom(e.target);
-      if (req) show(req); else hideTip();
+      if (req) show(req); else if (!hoverHoldsTip()) hideTip();
     }, true);
     document.addEventListener('focusout', e => {
       // 文書の中で別の場所へ移った（移り先が要素か、文書がフォーカスを保ったまま body へ）
       if (escClosedAt !== null && (e.relatedTarget || document.hasFocus())) escClosedAt = null;
-      if (requestFrom(e.target)) hideTip();
+      if (requestFrom(e.target) && !hoverHoldsTip()) hideTip();
     }, true);
     document.addEventListener('keydown', e => {
       if (e.key === 'Escape') { escClosedAt = asElement(e.target); if (tip) hideTip(); return; }

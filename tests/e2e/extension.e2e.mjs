@@ -6437,6 +6437,195 @@ test('第24回（自分で発見）: 自分の吹き出しが下の印に重な�
   await tab.close();
 });
 
+/* ===================== 第25回監査（v1.8.22）の反例・群 A ===================== */
+/* 縮尺のある切り取りの境界（RG-25-01）と、切り抜きの参照ボックスの寸法の署名（RG-25-03）。
+   どちらも回答の見本を土台にし、**直す前の 2cd6947 で落ちる**ことを確かめてある。
+   対照は【対照】。 */
+import { clipScale25Page, CLIPSCALE25, SHAPE25_PAGE } from './helpers/chrome.mjs';
+
+test('第25回 RG-25-01: 縮尺のある祖先の切り取りを、整数に丸めた寸法で割って見積もらない', async t => {
+  // 場面ごとに別の初期ページ（同じ源の別の道のり）。1 枚にまとめない（→ helpers の注）
+  const extra = {};
+  for (const [k, v] of Object.entries(CLIPSCALE25)) {
+    extra[`/octocat/Hello-World/rg25-${k}`] = ['text/html; charset=utf-8', clipScale25Page(v)];
+  }
+  const srv = await startTestServer(undefined, extra);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+
+  const pairOf = tab => tab.evaluate(`['first', 'later']
+    .map(i => document.getElementById(i).querySelectorAll('.iiyaku-icon').length)`);
+  const stopsIn = (tab, id) => countTabStops(cdp, tab,
+    `(() => { const a = document.activeElement; return !!(a && a.closest && a.closest('#${id}')); })()`,
+    { startId: 'before' });
+  // 実 Chrome が返す切り取りの箱の寸法。単体（tests/clip-scale.test.js）の丸めの模型
+  // （offsetWidth = round(幅＋境界×2)、clientWidth = round(境界＋幅) − round(境界)。箱の左端は 0）
+  // と並べて記録に残す。合否には使わない（模型は実測ではないので、違えば報告する）
+  const geometry = tab => tab.evaluate(`(() => {
+    const n = document.getElementById('clip'), c = document.getElementById('cover');
+    const s = getComputedStyle(n), b = n.getBoundingClientRect(), cb = c.getBoundingClientRect();
+    return { offsetWidth: n.offsetWidth, offsetHeight: n.offsetHeight,
+             clientWidth: n.clientWidth, clientHeight: n.clientHeight,
+             clientLeft: n.clientLeft, clientTop: n.clientTop,
+             width: s.width, height: s.height, borderLeftWidth: s.borderLeftWidth, transform: s.transform,
+             rect: [b.left, b.top, b.right, b.bottom], coverRect: [cb.left, cb.top, cb.right, cb.bottom],
+             innerWidth, innerHeight, dpr: devicePixelRatio }; })()`);
+  const model = (w, bw) => [Math.round(w + 2 * bw), Math.round(bw + w) - Math.round(bw)];
+
+  // covered … 印は本当に覆いの中か（覆いの中なら後方へ、外なら前方に残る）
+  const scene = async (st, key, covered) => {
+    const tab = await openPage(cdp, `${PAGE}/rg25-${key}`);
+    try {
+      await waitFor('拡張が動き出す', async () => await count23(tab, '.iiyaku-toggle'));
+      const g = await geometry(tab);
+      const bw = parseFloat(g.borderLeftWidth);
+      const [ow, cw] = model(parseFloat(g.width), bw), [oh, ch] = model(parseFloat(g.height), bw);
+      const m = { offsetWidth: ow, clientWidth: cw, offsetHeight: oh, clientHeight: ch };
+      const same = Object.keys(m).every(k => m[k] === g[k]);
+      st.diagnostic(`RG-25-01 ${key}: 実 Chrome ${JSON.stringify(g)} ／ 丸めの模型 ${JSON.stringify(m)}` +
+        (same ? '（寸法は模型と一致）' : '（⚠️ 模型と違う）'));
+      // 前提: 前方の語そのものは覆いの外で見えている（印だけが縁の手前か奥にある）
+      const wr = await wordRect23(tab, '#first', 'branch');
+      assert.ok(wr && (await pixelsAt(cdp, tab, wr)).nonwhite > 0, '前提が崩れている（前方の語が見えていない）');
+      const want = covered ? [0, 1] : [1, 0];
+      const got = await settle23(() => pairOf(tab), v => v[0] === want[0] && v[1] === want[1], 3000);
+      assert.deepEqual(got, want, covered
+        ? '覆いの中の印を見えると断定し、前方に残した'
+        : '覆いの外で見えている印を覆われたと断定し、後方へ移した');
+      // 残った側の印は画面に描かれている（色が 2 つ以上＝"i" と地）
+      const sel = covered ? '#later .iiyaku-icon' : '#first .iiyaku-icon';
+      const ink = await inkAt(cdp, tab, innerRect(await rectOf23(tab, sel)));
+      assert.ok(ink.colors >= 2, `${covered ? '後方' : '前方'}の印が描かれていない: ${JSON.stringify(ink)}`);
+      // 実 Tab の停止点（最後に見る）
+      await readyForTab24(cdp, tab);
+      assert.deepEqual({ first: await stopsIn(tab, 'first'), later: await stopsIn(tab, 'later') },
+        covered ? { first: 0, later: 1 } : { first: 1, later: 0 }, '実 Tab の停止点');
+    } finally {
+      await tab.close();
+    }
+  };
+
+  await t.test('受入1: 幅 1.375px・scaleX(100) では、覆いの中の印を後方へ（前方の実 Tab 停止点 0）', st => scene(st, 'a1', true));
+  await t.test('受入2: 幅 1.5px・scaleX(100) では、覆いの外の印を前方に残す（画素あり・実 Tab で届く）', st => scene(st, 'a2', false));
+  await t.test('受入3【対照】整数の幅 2px・scaleX(100): 覆いの中の印は後方へ', st => scene(st, 'intIn', true));
+  await t.test('受入3【対照】整数の幅 2px・scaleX(100): 覆いの外の印は前方に', st => scene(st, 'intOut', false));
+  await t.test('受入3【対照】境界 40px・scaleX(2.5): 覆いの中の印は後方へ', st => scene(st, 'bdIn', true));
+  await t.test('受入3【対照】境界 40px・scaleX(2.5): 境界の上で見えている印は前方に', st => scene(st, 'bdOut', false));
+  await t.test('受入3: 2 軸で違う縮尺 scale(100, 50): 覆いの中の印は後方へ', st => scene(st, 'xyIn', true));
+  await t.test('受入3【対照】2 軸で違う縮尺 scale(100, 50): 上の境界の上で見えている印は前方に', st => scene(st, 'xyOut', false));
+  await t.test('受入3: 縮尺を 2 つの祖先に分けた scaleX(10)×scaleX(10)・幅 1.375px: 覆いの中の印は後方へ', st => scene(st, 'mulIn', true));
+  await t.test('受入3: 縮尺を 2 つの祖先に分けた scaleX(10)×scaleX(10)・幅 1.5px: 覆いの外の印は前方に', st => scene(st, 'mulOut', false));
+});
+
+test('第25回 RG-25-03: 切り抜きの参照ボックスの寸法だけが変わっても、引き取った語を入れ直す', async t => {
+  const srv = await startTestServer(SHAPE25_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  // まとめ直しの回数を、隔離された世界の中から数える（自己通知の輪があれば膨らむ）
+  await cdp.send('Extensions.loadUnpacked', {
+    path: stageExtensionWith({ 'batch-probe.js': 'tests/e2e/batch-probe.js' },
+      js => ['batch-probe.js', ...js]) });
+  // ⚠️ 表示の後は、印が戻るのを見届けるまで**マウスもキーも動かさない**（回答の注）。
+  // 操作はページ側の変化の合図（extSerial）を進め、署名が同じでも入れ直させてしまう。
+  // それまでの観測は CDP の読み取り（Runtime.evaluate・撮影）だけにする。
+  const tab = await openPage(cdp, PAGE);
+
+  const n = id => count23(tab, `#${id} .iiyaku-icon`);
+  const rms = id => tab.evaluate(`window.__ev.filter(e => e === 'rm:${id}').length`);
+  const batches = () => tab.evaluate(`Number(localStorage.getItem('rg-batches') || 0)`);
+  const stopsIn = id => countTabStops(cdp, tab,
+    `(() => { const a = document.activeElement; return !!(a && a.closest && a.closest('#${id}')); })()`,
+    { startId: 'before' });
+  // 出し入れの記録が ms のあいだ動かなくなるまで待つ（期限つき）
+  const quiet = async (ms, timeout) => {
+    const t0 = Date.now();
+    let last = await tab.evaluate('window.__ev.length'), at = Date.now();
+    while (Date.now() - at < ms) {
+      if (Date.now() - t0 > timeout) throw new Error(`出し入れが ${timeout}ms 止まらない: ${JSON.stringify(await tab.evaluate('window.__ev'))}`);
+      await sleep(100);
+      const v = await tab.evaluate('window.__ev.length');
+      if (v !== last) { last = v; at = Date.now(); }
+    }
+  };
+  // 入れ直しの署名が見る入力のうち、ページから読めるもの（どれも変わらないことを前提として見る）
+  const word = async () => { const r = await wordRect23(tab, '#shape', 'branch');
+    return r && [r.x, r.y, r.x + r.w, r.y + r.h].map(Math.round); };
+  const inputs = async () => ({ word: await word(), ...await tab.evaluate(`(() => {
+    const sh = document.getElementById('shape'), f = document.getElementById('frame').getBoundingClientRect();
+    return { clipPath: getComputedStyle(sh).clipPath,
+             frame: [f.left, f.top, f.right, f.bottom].map(Math.round),
+             shapeWidth: sh.getBoundingClientRect().width }; })()`) });
+
+  await t.test('受入1: 初期状態では、形の外の印を入れて測って引き取る', async () => {
+    await waitFor('2 つの枠の語を入れて測って引き取る', async () =>
+      await rms('shape') >= 1 && await rms('ctl') >= 1, { timeout: 15000 });
+    // 読み込みの直後は、最初に引き取ってから 400ms（控えの最初の間）で 1 回だけ入れ直して
+    // 引き取り直す（実測: 2 つの枠とも 178ms と 580ms に 1 回ずつ、そのあと 10 秒は 0）。
+    // 出し入れの記録が 1.2 秒（最初の間の 3 倍）動かなくなるまで、期限つきで待ってから測る
+    await quiet(1200, 10000);
+    assert.equal(await tab.evaluate(`localStorage.getItem('rg-probe-selftest')`) !== null, true,
+      '計測器が動いていない');
+    assert.deepEqual([await n('shape'), await n('ctl')], [0, 0]);
+    const wr = await wordRect23(tab, '#shape', 'branch');
+    assert.ok(wr && (await pixelsAt(cdp, tab, wr)).nonwhite > 0, '前提が崩れている（語が見えていない）');
+  });
+
+  await t.test('受入5【対照】何も変えないあいだは、出し入れを繰り返さない', async st => {
+    const r0 = [await rms('shape'), await rms('ctl')];
+    const b0 = await batches();
+    await sleep(3000);
+    assert.deepEqual([await rms('shape'), await rms('ctl')], r0, '何もしていないのに、印の出し入れが続いている');
+    const db = await batches() - b0;
+    assert.ok(db <= 4, `何もしていないのに、まとめ直しが ${db} 回走った（自己通知の輪）`);
+    st.diagnostic(`RG-25-03 変える前: 出し入れ ${JSON.stringify(await tab.evaluate('window.__ev'))}・まとめ直し +${db}`);
+  });
+
+  await t.test('受入2・3: CSSOM で内枠の幅だけを 120 → 240px にすると（文字列・語・外枠は同じ）、印が戻る', async st => {
+    const before = await inputs();
+    const changed = await tab.evaluate(`(() => {
+      for (const r of document.getElementById('fixture').sheet.cssRules)
+        if (r.selectorText === '#shape') {
+          if (r.style.width !== '120px') return 'no-decl:' + r.style.width;   // 既存の宣言の値だけを変える
+          r.style.width = '240px'; return 'ok';
+        }
+      return 'no-rule'; })()`);
+    assert.equal(changed, 'ok', '見本の書き換えができていない');
+    const t0 = Date.now();
+    const after = await inputs();
+    assert.equal(before.shapeWidth, 120, '前提が崩れている（内枠の幅）');
+    assert.equal(after.shapeWidth, 240, '前提が崩れている（内枠の幅が変わっていない）');
+    assert.deepEqual({ ...after, shapeWidth: 0 }, { ...before, shapeWidth: 0 },
+      '前提が崩れている（clip-path の文字列・語の矩形・外枠のどれかが変わった）');
+    await waitFor('幅を変えた内枠の語に印が戻る', async () => await n('shape') === 1, { timeout: 6000 });
+    st.diagnostic(`RG-25-03 幅を変えてから印が戻るまで ${Date.now() - t0}ms・入力 ${JSON.stringify(before)}`);
+    assert.equal(await n('ctl'), 0, '変えなかった枠に印が付いた');
+  });
+
+  await t.test('受入4: 戻った印に画素があり、実 Tab で届く', async () => {
+    const ink = await inkAt(cdp, tab, innerRect(await rectOf23(tab, '#shape .iiyaku-icon')));
+    assert.ok(ink.colors >= 2, `戻った印が描かれていない: ${JSON.stringify(ink)}`);
+    await readyForTab24(cdp, tab);
+    assert.equal(await stopsIn('shape'), 1, '戻った印で Tab が止まらない');
+  });
+
+  await t.test('受入5【対照】変えなかった枠は付かず、どちらも出し入れを繰り返さない', async () => {
+    await sleep(600);
+    const r0 = [await rms('shape'), await rms('ctl')];
+    const b0 = await batches();
+    await sleep(3000);
+    assert.deepEqual([await n('shape'), await n('ctl')], [1, 0]);
+    assert.deepEqual([await rms('shape'), await rms('ctl')], r0, '何もしていないのに、印の出し入れが続いている');
+    const db = await batches() - b0;
+    assert.ok(db <= 4, `何もしていないのに、まとめ直しが ${db} 回走った（自己通知の輪）`);
+    assert.equal(await stopsIn('ctl'), 0, '見えない停止点が残っている');
+  });
+
+  await tab.close();
+});
+
 test('ページ側から同梱物を読めず、通信はテストサーバと拡張の中だけ', async t => {
   const srv = await startTestServer();
   const chrome = await launchChrome({ port: srv.port });

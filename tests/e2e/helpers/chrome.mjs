@@ -2660,3 +2660,104 @@ export const TIPCOVER24_PAGE = `<!doctype html><html lang="en"><head><meta chars
     }, 50);
   </script>
 </body></html>`;
+
+/* ===================== 第25回監査（v1.8.22）の反例・群 A ===================== */
+
+/* RG-25-01。縮尺のある切り取りの祖先（`overflow:hidden`）の、画面上の padding box。
+   以前は縮尺を「外接矩形 ÷ `offsetWidth`」で求め、`clientLeft`・`clientWidth` に掛けていた。
+   どれも整数に丸めた値なので、端数の幅の箱を大きく拡大すると境界が両方向にずれた。
+   回答の見本そのもの（本文・寸法・位置）を、値を替えて 1 枚ずつの初期ページにする
+   （1 枚にまとめない。別の場面の合図や再走査が欠陥を救わないように）。
+   前方の語 #first は覆いの外（x < 100）で見えている。印だけを、ページの規則で覆いの縁の
+   手前か奥に置く。印が覆われていれば [前方, 後方] = [0, 1]、覆われていなければ [1, 0]。
+     clip  … 切り取りの箱の規則（幅・高さ・境界・変形・位置）
+     wrap  … 切り取りの**親**の変形（複数の祖先の縮尺）。無ければ親を置かない
+     fy    … 前方の語の top。印は語の左上から (ix, 0) に置く
+   ⚠️ 切り取りの箱と親には `pointer-events:none` を付ける（→ CLIPSCALE24_PAGE の注）。 */
+export function clipScale25Page({ clip, wrap = null, ix, fy = 60 }) {
+  const box = '<div id="clip"><div id="cover"></div></div>';
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>clipscale25</title><style>
+body{margin:0;background:white;color:black;font:16px monospace}
+#first{position:absolute;left:20px;top:${fy}px;margin:0}
+#first .iiyaku-icon{position:absolute;left:${ix}px;top:0;margin-left:0;width:14px;height:14px}
+${wrap ? `#wrap{position:absolute;left:0;top:0;transform:${wrap};transform-origin:0 0;z-index:10;pointer-events:none}` : ''}
+#clip{position:absolute;left:0;overflow:hidden;transform-origin:0 0;z-index:10;pointer-events:none;${clip}}
+#cover{position:absolute;left:-10px;top:-10px;width:30px;height:100px;background:white;pointer-events:none}
+#later{position:absolute;left:20px;top:180px;margin:0}
+#after{position:absolute;left:20px;top:240px}
+</style></head><body>
+<button id="before">before</button>
+<p id="first">branch</p>
+${wrap ? `<div id="wrap">${box}</div>` : box}
+<p id="later">branch</p>
+<button id="after">after</button>
+</body></html>`;
+}
+/* 場面ごとの値。画面の座標（x は切り取りの左端 0 から）で、本当の padding box と、印の範囲:
+     a1     … 回答の 1 件目。幅 1.375px・境界 1px・scaleX(100)。padding x [100, 237.5]。
+              印 x [101, 115] は覆いの中（以前の式は [112.5, 225] と見て、見えると断定した）
+     a2     … 回答の逆向き。幅 1.5px。padding x [100, 250]。印 x [85, 99] は覆いの外の
+              透明な境界の上（以前の式は [87.5, 262.5] と見て、覆われたと断定した）
+     intIn / intOut … 整数の幅 2px・scaleX(100)。padding x [100, 300]。印は [101, 115] と [85, 99]
+     bdIn / bdOut   … 境界 40px・幅 20px・scaleX(2.5)。padding x [100, 150]・y [40, 100]。
+              印は [101, 115] と [85, 99]。境界の太さを縮尺で伸ばさないと縁を 40 と見る
+     xyIn   … 2 軸で違う縮尺 scale(100, 50)・幅も高さも 1.375px。padding x [100, 237.5]・
+              y [50, 118.75]。印 [101, 115]×[60, 74] は覆いの中
+     xyOut  … 同じ切り取りで、印を y [36, 50] へ（上の境界の上で見えている）。縦の縮尺を
+              取り違える（横の 100 を使う・1 のまま）と、縁を y 100 か y 1 と見る
+     mulIn / mulOut … a1・a2 の縮尺を 2 つの祖先へ分ける（切り取り scaleX(10)・その親 scaleX(10)） */
+const CLIP25 = (w, h, b, t, top) => `top:${top}px;width:${w};height:${h};border:${b} solid transparent;transform:${t}`;
+export const CLIPSCALE25 = {
+  a1:     { clip: CLIP25('1.375px', '60px', '1px', 'scaleX(100)', 40), ix: 81 },
+  a2:     { clip: CLIP25('1.5px', '60px', '1px', 'scaleX(100)', 40), ix: 65 },
+  intIn:  { clip: CLIP25('2px', '60px', '1px', 'scaleX(100)', 40), ix: 81 },
+  intOut: { clip: CLIP25('2px', '60px', '1px', 'scaleX(100)', 40), ix: 65 },
+  bdIn:   { clip: CLIP25('20px', '60px', '40px', 'scaleX(2.5)', 0), ix: 81 },
+  bdOut:  { clip: CLIP25('20px', '60px', '40px', 'scaleX(2.5)', 0), ix: 65 },
+  xyIn:   { clip: CLIP25('1.375px', '1.375px', '1px', 'scale(100, 50)', 0), ix: 81 },
+  xyOut:  { clip: CLIP25('1.375px', '1.375px', '1px', 'scale(100, 50)', 0), ix: 81, fy: 36 },
+  mulIn:  { clip: CLIP25('1.375px', '60px', '1px', 'scaleX(10)', 40), wrap: 'scaleX(10)', ix: 81 },
+  mulOut: { clip: CLIP25('1.5px', '60px', '1px', 'scaleX(10)', 40), wrap: 'scaleX(10)', ix: 65 }
+};
+
+/* RG-25-03。回答の見本そのもの（外枠 120×120 の `overflow:hidden`・内枠 `inset(0 round 50%)`・
+   印は内枠の左上から (104, 0)）。最初は半径 60 の円の外なので、印は入れて測って引き取られる。
+   内枠の幅を CSSOM の**既存の宣言の値だけ**で 120 → 240px にすると、形は横半径 120 の楕円に
+   なり、印の中ほどが内側へ入る。外枠が切るので、語の矩形・計算後の clip-path・最後の
+   合成の切り取りは変わらない。幅は試験の側から変える（回答の見本の setTimeout は使わない。
+   変える時刻を試験が決め、その前の「何も変えないあいだ」を測るため）。
+   #ctl は同じ形のまま何も変えない対照（別の外枠・別の規則）。 */
+export const SHAPE25_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>shape25</title>
+<style id="fixture">
+body { margin: 30px; background: white; color: black; }
+.frame25 { position: relative; width: 120px; height: 120px; overflow: hidden; margin-bottom: 20px; }
+#shape {
+  position: relative; box-sizing: border-box; width: 120px; height: 120px;
+  padding: 50px 0 0 20px; font: 16px monospace; clip-path: inset(0 round 50%);
+}
+#ctl {
+  position: relative; box-sizing: border-box; width: 120px; height: 120px;
+  padding: 50px 0 0 20px; font: 16px monospace; clip-path: inset(0 round 50%);
+}
+#shape .iiyaku-icon, #ctl .iiyaku-icon {
+  position: absolute; left: 104px; top: 0; width: 14px; height: 14px; margin: 0;
+}
+</style></head><body>
+  <script>
+    window.__ev = [];
+    new MutationObserver(rs => {
+      for (const r of rs) {
+        for (const n of r.addedNodes)
+          if (n.nodeType === 1 && n.classList && n.classList.contains('iiyaku-icon')) __ev.push('add:' + (n.parentNode && n.parentNode.id));
+        for (const n of r.removedNodes)
+          if (n.nodeType === 1 && n.classList && n.classList.contains('iiyaku-icon')) __ev.push('rm:' + r.target.id);
+      }
+    }).observe(document.documentElement, { childList: true, subtree: true });
+  </script>
+  <button id="before">before</button>
+  <div class="frame25" id="frame"><div id="shape">branch</div></div>
+  <div class="frame25" id="frame2"><div id="ctl">commit</div></div>
+  <button id="after">after</button>
+</body></html>`;

@@ -6626,6 +6626,332 @@ test('第25回 RG-25-03: 切り抜きの参照ボックスの寸法だけが変�
   await tab.close();
 });
 
+/* ===================== 第25回監査（v1.8.22）の反例・群 B ===================== */
+/* グラデーションの色の止まり（RG-25-02）と、hover が支える説明とフォーカスの移動（RG-25-04）。
+   どちらも回答の見本を土台にし、**直す前の 2cd6947 で落ちる**ことを確かめてある。
+   ⚠️ RG-25-02 の受入3 の 2 場面（calc・cover）だけは基点で通る。色の止まりを全部読む直し
+      （32eb43c・a672415）の後で落ちた**後退の反例**で、bgClipTextPaintsAt の直しで通るようにした。
+   対照は【対照】。 */
+import { gradText25Page, GRADTEXT25, HOVERFOCUS25_PAGE } from './helpers/chrome.mjs';
+
+test('第25回 RG-25-02: グラデーションの色の止まりを全部読み、読めない止まりは描くと断定しない', async t => {
+  // 場面ごとに別の初期ページ（同じ源の別の道のり）。1 枚にまとめない（→ helpers の注）
+  const extra = {};
+  for (const [k, v] of Object.entries(GRADTEXT25)) {
+    extra[`/octocat/Hello-World/rg25g-${k}`] = ['text/html; charset=utf-8', gradText25Page(v.bg)];
+  }
+  const srv = await startTestServer(undefined, extra);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+
+  const pairOf = tab => tab.evaluate(`['first', 'later']
+    .map(i => document.getElementById(i).querySelectorAll('.iiyaku-icon').length)`);
+  const stopsIn = (tab, id) => countTabStops(cdp, tab,
+    `(() => { const a = document.activeElement; return !!(a && a.closest && a.closest('#${id}')); })()`,
+    { startId: 'before' });
+
+  const scene = async (st, key) => {
+    const { bg, seen, form } = GRADTEXT25[key];
+    const tab = await openPage(cdp, `${PAGE}/rg25g-${key}`);
+    try {
+      await waitFor('拡張が動き出す', async () => await count23(tab, '.iiyaku-toggle'));
+      // 前提の実測: 計算後の `background-image` の形（rgba へ直さずに返すか・補間の色空間の書き出し）
+      const v = await tab.evaluate(`getComputedStyle(document.getElementById('first')).backgroundImage`);
+      st.diagnostic(`RG-25-02 ${key}: 書いた値 ${bg} ／ 計算後の値 ${v}`);
+      assert.match(v, form, `前提が崩れている（計算後の値の形が想定と違う）: ${v}`);
+      // 前提: 前方の語が本当に描かれている／いない、後方の語は見えている（画面の画素）
+      const ink = (await pixelsAt(cdp, tab, await wordRect23(tab, '#first', 'branch'))).nonwhite;
+      if (seen) assert.ok(ink > 0, '前提が崩れている（前方の語が描かれていない）');
+      else assert.equal(ink, 0, '前提が崩れている（前方の語が描かれている）');
+      assert.ok((await pixelsAt(cdp, tab, await wordRect23(tab, '#later', 'branch'))).nonwhite > 0,
+        '前提が崩れている（後方の語が見えていない）');
+      const want = seen ? [1, 0] : [0, 1];
+      const got = await settle23(() => pairOf(tab), p => p[0] === want[0] && p[1] === want[1], 3000);
+      assert.deepEqual(got, want, seen
+        ? '描かれている前方の語を透明と断定し、説明しなかった'
+        : '描かれていない前方の語を見えると判定し、後方の読める語を説明しなかった');
+      // 残った側の印が画面に描かれている（色が 2 つ以上＝"i" と地）
+      const sel = seen ? '#first .iiyaku-icon' : '#later .iiyaku-icon';
+      const ic = await inkAt(cdp, tab, innerRect(await rectOf23(tab, sel)));
+      assert.ok(ic.colors >= 2, `${seen ? '前方' : '後方'}の印が描かれていない: ${JSON.stringify(ic)}`);
+      // 実 Tab の停止点（最後に見る）
+      await readyForTab24(cdp, tab);
+      assert.deepEqual({ first: await stopsIn(tab, 'first'), later: await stopsIn(tab, 'later') },
+        seen ? { first: 1, later: 0 } : { first: 0, later: 1 }, '実 Tab の停止点');
+    } finally {
+      await tab.close();
+    }
+  };
+
+  await t.test('受入1【対照】全部の止まりが透明な rgba: 前方の印 0・後方の印 1', st => scene(st, 'rgba'));
+  await t.test('受入1: 全部の止まりが透明な color(srgb … / 0): 前方の印 0・後方の印 1', st => scene(st, 'srgb'));
+  await t.test('受入1: 全部の止まりが透明な oklch(… / 0): 前方の印 0・後方の印 1', st => scene(st, 'oklch'));
+  await t.test('受入1: 補間の色空間 in oklch longer hue を書いた透明な oklch: 前方の印 0・後方の印 1', st => scene(st, 'inOklch'));
+  await t.test('受入1: 補間の色空間 in display-p3 の透明な color(display-p3 …): 前方の印 0・後方の印 1', st => scene(st, 'inP3'));
+  await t.test('受入2【対照】不透明な同色の rgb（黒）: 描かれた前方の語に付く', st => scene(st, 'black'));
+  await t.test('受入2【対照】不透明な同色の color(srgb 0 0 0): 描かれた前方の語に付く', st => scene(st, 'srgbInk'));
+  await t.test('受入2: 0% で透明な rgba から不透明な color(srgb 1 0 0) へ切り替わる形を、透明と誤らない', st => scene(st, 'red0'));
+  await t.test('受入3: 止まりの位置に calc() が残る透明な形（読めない止まり）を、描くと昇格させない', st => scene(st, 'calc'));
+  await t.test('受入3: 古い書き方の circle cover が残る透明な形（読めない語）を、描くと昇格させない', st => scene(st, 'cover'));
+  await t.test('（確かめの途中で見つけた）全部の止まりが透明な repeating-conic-gradient: 前方の印 0・後方の印 1', st => scene(st, 'rconic'));
+});
+
+test('第25回 RG-25-04: 別の印を hover している間は、無関係なフォーカスの移動で説明を閉じない', async t => {
+  const srv = await startTestServer(HOVERFOCUS25_PAGE);
+  const chrome = await launchChrome({ port: srv.port });
+  const { cdp } = chrome;
+  t.after(async () => { chrome.kill(); await srv.close(); });
+  await cdp.send('Extensions.loadUnpacked', { path: stageExtension() });
+  const tab = await openPage(cdp, PAGE);
+  await waitFor('印が付く（A と B）', async () => await count23(tab, '#a .iiyaku-icon') === 1 &&
+    await count23(tab, '#b .iiyaku-icon') === 1);
+
+  const TIP = '.iiyaku-tooltip[data-iiyaku-owner]';
+  // 何も無い本文の点（印・入口・吹き出しの外）。⚠️ 画面の中に置く（実測: この Mac の headless は
+  // 756×469。画面の外へ動かすと relatedTarget の無い「ウィンドウの外へ出た」になり、別の経路を通る）
+  const PARK = [300, 400];
+  // 本物のカーソル（CDP の mouseMoved）。動かした座標を試験の側で持つ
+  // （`:hover` は headless で測れない＝製品の直しの注）
+  let pointer = PARK;
+  const move = async (x, y) => { pointer = [x, y]; await mouse23(cdp, tab, x, y); };
+  const centerOf = async sel => { const r = await rectOf23(tab, sel);
+    return [Math.round(r.x + r.w / 2), Math.round(r.y + r.h / 2)]; };
+  // 毎段の状態: フォーカス先（段落の id か要素の id）・カーソルの下（ブラウザの当たり判定）・
+  // 表示中の説明（本文の頭で A〈branch〉か B〈rebase〉かを見分け、吹き出しの左端も添える）
+  const state = () => tab.evaluate(`(() => {
+    const id = e => { if (!e) return null; const p = e.closest && e.closest('p');
+      if (e.closest && e.closest(${JSON.stringify(TIP)})) return 'tip';
+      return p ? p.id : (e.id || (e.classList && e.classList.contains('iiyaku-toggle') ? 'toggle' : e.tagName)); };
+    const tips = [...document.querySelectorAll(${JSON.stringify(TIP)})];
+    const tx = tips[0] ? tips[0].textContent : '';
+    return { focus: id(document.activeElement), hover: id(document.elementFromPoint(${pointer[0]}, ${pointer[1]})),
+             tips: tips.length,
+             which: !tips[0] ? null : tx.includes('枝分かれ') ? 'A' : tx.includes('乗せ直して') ? 'B' : tx.slice(0, 12),
+             tipLeft: tips[0] ? Math.round(tips[0].getBoundingClientRect().left) : null,
+             hasFocus: document.hasFocus() }; })()`);
+  let steps = [];
+  const snap = async label => { const s = await state(); steps.push([label, s]); return s; };
+  // 同時に出た吹き出しの数の最大（ページの記録の tip+ / tip-。reset で 0 から数え始める）
+  const maxTips = async () => { let n = 0, m = 0;
+    for (const [, k] of await tab.evaluate('window.__tip23')) { if (k === 'tip+') m = Math.max(m, ++n); if (k === 'tip-') n--; }
+    return m; };
+  // 説明が出ていることを、DOM の数・当たり判定・画素で別々に見る
+  const tipShown = async why => {
+    assert.equal(await tips23(tab), 1, `${why}（吹き出しの数）`);
+    const tr = await rectOf23(tab, TIP);
+    const cx = Math.round(tr.x + tr.w / 2), cy = Math.round(tr.y + tr.h / 2);
+    assert.equal(await kindAt23(tab, cx, cy), 'tip', `${why}（吹き出しの中心に吹き出しが無い）`);
+    const px = await pixelsAt(cdp, tab, innerRect(tr));
+    assert.ok(px.nonwhite > px.total * 0.5, `${why}（吹き出しが描かれていない: ${JSON.stringify(px)}）`);
+  };
+  // 毎回の始まり: カーソルを何も無い点へ置き、フォーカスを説明の無い #before へ置く（開始位置の
+  // 固定にだけ focus() を使う）。説明が閉じてから、記録を 0 から取り直す。
+  const reset = async () => {
+    steps = [];
+    await move(...PARK);
+    await tab.evaluate(`document.getElementById('before').focus(); true`);
+    await waitFor('説明が閉じている', async () => await tips23(tab) === 0, { timeout: 3000 });
+    const s = await state();
+    assert.ok(s.hover === 'HTML' || s.hover === 'BODY', `前提: 置き場の点が本文の何も無い所でない: ${JSON.stringify(s)}`);
+    await tipRecorder23(tab);
+  };
+  const hoverB = async () => {
+    const [bx, by] = await centerOf('#b .iiyaku-icon');
+    await move(bx, by);
+    await waitFor('カーソルを B に乗せると B の説明が出る', async () => (await state()).which === 'B', { timeout: 3000 });
+    const s = await snap('B に hover');
+    assert.equal(s.hover, 'b', `前提: カーソルが B の上に無い: ${JSON.stringify(s)}`);
+    return s;
+  };
+  const tabOnce = async (want, what) => {
+    await readyForTab24(cdp, tab);
+    await pressKey(cdp, tab.sessionId, 'Tab');
+    try {
+      await waitFor(`実 Tab で${what}へ移る`, async () => (await state()).focus === want, { timeout: 3000, interval: 20 });
+    } catch (e) {
+      throw new Error(`${e.message}: ${JSON.stringify({ now: await state(), focus: await focusState24(tab) })}`);
+    }
+  };
+  const log = () => tab.evaluate(`window.__tip23.map(x => x[1] + (x[2] ? ':' + x[2] : '')).join(' ')`);
+  const record = async st => st.diagnostic(`RG-25-04 段ごとの状態: ${JSON.stringify(steps)} ／ 記録: ${await log()}`);
+  // B の説明を hover が支え、フォーカスは説明の無い場所にある状態を作る（#next → #next2 の実 Tab）
+  const holdByHover = async () => {
+    await reset();
+    await tab.evaluate(`document.getElementById('next').focus(); true`);
+    await hoverB();
+    await tabOnce('next2', ' #next2');
+    await sleep(600);                                    // 猶予（250ms）より長く待つ
+    const s = await snap('Tab で #next2 へ');
+    assert.deepEqual([s.tips, s.which, s.hover], [1, 'B', 'b'], `前提: hover が支える B の説明が無い: ${JSON.stringify(s)}`);
+  };
+
+  await t.test('受入1・5: 実 Tab で A → B に hover → 実 Tab で A から #next へ移っても、B の説明が残る（同時に 1 つ）', async st => {
+    await reset();
+    await tabTo24(cdp, tab, `el.closest && el.closest('#a')`, '印 A');
+    await waitFor('Tab で止まると A の説明が出る', async () => (await state()).which === 'A', { timeout: 3000 });
+    await snap('実 Tab で A');
+    const s1 = await hoverB();
+    assert.equal(s1.focus, 'a', `前提: フォーカスが A から動いた: ${JSON.stringify(s1)}`);
+    await tabOnce('next', ' #next');
+    await sleep(600);                                    // 猶予（250ms）より長く待つ
+    const s2 = await snap('実 Tab で A から #next へ');
+    await record(st);
+    assert.equal(s2.hover, 'b', `前提: カーソルが B から動いた: ${JSON.stringify(s2)}`);
+    assert.deepEqual([s2.tips, s2.which], [1, 'B'],
+      `フォーカスが A から説明の無い #next へ移っただけで、hover している B の説明が閉じた（記録: ${await log()}）`);
+    await tipShown('B の説明が描かれていない');
+    assert.equal(await maxTips(), 1, `同時に 2 つ以上の吹き出しが出た（記録: ${await log()}）`);
+  });
+
+  await t.test('受入1: B に hover したまま、説明の無い #next から #next2 へ実 Tab で移っても閉じない（focusin の側）', async st => {
+    await reset();
+    await tab.evaluate(`document.getElementById('next').focus(); true`);
+    await hoverB();
+    await tabOnce('next2', ' #next2');
+    await sleep(600);
+    const s = await snap('実 Tab で #next から #next2 へ');
+    await record(st);
+    assert.equal(s.hover, 'b', `前提: カーソルが B から動いた: ${JSON.stringify(s)}`);
+    assert.deepEqual([s.tips, s.which], [1, 'B'],
+      `説明の無い場所どうしのフォーカスの移動で、hover している B の説明が閉じた（記録: ${await log()}）`);
+    await tipShown('B の説明が描かれていない');
+    assert.equal(await maxTips(), 1, '同時に 2 つ以上の吹き出しが出た');
+  });
+
+  // hover が支える状態（フォーカスが #next2 へ移った後も B の説明が残る）は直しの後にしか作れないので、
+  // 基点ではこの試験の前提で落ちる（対照ではない）
+  await t.test('受入2: フォーカスがほかにあり、カーソルも B から離れたら閉じる', async st => {
+    await holdByHover();
+    await tipRecorder23(tab);
+    await move(...PARK);
+    await waitFor('閉じる', async () => await tips23(tab) === 0, { timeout: 3000 });
+    const s = await snap('カーソルを何も無い点へ');
+    await record(st);
+    assert.equal(s.focus, 'next2', `前提: フォーカスが #next2 から動いた: ${JSON.stringify(s)}`);
+    assert.notEqual(s.hover, 'b', '前提: カーソルが B に残っている');
+    const lag = await closeLag23(tab, ['out', 'over']);
+    assert.ok(lag !== null && lag < 100, `カーソルが離れてから閉じるまで ${lag}ms`);
+  });
+
+  await t.test('受入4【対照】B に hover したまま、実 Tab で説明付きの入口 A へ移ると、A の説明へ切り替わる（同時に 1 つ）', async st => {
+    await reset();                                       // フォーカスは #before
+    await hoverB();
+    await tabOnce('a', '印 A');
+    await waitFor('A の説明へ替わる', async () => (await state()).which === 'A', { timeout: 3000 });
+    const s = await snap('実 Tab で #before から A へ');
+    await record(st);
+    assert.equal(s.hover, 'b', `前提: カーソルが B から動いた: ${JSON.stringify(s)}`);
+    assert.equal(s.tips, 1, '吹き出しが 1 つでない');
+    assert.ok(s.tipLeft < 300, `A の説明が A の近くに無い: ${JSON.stringify(s)}`);
+    await tipShown('A の説明が描かれていない');
+    assert.equal(await maxTips(), 1, `同時に 2 つ以上の吹き出しが出た（記録: ${await log()}）`);
+  });
+
+  await t.test('受入3: hover が支える説明も、B の印が退役すれば閉じる', async st => {
+    await holdByHover();
+    await tipRecorder23(tab);
+    // ページが印の説明文を書き換える（→ isCoherent が偽になり退役する）。カーソルは動かさない
+    await tab.evaluate(`document.querySelector('#b .iiyaku-icon').dataset.iiyaku = 'x'; true`);
+    // 付け直された印の上にカーソルが残るので、出し直しまで速く進むことがある。
+    // 閉じたことは数ではなくページの記録（tip-）で見る
+    await waitFor('退役で閉じる', async () =>
+      (await tab.evaluate(`window.__tip23`)).some(x => x[1] === 'tip-'), { timeout: 5000 });
+    await waitFor('付け直される', async () => await count23(tab, '#b .iiyaku-icon') === 1, { timeout: 8000 });
+    await snap('退役の後');
+    await record(st);
+  });
+
+  await t.test('受入3: hover が支える説明も、OFF で閉じる（キーで押す。カーソルは B から動かさない）', async st => {
+    await holdByHover();
+    // #next2 から実 Tab で切替ボタンへ（途中で B の印に止まる。B に止まっても、離れても、
+    // カーソルが B に残るので B の説明のまま）
+    await readyForTab24(cdp, tab);
+    let s = await state();
+    for (let i = 0; i < 6 && s.focus !== 'toggle'; i++) {
+      const from = s.focus;
+      await pressKey(cdp, tab.sessionId, 'Tab');
+      try {
+        await waitFor('実 Tab でフォーカスが移る', async () => (await state()).focus !== from, { timeout: 3000, interval: 20 });
+      } catch (e) {
+        throw new Error(`${e.message}: ${JSON.stringify({ steps, focus: await focusState24(tab) })}`);
+      }
+      s = await snap(`実 Tab ${i + 1}`);
+    }
+    assert.equal(s.focus, 'toggle', `前提: 切替ボタンへ実 Tab で届かない: ${JSON.stringify(steps)}`);
+    assert.deepEqual([s.tips, s.which, s.hover], [1, 'B', 'b'],
+      `前提: 切替ボタンへ移るまでに B の説明が閉じたか、カーソルが B に無い: ${JSON.stringify(steps)}`);
+    await tipRecorder23(tab);
+    const pressed = () => tab.evaluate(`document.querySelector('.iiyaku-toggle').getAttribute('aria-pressed')`);
+    await pressKey(cdp, tab.sessionId, 'Enter', { activate: true });
+    await waitFor('OFF で閉じる', async () => await tips23(tab) === 0, { timeout: 3000 });
+    assert.equal(await pressed(), 'false', '前提: OFF になっていない');
+    await snap('OFF の後');
+    await record(st);
+    // 閉じたのは OFF のため（Enter の直後・印が消えてカーソルの下が替わる前）
+    const lag = await closeLag23(tab, 'key', 'Enter');
+    assert.ok(lag !== null && lag < 100, `Enter（OFF）から閉じるまで ${lag}ms`);
+    const ev = (await tab.evaluate('window.__tip23')).map(x => x[1]);
+    assert.ok(!ev.includes('over') || ev.indexOf('tip-') < ev.indexOf('over'),
+      `カーソルの下が替わってから閉じた（OFF で閉じたと言えない）: ${ev.join(' ')}`);
+    // カーソルは B の印の場所から動かしていない（OFF で印が消えるので、当たり判定は B を指さなくなる）
+    await pressKey(cdp, tab.sessionId, 'Enter', { activate: true });   // ON へ戻す
+    try {
+      await waitFor('ON に戻る', async () => await pressed() === 'true', { timeout: 3000 });
+    } catch (e) {
+      throw new Error(`${e.message}: ${JSON.stringify(await state())}`);
+    }
+    await waitFor('ON で印が戻る', async () => await count23(tab, '#b .iiyaku-icon') === 1, { timeout: 8000 });
+  });
+
+  await t.test('受入3: hover が支える説明も、外側のクリックで閉じる（カーソルもそこへ動く）', async st => {
+    await holdByHover();
+    await tipRecorder23(tab);
+    await move(...PARK);
+    for (const type of ['mousePressed', 'mouseReleased']) {
+      await cdp.send('Input.dispatchMouseEvent', { type, x: PARK[0], y: PARK[1], button: 'left', clickCount: 1 }, tab.sessionId);
+    }
+    await waitFor('閉じる', async () => await tips23(tab) === 0, { timeout: 3000 });
+    await snap('外側のクリックの後');
+    await record(st);
+  });
+
+  await t.test('受入3【対照】フォーカスが支える説明（カーソルは何も無い点）は、外側のクリックで閉じる（focusout の側）', async st => {
+    await reset();
+    await tabTo24(cdp, tab, `el.closest && el.closest('#a')`, '印 A');
+    await waitFor('A の説明が出る', async () => (await state()).which === 'A', { timeout: 3000 });
+    await sleep(400);
+    assert.equal(await tips23(tab), 1, '前提: カーソルが何も無い点にあるのに、フォーカスで開いた説明が閉じた');
+    await tipRecorder23(tab);
+    for (const type of ['mousePressed', 'mouseReleased']) {
+      await cdp.send('Input.dispatchMouseEvent', { type, x: PARK[0], y: PARK[1], button: 'left', clickCount: 1 }, tab.sessionId);
+    }
+    await waitFor('閉じる', async () => await tips23(tab) === 0, { timeout: 3000 });
+    const s = await snap('外側のクリックの後');
+    await record(st);
+    assert.notEqual(s.focus, 'a', `前提: フォーカスが A に残っている: ${JSON.stringify(s)}`);
+  });
+
+  // ⚠️ Escape は**最後に**押す（RG-23-15 の注記: headless では最初の Escape でウィンドウが一瞬 blur し、
+  //    後のカーソルの入力が遅れて届く）。
+  await t.test('受入3: hover が支える説明も Escape で待たずに閉じ、カーソルが残っても出直さない', async st => {
+    await holdByHover();
+    await tipRecorder23(tab);
+    await pressKey(cdp, tab.sessionId, 'Escape');
+    await waitFor('閉じる', async () => await tips23(tab) === 0, { timeout: 3000 });
+    const lag = await closeLag23(tab, 'key', 'Escape');
+    await sleep(800);
+    const s = await snap('Escape の後');
+    await record(st);
+    assert.ok(lag !== null && lag < 100, `Escape から閉じるまで ${lag}ms`);
+    assert.equal(s.tips, 0, 'Escape で閉じた説明が出直した');
+    assert.equal(s.hover, 'b', '前提: カーソルが B から動いた');
+  });
+
+  await tab.close();
+});
+
 test('ページ側から同梱物を読めず、通信はテストサーバと拡張の中だけ', async t => {
   const srv = await startTestServer();
   const chrome = await launchChrome({ port: srv.port });

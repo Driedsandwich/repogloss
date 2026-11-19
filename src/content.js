@@ -656,7 +656,10 @@
   }
 
   function isFullyTransparentGradient(v) {
-    if (!/^(-webkit-)?(linear|radial|conic|repeating-linear|repeating-radial)-gradient\(/.test(v)) return false;
+    // ⚠️ repeating-conic も読む（第25回の確かめの途中で見つけた・2cd6947 から同じ）。以前の並びに
+    // repeating-conic が無く、透明な repeating-conic-gradient の文字（0 画素）に印が付いた。
+    // 並びは isGradientLayer の GRADIENT と同じ（あちらはこの関数より後で宣言するので写す）。
+    if (!/^(-webkit-)?(repeating-)?(linear|radial|conic)-gradient\(/.test(v)) return false;
     const colors = gradientColors(v);
     if (!colors || colors.length === 0) return false;
     return colors.every(c => colorAlpha(c) === 0);   // 読めない alpha（null）は透明と断定しない
@@ -806,6 +809,15 @@
       // `background-size:100% 100%` で敷いた語は0画素なのに印が付いた。
       // 中身を知るには読み込みが要る（新しい通信になる）ので、**断定しない**。
       if (!isGradientLayer(layers[i])) { unknown = true; continue; }
+      // ⚠️ **色の止まりを読めない gradient は、描くと断定しない**（第25回 RG-25-02 の受入3）。
+      // isFullyTransparentGradient は読めない止まりを「透明でない」と返すので、そのまま下へ
+      // 進むと「描く」になっていた。実測（Chrome 158・headless）: 止まりの位置の
+      // `calc(10% + 5px)` と、古い書き方の `circle cover` は計算後の値にも残って読めず、
+      // 透明な語（0 画素）に印が付き、後方の読める同じ語を説明しなかった。
+      // 直す前（2cd6947）は rgba だけを拾って透明と読めていた形で、色の止まりを全部読む
+      // 直し（gradientColors）が入れた後退。読めない alpha（null）の色も同じ扱いにする。
+      const stops = gradientColors(layers[i]);
+      if (!stops || !stops.length || stops.some(c => colorAlpha(c) === null)) { unknown = true; continue; }
       // ⚠️ **`background-origin` も層ごと**（第21回 RG-21-02）。以前はカンマ区切りの
       // 値全体を1つの origin として扱っており、`content-box, border-box` の1層目を
       // padding-box へ落としていた（実測: 語は 320画素描かれているのに印が付かなかった）。

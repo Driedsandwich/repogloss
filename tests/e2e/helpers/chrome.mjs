@@ -2761,3 +2761,74 @@ body { margin: 30px; background: white; color: black; }
   <div class="frame25" id="frame2"><div id="ctl">commit</div></div>
   <button id="after">after</button>
 </body></html>`;
+
+/* ===================== 第25回監査（v1.8.22）の反例・群 B ===================== */
+
+/* RG-25-02。回答の見本そのもの（`background-clip: text` で抜いた、塗りの透明な語 #first と、
+   後方の読める同じ語 #later）。`background-image` だけを替えて、場面ごとに 1 枚ずつの
+   初期ページにする（回答の「別の初期ページで background-image だけを変える」。1 枚に
+   まとめると、別の場面の合図や再走査が欠陥を救う）。
+   語が描かれなければ [前方, 後方] = [0, 1]、描かれれば [1, 0]。
+   ⚠️ 語と印は画面（800×600）の中に置く（画面の外は撮影で「白でない」と数えられる）。 */
+export function gradText25Page(bg) {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>gradtext25</title><style>
+body{margin:0;background:white;color:black;font:20px Arial}
+#before{position:absolute;left:20px;top:10px}
+#first{position:absolute;left:20px;top:60px;margin:0;
+  color:transparent;-webkit-text-fill-color:transparent;background-color:transparent;
+  background-image:${bg};background-clip:text;-webkit-background-clip:text}
+#later{position:absolute;left:20px;top:160px;margin:0}
+#after{position:absolute;left:20px;top:240px}
+</style></head><body>
+<button id="before">before</button>
+<p id="first">branch</p>
+<p id="later">branch</p>
+<button id="after">after</button>
+</body></html>`;
+}
+/* 場面ごとの `background-image`（書いた値）と、計算後の値で確かめる形（前提）。
+     seen … 語は描かれるか（前方に印が残るべきか）
+     form … 計算後の値がこの形で返ること（rgba へ直されていないこと）を前提に見る
+   受入 1: 全部の止まりの alpha が 0 の rgba（対照）・`color(srgb …)`・`oklch(…)`、
+           補間の色空間を書いた oklch と display-p3（a672415 で読めない語と数えなくした形）
+   受入 2: 不透明な同色（rgb は対照・`color()` も対照）と、0% で透明から赤へ切り替わる形
+   受入 3: Chrome が計算後も**読めない形のまま返す**止まり。実測（Chrome 158・headless）で、
+           色はどれも具体の色へ解決された（`currentcolor`・色の名前・`color-mix()`・
+           `light-dark()`・相対色）が、止まりの位置の `calc(10% + 5px)` と、古い書き方の
+           `circle cover` の `cover` は残った。どちらも語は透明（0 画素）。 */
+export const GRADTEXT25 = {
+  rgba:   { bg: 'linear-gradient(rgba(0, 0, 0, 0), rgba(0, 0, 0, 0))', seen: false, form: /^linear-gradient\(rgba\(0, 0, 0, 0\), rgba\(0, 0, 0, 0\)\)$/ },
+  srgb:   { bg: 'linear-gradient(color(srgb 0 0 0 / 0), color(srgb 0 0 0 / 0))', seen: false, form: /^linear-gradient\(color\(srgb 0 0 0 \/ 0\), color\(srgb 0 0 0 \/ 0\)\)$/ },
+  oklch:  { bg: 'linear-gradient(oklch(0 0 0 / 0), oklch(0 0 0 / 0))', seen: false, form: /^linear-gradient\(oklch\(0 0 0 \/ 0\), oklch\(0 0 0 \/ 0\)\)$/ },
+  inOklch: { bg: 'linear-gradient(in oklch longer hue to right, oklch(0 0 0 / 0), oklch(0.6 0.15 250 / 0))', seen: false, form: /^linear-gradient\(to right in oklch longer hue, oklch\(/ },
+  inP3:   { bg: 'linear-gradient(in display-p3, color(display-p3 0 0 0 / 0), color(display-p3 0 0 0 / 0))', seen: false, form: /^linear-gradient\(in display-p3, color\(display-p3 / },
+  black:  { bg: 'linear-gradient(black, black)', seen: true, form: /^linear-gradient\(rgb\(0, 0, 0\), rgb\(0, 0, 0\)\)$/ },
+  srgbInk: { bg: 'linear-gradient(color(srgb 0 0 0), color(srgb 0 0 0))', seen: true, form: /^linear-gradient\(color\(srgb 0 0 0\), color\(srgb 0 0 0\)\)$/ },
+  red0:   { bg: 'linear-gradient(rgba(0, 0, 0, 0) 0% 0%, color(srgb 1 0 0) 0% 100%)', seen: true, form: /rgba\(0, 0, 0, 0\) 0%.*color\(srgb 1 0 0\) 100%\)$/ },
+  calc:   { bg: 'linear-gradient(rgba(0, 0, 0, 0) calc(10% + 5px), rgba(0, 0, 0, 0))', seen: false, form: /calc\(/ },
+  cover:  { bg: '-webkit-repeating-radial-gradient(center, circle cover, transparent, transparent 10px)', seen: false, form: /circle cover/ },
+  rconic: { bg: 'repeating-conic-gradient(rgba(0, 0, 0, 0) 0deg 10deg, rgba(0, 0, 0, 0) 10deg 20deg)', seen: false, form: /^repeating-conic-gradient\(/ }
+};
+
+/* RG-25-04。回答の見本（#before〈本文は start〉・印 A の語 branch・#next・右の印 B の語 rebase）に、
+   #next と B のあいだへ説明の無い button（#next2）を 1 つ足した。
+   ⚠️ A から #next への実 Tab では focusout（A）と focusin（#next）が続けて来るので、どちらが
+      閉じたか分けられない。#next から #next2 への Tab は focusout の相手が入口でない＝
+      focusin の側（`else hideTip()`）だけを通る。
+   開始の button の id を #before にそろえる（tabUntil・tabTo24 が #before から歩く）。 */
+export const HOVERFOCUS25_PAGE = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>hoverfocus25</title><style>
+body { margin: 0; font: 16px sans-serif; background: white; color: black; }
+#before { position: absolute; left: 40px; top: 20px; }
+#a { position: absolute; left: 40px; top: 80px; margin: 0; }
+#next { position: absolute; left: 40px; top: 160px; }
+#next2 { position: absolute; left: 40px; top: 200px; }
+#b { position: absolute; left: 500px; top: 80px; margin: 0; }
+</style></head><body>
+<button id="before">start</button>
+<p id="a">branch</p>
+<button id="next">next</button>
+<button id="next2">next2</button>
+<p id="b">rebase</p>
+</body></html>`;

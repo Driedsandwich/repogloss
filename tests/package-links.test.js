@@ -10,6 +10,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
+const { pathToFileURL } = require('node:url');
 
 const ROOT = path.join(__dirname, '..');
 const CANARY = 'REPOGLOSS-OUTSIDE-CANARY';
@@ -48,7 +49,8 @@ const env = () => {
 // dist の下の物を全部読み、外の中身が入っていないかを見る（ZIP は deflate なので、
 // 中身は zip.mjs で開いて見る）
 async function distHasCanary(dir) {
-  const { readZip } = await import(path.join(dir, 'scripts', 'zip.mjs'));
+  // Windows では import() に素のパスを渡せない（file:// の URL にする）
+  const { readZip } = await import(pathToFileURL(path.join(dir, 'scripts', 'zip.mjs')).href);
   const dist = path.join(dir, 'dist');
   if (!fs.existsSync(dist)) return false;
   const walk = d => fs.readdirSync(d, { withFileTypes: true }).flatMap(e =>

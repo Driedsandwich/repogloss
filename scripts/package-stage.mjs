@@ -4,7 +4,7 @@
 //
 // ZIP 自体はここでは作らない。ZIP の作り方と、作った後にハッシュを控える手順は
 // 最後に表示する。dist/ は Git の管理外（.gitignore）。
-import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, cpSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, cpSync, readdirSync, lstatSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, relative, sep } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -32,9 +32,10 @@ function walk(dir, base = dir) {
   const out = [];
   for (const name of readdirSync(dir)) {
     const p = join(dir, name);
-    if (statSync(p).isDirectory()) out.push(...walk(p, base));
+    const stat = lstatSync(p);   // リンクをたどらない
+    if (stat.isDirectory()) out.push(...walk(p, base));
     // 区切りは / に揃える。Windows は \ を返すので、配布一覧と突き合わない。
-    else out.push(relative(base, p).split(sep).join('/'));
+    else if (stat.isFile()) out.push(relative(base, p).split(sep).join('/'));
   }
   return out;
 }
@@ -71,12 +72,25 @@ if (VERIFY_ONLY) {
   process.exit(0);
 }
 
+// リンクをたどらず、通常のファイルだけを並べる。dist へ写す前に全部を確かめる。
+for (const rel of PACKAGE_FILES) {
+  let stat;
+  try { stat = lstatSync(join(ROOT, rel)); }
+  catch (e) {
+    console.error(`NG: 配布対象の ${rel} を確かめられない: ${e.message}`);
+    process.exit(1);
+  }
+  if (!stat.isFile()) {
+    console.error(`NG: 配布対象の ${rel} が通常のファイルでない`);
+    process.exit(1);
+  }
+}
+
 // 毎回作り直す。前回の残りが混ざると、余分なファイルごと ZIP にしてしまう。
 rmSync(STAGE, { recursive: true, force: true });
 mkdirSync(STAGE, { recursive: true });
 for (const rel of PACKAGE_FILES) {
   const src = join(ROOT, rel);
-  if (!existsSync(src)) { console.error(`NG: 配布対象の ${rel} が無い`); process.exit(1); }
   mkdirSync(dirname(join(STAGE, rel)), { recursive: true });
   cpSync(src, join(STAGE, rel));
 }

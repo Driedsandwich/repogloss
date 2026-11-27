@@ -1,12 +1,13 @@
 // ストアへ出す ZIP を作り、作ったものを開き直して中身を確かめる。
-//   node scripts/package-zip.mjs                    … 作る（作った直後に検査もする）
-//   node scripts/package-zip.mjs --verify           … 既にある ZIP を検査するだけ
-//   node scripts/package-zip.mjs --verify --release … さらに「CI が作ったものか」まで見る
+//   node scripts/package-zip.mjs                     … 作る（作った直後に検査もする）
+//   node scripts/package-zip.mjs --verify            … 既にある ZIP を検査するだけ
+//   node scripts/package-zip.mjs --verify --release  … GitHub の CI の実行記録と成果物で出どころも確かめる
+//   node scripts/package-zip.mjs --verify --ci-shape … 出どころは確かめない形の検査（CI の実行中に使う）
 //
 // 警告では止めない。合わなければ終了コードを 0 以外にして落とす。
 // 逃げ道は --allow-uncommitted だけで、その場合はファイル名へ UNCOMMITTED が入る
 // （提出物と取り違えられないようにするため）。
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, lstatSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, relative } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -15,12 +16,20 @@ import { PACKAGE_FILES } from './package-files.mjs';
 import { writeZip } from './zip.mjs';
 import { verifyZipBuffer } from './verify-zip.mjs';
 import { validateProvenance } from './provenance.mjs';
+import { verifyReleaseOrigin } from './release-origin.mjs';
 import { staleCopies } from './embed-assets.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const VERIFY_ONLY = process.argv.includes('--verify');
 const RELEASE_MODE = process.argv.includes('--release');
+// CI の実行中は、出どころは確かめない形の検査だけを行う。
+const CI_SHAPE = process.argv.includes('--ci-shape');
+const RELEASE_SHAPE = RELEASE_MODE || CI_SHAPE;
 const ALLOW_DIRTY = process.argv.includes('--allow-uncommitted');
+if (CI_SHAPE && !VERIFY_ONLY) {
+  console.error('NG: --ci-shape は --verify と一緒に使う');
+  process.exit(1);
+}
 const sha256 = buf => createHash('sha256').update(buf).digest('hex');
 
 const version = JSON.parse(readFileSync(join(ROOT, 'manifest.json'), 'utf8')).version;
@@ -60,6 +69,20 @@ const DIST = join(ROOT, 'dist');
 const zipPath = join(DIST, zipName);
 
 if (!VERIFY_ONLY) {
+  // リンクをたどらず、通常のファイルだけを ZIP に入れる。書く前に全部を確かめる。
+  for (const rel of PACKAGE_FILES) {
+    let stat;
+    try { stat = lstatSync(join(ROOT, rel)); }
+    catch (e) {
+      console.error(`NG: 配布対象の ${rel} を確かめられない: ${e.message}`);
+      process.exit(1);
+    }
+    if (!stat.isFile()) {
+      console.error(`NG: 配布対象の ${rel} が通常のファイルでない`);
+      process.exit(1);
+    }
+  }
+
   if (dirty === null) {
     console.error('NG: git で作業ツリーの状態を確認できない。提出物は commit 済みの内容から作る');
     process.exit(1);
@@ -77,7 +100,6 @@ if (!VERIFY_ONLY) {
   const entries = [];
   for (const rel of PACKAGE_FILES) {
     const src = join(ROOT, rel);
-    if (!existsSync(src)) { console.error(`NG: 配布対象の ${rel} が無い`); process.exit(1); }
     entries.push({ name: rel, data: readFileSync(src) });
   }
   mkdirSync(DIST, { recursive: true });
@@ -143,11 +165,20 @@ if (VERIFY_ONLY) {
   // 出どころは記録側だけが知っている（別環境で検証すると env は空になる）ので、
   // 現在の HEAD との突き合わせだけをこちらから足す。
   const problems = validateProvenance(rec, { ...provenance, headCommit: provenance.source.commit },
-    { release: RELEASE_MODE });
+    { release: RELEASE_SHAPE });
   if (problems.length) {
-    console.error(`NG: 身元の記録が${RELEASE_MODE ? '提出候補として' : ''}通らない（${problems.length} 件）\n`
+    console.error(`NG: 身元の記録が${RELEASE_SHAPE ? '提出候補として' : ''}通らない（${problems.length} 件）\n`
       + problems.map(m => '  - ' + m).join('\n'));
     process.exit(1);
+  }
+  if (RELEASE_MODE) {
+    // 形の検査を通った後で、GitHub の実行の記録と成果物へ出どころを聞く。
+    const originProblems = await verifyReleaseOrigin(rec, raw);
+    if (originProblems.length) {
+      console.error(`NG: 提出候補の出どころを確かめられない（${originProblems.length} 件）\n`
+        + originProblems.map(m => '  - ' + m).join('\n'));
+      process.exit(1);
+    }
   }
   // ローカルで検証した記録を残したい場合は、正本と別の名前へ出す
   writeFileSync(join(DIST, `${zipName}.verified-local.json`),
